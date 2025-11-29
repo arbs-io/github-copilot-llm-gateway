@@ -9,7 +9,7 @@ export default [
     languageOptions: {
       parser: tsparser,
       parserOptions: {
-        ecmaVersion: 2020,
+        ecmaVersion: 2022,
         sourceType: 'module',
       },
     },
@@ -17,15 +17,11 @@ export default [
       '@typescript-eslint': tseslint,
     },
     rules: {
-      '@typescript-eslint/naming-convention': 'warn',
-      '@typescript-eslint/semi': 'warn',
+      '@typescript-eslint/naming-convention': ['warn', { 'format': 'camelCase', 'leadingUnderscore': 'allow', 'trailingUnderscore': 'allow' }],
+      '@typescript-eslint/semi': ['warn', 'always'],
       'curly': 'warn',
       'eqeqeq': 'warn',
       'no-throw-literal': 'warn',
       'semi': 'off',
-    },
-  },
-  {
-    ignores: ['out', 'node_modules', '.vscode-test'],
-  },
-];
+      'prefer-const': 'warn',
+      'no-unused-vars':
