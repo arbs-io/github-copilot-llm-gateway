@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import {
   OpenAIChatCompletionRequest,
   OpenAIModelsResponse,
-  VLLMConfig
+  GatewayConfig
 } from './types';
 
 /**
@@ -52,19 +52,19 @@ interface ParsedChunk {
 }
 
 /**
- * HTTP client for vLLM server (OpenAI API compatible)
+ * HTTP client for OpenAI-compatible inference servers
  */
-export class VLLMClient {
-  private config: VLLMConfig;
+export class GatewayClient {
+  private config: GatewayConfig;
 
-  constructor(config: VLLMConfig) {
+  constructor(config: GatewayConfig) {
     this.config = config;
   }
 
   /**
    * Update client configuration
    */
-  public updateConfig(config: VLLMConfig): void {
+  public updateConfig(config: GatewayConfig): void {
     this.config = config;
   }
 
@@ -87,7 +87,7 @@ export class VLLMClient {
       return await response.json();
     } catch (error) {
       if (error instanceof Error) {
-        throw new Error(`Failed to connect to vLLM server: ${error.message}`);
+        throw new Error(`Failed to connect to inference server: ${error.message}`);
       }
       throw error;
     }
