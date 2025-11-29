@@ -301,7 +301,7 @@ export class GatewayProvider implements vscode.LanguageModelChatProvider {
   private countChar(str: string, char: string): number {
     // Escape regex special characters in the search char
     const escapePattern = /[.*+?^${}()|[\]\\]/g;
-    const escapedChar = char.replace(escapePattern, String.raw`\$&`);
+    const escapedChar = char.replaceAll(escapePattern, String.raw`\$&`);
     const regex = new RegExp(escapedChar, 'g');
     let count = 0;
     while (regex.exec(str) !== null) {
