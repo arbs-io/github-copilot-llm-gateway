@@ -1,5 +1,5 @@
 /**
- * Type definitions for OpenAI API responses (vLLM compatible)
+ * Type definitions for OpenAI-compatible API responses
  */
 
 export interface OpenAIModel {
@@ -82,7 +82,7 @@ export interface OpenAIChatCompletionResponse {
   };
 }
 
-export interface VLLMConfig {
+export interface GatewayConfig {
   serverUrl: string;
   apiKey?: string;
   requestTimeout: number;

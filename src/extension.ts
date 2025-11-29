@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { VLLMProvider } from './provider';
+import { GatewayProvider } from './provider';
 
 /**
  * Extension activation
@@ -8,7 +8,7 @@ export function activate(context: vscode.ExtensionContext) {
   console.log('GitHub Copilot LLM Gateway extension is now active');
 
   // Create and register the language model provider
-  const provider = new VLLMProvider(context);
+  const provider = new GatewayProvider(context);
 
   const disposable = vscode.lm.registerLanguageModelChatProvider(
     'copilot-llm-gateway',
