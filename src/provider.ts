@@ -299,7 +299,15 @@ export class GatewayProvider implements vscode.LanguageModelChatProvider {
    * Count occurrences of a character in a string
    */
   private countChar(str: string, char: string): number {
-    return (str.match(new RegExp(char.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length;
+    // Escape regex special characters in the search char
+    const escapePattern = /[.*+?^${}()|[\]\\]/g;
+    const escapedChar = char.replace(escapePattern, String.raw`\$&`);
+    const regex = new RegExp(escapedChar, 'g');
+    let count = 0;
+    while (regex.exec(str) !== null) {
+      count++;
+    }
+    return count;
   }
 
   /**
@@ -682,7 +690,8 @@ export class GatewayProvider implements vscode.LanguageModelChatProvider {
     // Log message structure
     for (let i = 0; i < openAIMessages.length; i++) {
       const msg = openAIMessages[i];
-      this.outputChannel.appendLine(`  Message ${i + 1}: role=${msg.role}, hasContent=${!!msg.content}, hasToolCalls=${!!msg.tool_calls}, toolCallId=${msg.tool_call_id || 'none'}`);
+      const toolCallId = typeof msg.tool_call_id === 'string' ? msg.tool_call_id : 'none';
+      this.outputChannel.appendLine(`  Message ${i + 1}: role=${msg.role}, hasContent=${!!msg.content}, hasToolCalls=${!!msg.tool_calls}, toolCallId=${toolCallId}`);
     }
 
     // Calculate token limits and truncate
