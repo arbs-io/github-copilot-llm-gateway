@@ -1,5 +1,17 @@
 # GitHub Copilot LLM Gateway
 
+![Visual Studio Marketplace Version](https://img.shields.io/visual-studio-marketplace/v/AndrewButson.github-copilot-llm-gateway)
+![.github/workflows/codeql-analysis](https://github.com/arbs-io/github-copilot-llm-gateway/actions/workflows/codeql-analysis.yml/badge.svg)
+![Visual Studio Marketplace Installs](https://img.shields.io/visual-studio-marketplace/i/AndrewButson.github-copilot-llm-gateway)
+[![GitHub issues](https://img.shields.io/github/issues/arbs-io/github-copilot-llm-gateway.svg)](https://github.com/arbs-io/github-copilot-llm-gateway/issues)
+![Visual Studio Marketplace Rating](https://img.shields.io/visual-studio-marketplace/r/AndrewButson.github-copilot-llm-gateway)
+
+[![Maintainability Rating](https://sonarcloud.io/api/project_badges/measure?project=arbs-io_github-copilot-llm-gateway&metric=sqale_rating)](https://sonarcloud.io/summary/new_code?id=arbs-io_github-copilot-llm-gateway)
+[![Security Rating](https://sonarcloud.io/api/project_badges/measure?project=arbs-io_github-copilot-llm-gateway&metric=security_rating)](https://sonarcloud.io/summary/new_code?id=arbs-io_github-copilot-llm-gateway)
+[![Reliability Rating](https://sonarcloud.io/api/project_badges/measure?project=arbs-io_github-copilot-llm-gateway&metric=reliability_rating)](https://sonarcloud.io/summary/new_code?id=arbs-io_github-copilot-llm-gateway)
+[![Bugs](https://sonarcloud.io/api/project_badges/measure?project=arbs-io_github-copilot-llm-gateway&metric=bugs)](https://sonarcloud.io/summary/new_code?id=arbs-io_github-copilot-llm-gateway)
+[![Vulnerabilities](https://sonarcloud.io/api/project_badges/measure?project=arbs-io_github-copilot-llm-gateway&metric=vulnerabilities)](https://sonarcloud.io/summary/new_code?id=arbs-io_github-copilot-llm-gateway)
+
 Extend GitHub Copilot with open-source language models running on your own infrastructure.
 
 ## About
@@ -61,25 +73,42 @@ Verify the server is running:
 curl http://localhost:42069/v1/models
 ```
 
-### Step 3: Configure the Server URL
+### Step 3: Configure the Extension
 
 1. Open VS Code **Settings** (`Ctrl+,` / `Cmd+,`)
 2. Search for **"Copilot LLM Gateway"**
 3. Set **Server URL** to your inference server address (e.g., `http://localhost:8000`)
+4. Configure other settings as needed (token limits, tool calling, etc.)
 
-![screenshot-settings.png](assets/screenshot-settings.png)
+![Extension settings panel showing all configuration options](assets/screenshot-settings.png)
+
+> **Note**: If the server is unreachable, you'll see an error notification with a quick link to settings:
+>
+> ![Connection error notification](assets/screenshot-notification.png)
 
 ### Step 4: Select Your Model in Copilot Chat
 
 1. Open **GitHub Copilot Chat** (`Ctrl+Alt+I` / `Cmd+Alt+I`)
 2. Click the **model selector** dropdown at the bottom of the chat panel
-3. Click **"Manage Models..."**
-4. Under **"LLM Gateway"**, enable the models you want to use
-5. Select your LLM Gateway model from the dropdown
+3. Click **"Manage Models..."** to open the model manager
 
-<!-- Screenshot: Model selector showing Gateway models -->
+![Model manager showing LLM Gateway alongside other providers](assets/screenshot-manage-language-model.png)
 
-Your self-hosted models now appear alongside the default Copilot models. Select one to start chatting!
+4. Select **"LLM Gateway"** from the provider list
+5. Enable the models you want to use from your inference server
+
+![Selecting Qwen3-8B from the model list](assets/screenshot-use-qwen3.png)
+
+### Step 5: Start Chatting
+
+Your self-hosted models now appear alongside the default Copilot models. Select one and start coding with AI assistance!
+
+![Copilot Chat using Qwen3-8B with full agentic capabilities](assets/screenshot-chat.png)
+
+The model integrates seamlessly with Copilot's features including:
+- **Agent mode** for autonomous coding tasks
+- **Tool calling** for file operations, terminal commands, and more
+- **Context awareness** with `@workspace` and file references
 
 ## Configuration
 
