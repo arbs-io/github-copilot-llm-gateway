@@ -15,6 +15,43 @@ interface StreamingToolCall {
 }
 
 /**
+ * State for tracking tool calls during streaming
+ */
+interface ToolCallState {
+  toolCallsByIndex: Map<number, StreamingToolCall>;
+  finalizedIndices: Set<number>;
+  requestId: string;
+  toolCallCounter: number;
+}
+
+/**
+ * Parsed SSE chunk data
+ */
+interface ParsedChunk {
+  delta?: {
+    content?: string;
+    tool_calls?: Array<{
+      index?: number;
+      id?: string;
+      function?: { name?: string; arguments?: string };
+    }>;
+    function_call?: { name?: string; arguments?: string };
+  };
+  message?: {
+    content?: string;
+    text?: string;
+    tool_calls?: Array<{
+      index?: number;
+      id?: string;
+      function?: { name?: string; arguments?: string };
+    }>;
+    function_call?: { name?: string; arguments?: string };
+  };
+  finishReason?: string;
+  id?: string;
+}
+
+/**
  * HTTP client for vLLM server (OpenAI API compatible)
  */
 export class VLLMClient {
@@ -57,6 +94,223 @@ export class VLLMClient {
   }
 
   /**
+   * Create initial tool call tracking state
+   */
+  private createToolCallState(): ToolCallState {
+    return {
+      toolCallsByIndex: new Map<number, StreamingToolCall>(),
+      finalizedIndices: new Set<number>(),
+      requestId: `req_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
+      toolCallCounter: 0,
+    };
+  }
+
+  /**
+   * Process a single streamed tool call delta
+   */
+  private processToolCallDelta(
+    tc: { index?: number; id?: string; function?: { name?: string; arguments?: string } },
+    state: ToolCallState
+  ): void {
+    const index = tc.index ?? state.toolCallCounter++;
+    const existing = state.toolCallsByIndex.get(index);
+
+    if (existing) {
+      if (tc.id) { existing.id = tc.id; }
+      if (tc.function?.name) { existing.name = tc.function.name; }
+      if (tc.function?.arguments) { existing.arguments += tc.function.arguments; }
+    } else {
+      state.toolCallsByIndex.set(index, {
+        id: tc.id || '',
+        name: tc.function?.name || '',
+        arguments: tc.function?.arguments || '',
+      });
+    }
+  }
+
+  /**
+   * Process legacy function_call format
+   */
+  private processLegacyFunctionCall(
+    functionCall: { name?: string; arguments?: string },
+    parsedId: string,
+    state: ToolCallState
+  ): void {
+    const index = 0;
+    const existing = state.toolCallsByIndex.get(index);
+
+    if (existing) {
+      if (functionCall.name) { existing.name = functionCall.name; }
+      if (functionCall.arguments) { existing.arguments += functionCall.arguments; }
+    } else {
+      state.toolCallsByIndex.set(index, {
+        id: parsedId || '',
+        name: functionCall.name || '',
+        arguments: functionCall.arguments || '',
+      });
+    }
+  }
+
+  /**
+   * Finalize all pending tool calls
+   */
+  private finalizeToolCalls(state: ToolCallState): StreamingToolCall[] {
+    const finishedToolCalls: StreamingToolCall[] = [];
+
+    for (const [index, tc] of state.toolCallsByIndex.entries()) {
+      if (!state.finalizedIndices.has(index)) {
+        state.finalizedIndices.add(index);
+        if (!tc.id) {
+          tc.id = `call_${state.requestId}_${index}`;
+        }
+        finishedToolCalls.push({ ...tc });
+      }
+    }
+
+    return finishedToolCalls;
+  }
+
+  /**
+   * Process delta format from streaming response
+   */
+  private processDeltaFormat(
+    parsed: ParsedChunk,
+    state: ToolCallState
+  ): { content: string; finishedToolCalls: StreamingToolCall[] } {
+    const delta = parsed.delta!;
+    const finishedToolCalls: StreamingToolCall[] = [];
+
+    // Handle streamed tool_calls
+    if (Array.isArray(delta.tool_calls)) {
+      for (const tc of delta.tool_calls) {
+        this.processToolCallDelta(tc, state);
+      }
+    }
+
+    // Handle legacy function_call format
+    if (delta.function_call) {
+      this.processLegacyFunctionCall(delta.function_call, parsed.id || '', state);
+    }
+
+    // Check if tool calls are complete
+    if (parsed.finishReason === 'tool_calls' || parsed.finishReason === 'function_call') {
+      finishedToolCalls.push(...this.finalizeToolCalls(state));
+    }
+
+    return { content: delta.content || '', finishedToolCalls };
+  }
+
+  /**
+   * Process non-delta (final) message format
+   */
+  private processMessageFormat(
+    parsed: ParsedChunk,
+    state: ToolCallState
+  ): { content: string; finishedToolCalls: StreamingToolCall[] } {
+    const message = parsed.message!;
+    const finishedToolCalls: StreamingToolCall[] = [];
+
+    // Handle complete tool_calls array
+    if (Array.isArray(message.tool_calls)) {
+      for (let i = 0; i < message.tool_calls.length; i++) {
+        const tc = message.tool_calls[i];
+        const index = tc.index ?? i;
+        if (!state.finalizedIndices.has(index)) {
+          state.finalizedIndices.add(index);
+          finishedToolCalls.push({
+            id: tc.id || `call_${state.requestId}_${index}`,
+            name: tc.function?.name || '',
+            arguments: tc.function?.arguments || '',
+          });
+        }
+      }
+    }
+
+    // Handle legacy function_call format
+    if (message.function_call && !state.finalizedIndices.has(0)) {
+      state.finalizedIndices.add(0);
+      finishedToolCalls.push({
+        id: parsed.id || `call_${state.requestId}_0`,
+        name: message.function_call.name || '',
+        arguments: message.function_call.arguments || '',
+      });
+    }
+
+    return { content: message.content || message.text || '', finishedToolCalls };
+  }
+
+  /**
+   * Parse a raw SSE data string into structured chunk data
+   */
+  private parseSSEData(data: string): ParsedChunk | null {
+    try {
+      const parsed = JSON.parse(data);
+      return {
+        delta: parsed.choices?.[0]?.delta,
+        message: parsed.choices?.[0]?.message,
+        finishReason: parsed.choices?.[0]?.finish_reason,
+        id: parsed.id,
+      };
+    } catch {
+      console.error('Failed to parse SSE chunk:', data);
+      return null;
+    }
+  }
+
+  /**
+   * Process a single SSE line and return yield data if applicable
+   */
+  private processSSELine(
+    line: string,
+    state: ToolCallState
+  ): { content: string; tool_calls: StreamingToolCall[]; finished_tool_calls: StreamingToolCall[] } | null {
+    const trimmed = line.trim();
+
+    if (trimmed === '' || trimmed === 'data: [DONE]') {
+      return null;
+    }
+
+    if (!trimmed.startsWith('data: ')) {
+      return null;
+    }
+
+    const data = trimmed.slice(6);
+    const parsed = this.parseSSEData(data);
+    if (!parsed) { return null; }
+
+    if (parsed.delta) {
+      const { content, finishedToolCalls } = this.processDeltaFormat(parsed, state);
+      return { content, tool_calls: [], finished_tool_calls: finishedToolCalls };
+    }
+
+    if (parsed.message) {
+      const { content, finishedToolCalls } = this.processMessageFormat(parsed, state);
+      return { content, tool_calls: [], finished_tool_calls: finishedToolCalls };
+    }
+
+    return null;
+  }
+
+  /**
+   * Get remaining unfinalised tool calls
+   */
+  private getRemainingToolCalls(state: ToolCallState): StreamingToolCall[] {
+    const remaining: StreamingToolCall[] = [];
+
+    for (const [index, tc] of state.toolCallsByIndex.entries()) {
+      if (!state.finalizedIndices.has(index) && (tc.name || tc.arguments)) {
+        state.finalizedIndices.add(index);
+        if (!tc.id) {
+          tc.id = `call_${state.requestId}_${index}`;
+        }
+        remaining.push({ ...tc });
+      }
+    }
+
+    return remaining;
+  }
+
+  /**
    * Stream chat completions from /v1/chat/completions endpoint
    *
    * IMPORTANT: Tool calls are tracked by INDEX during streaming, not by ID.
@@ -66,28 +320,15 @@ export class VLLMClient {
   public async *streamChatCompletion(
     request: OpenAIChatCompletionRequest,
     cancellationToken: vscode.CancellationToken
-  ): AsyncGenerator<{ content: string; tool_calls: StreamingToolCall[]; finished_tool_calls: StreamingToolCall[]; }, void, unknown> {
+  ): AsyncGenerator<{ content: string; tool_calls: StreamingToolCall[]; finished_tool_calls: StreamingToolCall[] }, void, unknown> {
     const url = `${this.config.serverUrl}/v1/chat/completions`;
-
-    // Track tool calls by index (not id) since id may come in later chunks
-    const toolCallsByIndex = new Map<number, StreamingToolCall>();
-    // Track which indices have been finalized
-    const finalizedIndices = new Set<number>();
-    // Request ID for generating fallback tool call IDs
-    const requestId = `req_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-    let toolCallCounter = 0;
+    const state = this.createToolCallState();
 
     try {
       const response = await this.fetch(url, {
         method: 'POST',
-        headers: {
-          ...this.getHeaders(),
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          ...request,
-          stream: true,
-        }),
+        headers: { ...this.getHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...request, stream: true }),
       });
 
       if (!response.ok) {
@@ -104,175 +345,28 @@ export class VLLMClient {
       let buffer = '';
 
       while (true) {
-        // Check for cancellation
         if (cancellationToken.isCancellationRequested) {
           reader.cancel();
           break;
         }
 
         const { done, value } = await reader.read();
-
-        if (done) {
-          break;
-        }
+        if (done) { break; }
 
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split('\n');
-
-        // Keep the last incomplete line in the buffer
         buffer = lines.pop() || '';
 
         for (const line of lines) {
-          const trimmed = line.trim();
-
-          if (trimmed === '' || trimmed === 'data: [DONE]') {
-            continue;
-          }
-
-          if (trimmed.startsWith('data: ')) {
-            const data = trimmed.slice(6);
-
-            try {
-              const parsed: any = JSON.parse(data);
-              const finishedToolCalls: StreamingToolCall[] = [];
-
-              // Delta streaming format (incremental tokens / function call parts)
-              const delta = parsed.choices?.[0]?.delta;
-              const finishReason = parsed.choices?.[0]?.finish_reason;
-
-              if (delta) {
-                // Handle streamed tool_calls (OpenAI format with index)
-                if (Array.isArray(delta.tool_calls) && delta.tool_calls.length > 0) {
-                  for (const tc of delta.tool_calls) {
-                    // Use index to track tool calls (critical fix!)
-                    const index = tc.index ?? toolCallCounter++;
-
-                    const existing = toolCallsByIndex.get(index);
-                    if (existing) {
-                      // Accumulate: update id/name if provided, append arguments
-                      if (tc.id) {
-                        existing.id = tc.id;
-                      }
-                      if (tc.function?.name) {
-                        existing.name = tc.function.name;
-                      }
-                      if (tc.function?.arguments) {
-                        existing.arguments += tc.function.arguments;
-                      }
-                    } else {
-                      // New tool call at this index
-                      toolCallsByIndex.set(index, {
-                        id: tc.id || '',
-                        name: tc.function?.name || '',
-                        arguments: tc.function?.arguments || '',
-                      });
-                    }
-                  }
-                }
-
-                // Handle legacy function_call format (single function call)
-                if (delta.function_call) {
-                  const index = 0; // Legacy format only supports one call
-                  const existing = toolCallsByIndex.get(index);
-                  if (existing) {
-                    if (delta.function_call.name) {
-                      existing.name = delta.function_call.name;
-                    }
-                    if (delta.function_call.arguments) {
-                      existing.arguments += delta.function_call.arguments;
-                    }
-                  } else {
-                    toolCallsByIndex.set(index, {
-                      id: parsed.id || '',
-                      name: delta.function_call.name || '',
-                      arguments: delta.function_call.arguments || '',
-                    });
-                  }
-                }
-
-                // Check if we hit a finish reason indicating tool calls are complete
-                if (finishReason === 'tool_calls' || finishReason === 'function_call') {
-                  // Finalize all accumulated tool calls
-                  for (const [index, tc] of toolCallsByIndex.entries()) {
-                    if (!finalizedIndices.has(index)) {
-                      finalizedIndices.add(index);
-                      // Generate fallback ID if none provided
-                      if (!tc.id) {
-                        tc.id = `call_${requestId}_${index}`;
-                      }
-                      finishedToolCalls.push({ ...tc });
-                    }
-                  }
-                }
-
-                yield {
-                  content: delta.content || '',
-                  tool_calls: [], // Raw incremental updates no longer yielded
-                  finished_tool_calls: finishedToolCalls,
-                };
-              } else {
-                // Non-delta (final) message format - some models send complete message
-                const message = parsed.choices?.[0]?.message;
-                if (message) {
-                  // Handle complete tool_calls array
-                  if (Array.isArray(message.tool_calls) && message.tool_calls.length > 0) {
-                    for (let i = 0; i < message.tool_calls.length; i++) {
-                      const tc = message.tool_calls[i];
-                      const index = tc.index ?? i;
-                      if (!finalizedIndices.has(index)) {
-                        finalizedIndices.add(index);
-                        finishedToolCalls.push({
-                          id: tc.id || `call_${requestId}_${index}`,
-                          name: tc.function?.name || '',
-                          arguments: tc.function?.arguments || '',
-                        });
-                      }
-                    }
-                  }
-
-                  // Handle legacy function_call format
-                  if (message.function_call && !finalizedIndices.has(0)) {
-                    finalizedIndices.add(0);
-                    finishedToolCalls.push({
-                      id: parsed.id || `call_${requestId}_0`,
-                      name: message.function_call.name || '',
-                      arguments: message.function_call.arguments || '',
-                    });
-                  }
-
-                  const content = message.content || message.text || '';
-                  yield {
-                    content,
-                    tool_calls: [],
-                    finished_tool_calls: finishedToolCalls,
-                  };
-                }
-              }
-            } catch (error) {
-              console.error('Failed to parse SSE chunk:', error, 'Data:', data);
-            }
-          }
+          const result = this.processSSELine(line, state);
+          if (result) { yield result; }
         }
       }
 
-      // After stream ends, finalize any remaining tool calls that weren't explicitly finished
-      const remainingToolCalls: StreamingToolCall[] = [];
-      for (const [index, tc] of toolCallsByIndex.entries()) {
-        if (!finalizedIndices.has(index) && (tc.name || tc.arguments)) {
-          finalizedIndices.add(index);
-          if (!tc.id) {
-            tc.id = `call_${requestId}_${index}`;
-          }
-          remainingToolCalls.push({ ...tc });
-        }
-      }
-
-      if (remainingToolCalls.length > 0) {
-        yield {
-          content: '',
-          tool_calls: [],
-          finished_tool_calls: remainingToolCalls,
-        };
+      // Finalize any remaining tool calls
+      const remaining = this.getRemainingToolCalls(state);
+      if (remaining.length > 0) {
+        yield { content: '', tool_calls: [], finished_tool_calls: remaining };
       }
     } catch (error) {
       if (error instanceof Error) {
