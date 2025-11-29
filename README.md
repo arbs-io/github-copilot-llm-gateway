@@ -65,9 +65,9 @@ curl http://localhost:42069/v1/models
 
 1. Open VS Code **Settings** (`Ctrl+,` / `Cmd+,`)
 2. Search for **"Copilot LLM Gateway"**
-3. Set **Server URL** to your inference server address (e.g., `http://localhost:42069`)
+3. Set **Server URL** to your inference server address (e.g., `http://localhost:8000`)
 
-<!-- Screenshot: Settings page with serverUrl highlighted -->
+![screenshot-settings.png](assets/screenshot-settings.png)
 
 ### Step 4: Select Your Model in Copilot Chat
 

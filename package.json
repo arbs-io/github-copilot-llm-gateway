@@ -11,6 +11,9 @@
     "type": "git",
     "url": "https://github.com/arbs-io/github-copilot-llm-gateway.git"
   },
+  "sponsor": {
+    "url": "https://github.com/sponsors/arbs-io"
+  },
   "engines": {
     "vscode": "^1.106.0"
   },
@@ -26,15 +29,15 @@
   "categories": [
     "AI",
     "Machine Learning",
-    "Other"
+    "Chat",
+    "Programming Languages"
   ],
   "keywords": [
     "copilot",
     "vllm",
-    "llm",
-    "language model",
-    "ai",
-    "chat"
+    "Ollama",
+    "llama.cpp",
+    "LocalAI"
   ],
   "activationEvents": [
     "onStartupFinished"
@@ -113,7 +116,7 @@
   "devDependencies": {
     "@types/node": "^24.10.1",
     "@types/vscode": "^1.106.0",
-    "@typescript-eslint/eslint-plugin": "^8.46.3",
+    "@typescript-eslint/eslint-plugin": "^8.48.0",
     "@typescript-eslint/parser": "^8.48.0",
     "@vscode/vsce": "^3.7.1",
     "esbuild": "^0.27.0",
