@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { GatewayClient } from './client';
 import { GatewayConfig, OpenAIChatCompletionRequest } from './types';
+import { ThinkingParser } from './thinking';
 
 /**
  * Language model provider for OpenAI-compatible inference servers
@@ -372,16 +373,42 @@ export class GatewayProvider implements vscode.LanguageModelChatProvider {
     this.outputChannel.appendLine(`Streaming chat completion...`);
     let totalContent = '';
     let totalToolCalls = 0;
+    let totalTextParts = 0;
+    let hadThinking = false;
+    const parser = new ThinkingParser();
+    let inReasoningField = false;
 
     for await (const chunk of this.client.streamChatCompletion(requestOptions, token)) {
       if (token.isCancellationRequested) {
         break;
       }
 
-      // Report text content immediately
+      // reasoning_content field (LM Studio / DeepSeek-R1 structured output)
+      if (chunk.reasoning_content) {
+        hadThinking = true;
+        inReasoningField = true;
+        progress.report(new vscode.LanguageModelThinkingPart(chunk.reasoning_content));
+      }
+
+      // text content — may contain raw <thinking> tags
       if (chunk.content) {
+        // Close the structured reasoning field when text content starts
+        if (inReasoningField) {
+          inReasoningField = false;
+          progress.report(new vscode.LanguageModelThinkingPart('', '', { vscode_reasoning_done: true }));
+        }
         totalContent += chunk.content;
-        progress.report(new vscode.LanguageModelTextPart(chunk.content));
+        for (const piece of parser.process(chunk.content)) {
+          if (piece.t === 'T') {
+            hadThinking = true;
+            progress.report(new vscode.LanguageModelThinkingPart(piece.c));
+          } else if (piece.t === 'E') {
+            progress.report(new vscode.LanguageModelThinkingPart('', '', { vscode_reasoning_done: true }));
+          } else if (piece.c) {
+            totalTextParts++;
+            progress.report(new vscode.LanguageModelTextPart(piece.c));
+          }
+        }
       }
 
       // Process finished tool calls (fully accumulated by client)
@@ -391,13 +418,12 @@ export class GatewayProvider implements vscode.LanguageModelChatProvider {
           this.outputChannel.appendLine(`Tool call received: id=${toolCall.id}, name=${toolCall.name}`);
           this.outputChannel.appendLine(`  Raw arguments: ${toolCall.arguments.substring(0, 500)}${toolCall.arguments.length > 500 ? '...' : ''}`);
 
-          // Parse arguments with repair capability
           let args = this.tryRepairJson(toolCall.arguments) as Record<string, unknown> | null;
 
           if (args === null) {
             this.outputChannel.appendLine(`ERROR: Failed to parse tool call arguments for ${toolCall.name}`);
             this.outputChannel.appendLine(`  Full arguments: ${toolCall.arguments}`);
-            args = {}; // Fallback to empty args
+            args = {};
           }
 
           progress.report(new vscode.LanguageModelToolCallPart(
@@ -409,7 +435,36 @@ export class GatewayProvider implements vscode.LanguageModelChatProvider {
       }
     }
 
-    this.outputChannel.appendLine(`Completed chat request, received ${totalContent.length} characters, ${totalToolCalls} tool calls`);
+    // Flush any remaining buffered content from the parser
+    let thinkingForceClosed = false;
+    for (const piece of parser.flush()) {
+      if (piece.t === 'T') {
+        hadThinking = true;
+        progress.report(new vscode.LanguageModelThinkingPart(piece.c));
+      } else if (piece.t === 'E') {
+        thinkingForceClosed = true;
+        progress.report(new vscode.LanguageModelThinkingPart('', '', { vscode_reasoning_done: true }));
+      } else if (piece.c) {
+        totalTextParts++;
+        progress.report(new vscode.LanguageModelTextPart(piece.c));
+      }
+    }
+
+    if (inReasoningField) {
+      progress.report(new vscode.LanguageModelThinkingPart('', '', { vscode_reasoning_done: true }));
+    }
+
+    // If thinking was force-closed (stream ended inside a think block, e.g. token limit
+    // reached during thinking), emit a fallback text part so Copilot Chat shows the response.
+    if (thinkingForceClosed && totalTextParts === 0 && totalToolCalls === 0) {
+      progress.report(new vscode.LanguageModelTextPart(
+        '*(The model ran out of output tokens while thinking and could not produce a response. ' +
+        'Try increasing the context length or max output tokens in LM Studio, ' +
+        'or disable thinking for this model.)*'
+      ));
+    }
+
+    this.outputChannel.appendLine(`Completed chat request, received ${totalContent.length} chars, ${totalTextParts} text parts, ${totalToolCalls} tool calls`);
   }
 
   /**
@@ -754,13 +809,39 @@ export class GatewayProvider implements vscode.LanguageModelChatProvider {
     try {
       let totalContent = '';
       let totalToolCalls = 0;
+      let totalTextParts = 0;
+      let hadThinking = false;
+      const parser = new ThinkingParser();
+      let inReasoningField = false;
 
       for await (const chunk of this.client.streamChatCompletion(requestOptions as unknown as OpenAIChatCompletionRequest, token)) {
         if (token.isCancellationRequested) { break; }
 
+        // reasoning_content field (LM Studio / DeepSeek-R1 structured output)
+        if (chunk.reasoning_content) {
+          hadThinking = true;
+          inReasoningField = true;
+          progress.report(new vscode.LanguageModelThinkingPart(chunk.reasoning_content));
+        }
+
+        // text content — may contain raw <thinking> tags
         if (chunk.content) {
+          if (inReasoningField) {
+            inReasoningField = false;
+            progress.report(new vscode.LanguageModelThinkingPart('', '', { vscode_reasoning_done: true }));
+          }
           totalContent += chunk.content;
-          progress.report(new vscode.LanguageModelTextPart(chunk.content));
+          for (const piece of parser.process(chunk.content)) {
+            if (piece.t === 'T') {
+              hadThinking = true;
+              progress.report(new vscode.LanguageModelThinkingPart(piece.c));
+            } else if (piece.t === 'E') {
+              progress.report(new vscode.LanguageModelThinkingPart('', '', { vscode_reasoning_done: true }));
+            } else if (piece.c) {
+              totalTextParts++;
+              progress.report(new vscode.LanguageModelTextPart(piece.c));
+            }
+          }
         }
 
         if (chunk.finished_tool_calls?.length) {
@@ -771,9 +852,39 @@ export class GatewayProvider implements vscode.LanguageModelChatProvider {
         }
       }
 
-      this.outputChannel.appendLine(`Completed chat request, received ${totalContent.length} characters, ${totalToolCalls} tool calls`);
+      // Flush any remaining buffered content from the parser
+      let thinkingForceClosed = false;
+      for (const piece of parser.flush()) {
+        if (piece.t === 'T') {
+          hadThinking = true;
+          progress.report(new vscode.LanguageModelThinkingPart(piece.c));
+        } else if (piece.t === 'E') {
+          thinkingForceClosed = true;
+          progress.report(new vscode.LanguageModelThinkingPart('', '', { vscode_reasoning_done: true }));
+        } else if (piece.c) {
+          totalTextParts++;
+          progress.report(new vscode.LanguageModelTextPart(piece.c));
+        }
+      }
 
-      if (totalContent.length === 0 && totalToolCalls === 0) {
+      if (inReasoningField) {
+        progress.report(new vscode.LanguageModelThinkingPart('', '', { vscode_reasoning_done: true }));
+      }
+
+      // If thinking was force-closed (stream ended inside a think block, e.g. token limit
+      // reached during thinking), emit a fallback text part so Copilot Chat shows the response.
+      if (thinkingForceClosed && totalTextParts === 0 && totalToolCalls === 0) {
+        progress.report(new vscode.LanguageModelTextPart(
+          '*(The model ran out of output tokens while thinking and could not produce a response. ' +
+          'Try increasing the context length or max output tokens in LM Studio, ' +
+          'or disable thinking for this model.)*'
+        ));
+      }
+
+      this.outputChannel.appendLine(`Completed chat request, received ${totalContent.length} chars, ${totalTextParts} text parts, ${totalToolCalls} tool calls`);
+
+      // Only flag empty response if no content, no tool calls AND no thinking AND no fallback was emitted.
+      if (totalContent.length === 0 && totalToolCalls === 0 && !hadThinking && !thinkingForceClosed) {
         await this.handleEmptyResponse(model, inputText, openAIMessages.length, requestOptions.tools ? (requestOptions.tools as unknown[]).length : 0, token, progress);
       }
     } catch (error) {
