@@ -88,6 +88,7 @@ export interface GatewayConfig {
   requestTimeout: number;
   defaultMaxTokens: number;
   defaultMaxOutputTokens: number;
+  enableImageInput: boolean;
   enableToolCalling: boolean;
   parallelToolCalling: boolean;
   agentTemperature: number;

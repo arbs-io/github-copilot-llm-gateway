@@ -76,15 +76,28 @@ export class GatewayProvider implements vscode.LanguageModelChatProvider {
       const role = this.mapRole(msg.role);
       const toolResults: Record<string, unknown>[] = [];
       const toolCalls: Record<string, unknown>[] = [];
+      const userContent: ({ type: "text", text: string } | { type: "image_url", image_url: { url: string } })[] = [];
       let textContent = '';
 
       for (const part of msg.content) {
         if (part instanceof vscode.LanguageModelTextPart) {
+          userContent.push({ type: "text", text: part.value });
           textContent += part.value;
         } else if (part instanceof vscode.LanguageModelToolResultPart) {
           toolResults.push(this.convertToolResultPart(part));
         } else if (part instanceof vscode.LanguageModelToolCallPart) {
           toolCalls.push(this.convertToolCallPart(part));
+        } else if (part instanceof vscode.LanguageModelDataPart) {
+          if (this.config.enableImageInput) {
+            if (part.mimeType.startsWith('image/')) {
+              const base64Data = btoa(String.fromCharCode(...part.data));
+              const url = `data:${part.mimeType};base64,${base64Data}`;
+              userContent.push({ type: "image_url", image_url: { url } });
+              this.outputChannel.appendLine(`  Added image data part as base64 URL: mimeType=${part.mimeType}, size=${part.data.length} bytes, urlLength=${url.length}`);
+            }
+          } else {
+            this.outputChannel.appendLine(`  Skipping data part: mimeType=${part.mimeType}, size=${part.data.length} bytes. (Please enable github.copilot.llm-gateway.enableImageInput in settings)`);
+          }
         }
       }
 
@@ -92,6 +105,8 @@ export class GatewayProvider implements vscode.LanguageModelChatProvider {
         openAIMessages.push({ role: 'assistant', content: textContent || null, tool_calls: toolCalls });
       } else if (toolResults.length > 0) {
         openAIMessages.push(...toolResults);
+      } else if (userContent.length > 0) {
+        openAIMessages.push({ role, content: userContent });
       } else if (textContent) {
         openAIMessages.push({ role, content: textContent });
       }
@@ -432,7 +447,8 @@ export class GatewayProvider implements vscode.LanguageModelChatProvider {
           maxOutputTokens: this.config.defaultMaxOutputTokens,
           version: '1.0.0',
           capabilities: {
-            toolCalling: this.config.enableToolCalling
+            imageInput: this.config.enableImageInput,
+            toolCalling: this.config.enableToolCalling,
           },
         };
 
@@ -491,10 +507,12 @@ export class GatewayProvider implements vscode.LanguageModelChatProvider {
     const role = this.mapRole(msg.role);
     const toolResults: Record<string, unknown>[] = [];
     const toolCalls: Record<string, unknown>[] = [];
+    const userContent: ({ type: "text", text: string } | { type: "image_url", image_url: { url: string } })[] = [];
     let textContent = '';
 
     for (const part of msg.content) {
       if (part instanceof vscode.LanguageModelTextPart) {
+        userContent.push({ type: "text", text: part.value });
         textContent += part.value;
       } else if (part instanceof vscode.LanguageModelToolResultPart) {
         this.outputChannel.appendLine(`  Found tool result: callId=${part.callId}`);
@@ -502,6 +520,17 @@ export class GatewayProvider implements vscode.LanguageModelChatProvider {
       } else if (part instanceof vscode.LanguageModelToolCallPart) {
         this.outputChannel.appendLine(`  Found tool call: callId=${part.callId}, name=${part.name}`);
         toolCalls.push(this.convertToolCallPart(part));
+      } else if (part instanceof vscode.LanguageModelDataPart) {
+        if (this.config.enableImageInput) {
+          if (part.mimeType.startsWith('image/')) {
+            const base64Data = btoa(String.fromCharCode(...part.data));
+            const url = `data:${part.mimeType};base64,${base64Data}`;
+            userContent.push({ type: "image_url", image_url: { url } });
+            this.outputChannel.appendLine(`  Added image data part as base64 URL: mimeType=${part.mimeType}, size=${part.data.length} bytes, urlLength=${url.length}`);
+          }
+        } else {
+          this.outputChannel.appendLine(`  Skipping data part: mimeType=${part.mimeType}, size=${part.data.length} bytes. (Please enable github.copilot.llm-gateway.enableImageInput in settings)`);
+        }
       } else {
         this.processPartDuckTyped(part, toolResults, toolCalls);
       }
@@ -512,6 +541,8 @@ export class GatewayProvider implements vscode.LanguageModelChatProvider {
       result.push({ role: 'assistant', content: textContent || null, tool_calls: toolCalls });
     } else if (toolResults.length > 0) {
       result.push(...toolResults);
+    } else if (userContent.length > 0) {
+      result.push({ role, content: userContent });
     } else if (textContent) {
       result.push({ role, content: textContent });
     }
@@ -838,6 +869,7 @@ export class GatewayProvider implements vscode.LanguageModelChatProvider {
       requestTimeout: config.get<number>('requestTimeout', 60000),
       defaultMaxTokens: config.get<number>('defaultMaxTokens', 32768),
       defaultMaxOutputTokens: config.get<number>('defaultMaxOutputTokens', 4096),
+      enableImageInput: config.get<boolean>('enableImageInput', false),
       enableToolCalling: config.get<boolean>('enableToolCalling', true),
       parallelToolCalling: config.get<boolean>('parallelToolCalling', true),
       agentTemperature: config.get<number>('agentTemperature', 0),
