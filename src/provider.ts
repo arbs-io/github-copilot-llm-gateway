@@ -90,7 +90,7 @@ export class GatewayProvider implements vscode.LanguageModelChatProvider {
         } else if (part instanceof vscode.LanguageModelDataPart) {
           if (this.config.enableImageInput) {
             if (part.mimeType.startsWith('image/')) {
-              const base64Data = btoa(String.fromCharCode(...part.data));
+              const base64Data = btoa(String.fromCodePoint(...part.data));
               const url = `data:${part.mimeType};base64,${base64Data}`;
               userContent.push({ type: "image_url", image_url: { url } });
               this.outputChannel.appendLine(`  Added image data part as base64 URL: mimeType=${part.mimeType}, size=${part.data.length} bytes, urlLength=${url.length}`);
@@ -523,7 +523,7 @@ export class GatewayProvider implements vscode.LanguageModelChatProvider {
       } else if (part instanceof vscode.LanguageModelDataPart) {
         if (this.config.enableImageInput) {
           if (part.mimeType.startsWith('image/')) {
-            const base64Data = btoa(String.fromCharCode(...part.data));
+            const base64Data = btoa(String.fromCodePoint(...part.data));
             const url = `data:${part.mimeType};base64,${base64Data}`;
             userContent.push({ type: "image_url", image_url: { url } });
             this.outputChannel.appendLine(`  Added image data part as base64 URL: mimeType=${part.mimeType}, size=${part.data.length} bytes, urlLength=${url.length}`);
