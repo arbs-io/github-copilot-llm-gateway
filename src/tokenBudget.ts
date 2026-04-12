@@ -28,7 +28,7 @@ const NOOP_LOGGER: TokenLogger = () => {
  * so callers can pass OpenAI wire-format messages without a type cast.
  */
 export interface TokenEstimableMessage {
-  content?: string | unknown;
+  content?: string | object | null;
   tool_calls?: unknown;
 }
 

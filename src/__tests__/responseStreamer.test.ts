@@ -182,7 +182,7 @@ describe('streamResponse', () => {
     assert.equal(stats.totalToolCalls, 0);
     // Fallback message should be reported as text.
     const fallback = events.find(
-      (e) => e.kind === 'text' && e.value && e.value.includes('ran out of output tokens')
+      (e) => e.kind === 'text' && e.value?.includes('ran out of output tokens')
     );
     assert.ok(fallback, 'expected fallback text to be emitted');
   });
@@ -198,7 +198,7 @@ describe('streamResponse', () => {
     assert.equal(stats.thinkingForceClosed, true);
     assert.ok(stats.totalTextParts > 0);
     const fallback = events.find(
-      (e) => e.kind === 'text' && e.value && e.value.includes('ran out of output tokens')
+      (e) => e.kind === 'text' && e.value?.includes('ran out of output tokens')
     );
     assert.equal(fallback, undefined);
   });

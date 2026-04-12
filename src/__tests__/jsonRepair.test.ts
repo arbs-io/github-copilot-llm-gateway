@@ -14,7 +14,7 @@ describe('countChar', () => {
     assert.equal(countChar('a+b+c', '+'), 2);
     assert.equal(countChar('a[b]c[d]', '['), 2);
     assert.equal(countChar('a{b}', '{'), 1);
-    assert.equal(countChar('a\\b\\c', '\\'), 2);
+    assert.equal(countChar(String.raw`a\b\c`, '\\'), 2);
   });
 
   test('returns 0 for empty input', () => {

@@ -25,8 +25,8 @@ describe('encodeImageAsDataUrl', () => {
     // Round-trip via atob to confirm the bytes.
     const decoded = atob(encoded);
     assert.equal(decoded.length, 4);
-    assert.equal(decoded.charCodeAt(0), 1);
-    assert.equal(decoded.charCodeAt(3), 4);
+    assert.equal(decoded.codePointAt(0), 1);
+    assert.equal(decoded.codePointAt(3), 4);
   });
 });
 
