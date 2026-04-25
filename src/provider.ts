@@ -39,6 +39,30 @@ const MAX_TOOL_ARGS_LOG_LENGTH = 1000;
 const MAX_TOOL_DESCRIPTION_LOG_LENGTH = 100;
 
 /**
+ * Format a tool's description for the output channel: trim, truncate at
+ * MAX_TOOL_DESCRIPTION_LOG_LENGTH characters, and only append `...` when an
+ * actual truncation happened. Returns `'(none)'` when the tool didn't supply
+ * a description at all.
+ */
+function formatToolDescription(description: string | undefined): string {
+  if (!description) { return '(none)'; }
+  if (description.length <= MAX_TOOL_DESCRIPTION_LOG_LENGTH) { return description; }
+  return `${description.substring(0, MAX_TOOL_DESCRIPTION_LOG_LENGTH)}...`;
+}
+
+/**
+ * Map a `LanguageModelChatToolMode` enum value to a human-readable label for
+ * the output channel. The enum is numeric at runtime, so the raw `${toolMode}`
+ * was rendering as `0` / `1` and looked like a stray index.
+ */
+function describeToolMode(toolMode: vscode.LanguageModelChatToolMode | undefined): string {
+  if (toolMode === undefined) { return 'unset'; }
+  if (toolMode === vscode.LanguageModelChatToolMode.Required) { return 'required'; }
+  if (toolMode === vscode.LanguageModelChatToolMode.Auto) { return 'auto'; }
+  return String(toolMode);
+}
+
+/**
  * Setting keys that change the shape of the model list returned from the
  * server (and so require VS Code to re-request it). Other keys like
  * `agentTemperature` don't, so we don't want to fire the change event for
@@ -94,6 +118,7 @@ export class GatewayProvider implements vscode.LanguageModelChatProvider {
     this.client = new GatewayClient(this.config, (msg) => this.outputChannel.appendLine(msg));
 
     context.subscriptions.push(
+      this.outputChannel,
       this._onDidChangeLanguageModelChatInformation,
       vscode.workspace.onDidChangeConfiguration((e: vscode.ConfigurationChangeEvent) => {
         if (!e.affectsConfiguration('github.copilot.llm-gateway')) {
@@ -171,7 +196,11 @@ export class GatewayProvider implements vscode.LanguageModelChatProvider {
     this.modelFetchInFlight = inFlight;
     try {
       const result = await inFlight;
-      this.modelFetchLast = { at: Date.now(), result };
+      // Don't poison the cache with cancelled-empty results — the next caller
+      // should re-probe instead of seeing a stale empty list.
+      if (!token.isCancellationRequested) {
+        this.modelFetchLast = { at: Date.now(), result };
+      }
       return { models: result };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -235,22 +264,21 @@ export class GatewayProvider implements vscode.LanguageModelChatProvider {
       }
 
       const detail = describeModel(model);
-
-      return {
+      const info: vscode.LanguageModelChatInformation = {
         id: model.id,
         name: friendlyModelName(model.id),
         family: inferModelFamily(model.id),
         maxInputTokens,
         maxOutputTokens,
-        version: '1.0.0',
-        description: detail || undefined,
-        tooltip: detail ? `${model.id} — ${detail}` : model.id,
-        detail,
+        version: friendlyModelName(model.id),
         capabilities: {
           imageInput: this.config.enableImageInput,
           toolCalling: this.config.enableToolCalling,
         },
-      } as vscode.LanguageModelChatInformation;
+        ...(detail ? { description: detail, detail } : {}),
+        tooltip: detail ? `${model.id} — ${detail}` : model.id,
+      };
+      return info;
     });
 
     this.outputChannel.appendLine(
@@ -270,7 +298,9 @@ export class GatewayProvider implements vscode.LanguageModelChatProvider {
     token: vscode.CancellationToken
   ): Promise<void> {
     this.outputChannel.appendLine(`Sending chat request to model: ${model.id}`);
-    this.outputChannel.appendLine(`Tool mode: ${options.toolMode}, Tools: ${options.tools?.length || 0}`);
+    this.outputChannel.appendLine(
+      `Tool mode: ${describeToolMode(options.toolMode)}, Tools: ${options.tools?.length ?? 0}`
+    );
     this.outputChannel.appendLine(`Message count: ${messages.length}`);
 
     this.showWelcomeNotification(model.id);
@@ -315,7 +345,7 @@ export class GatewayProvider implements vscode.LanguageModelChatProvider {
 
     const { tools, schemas: toolSchemas } = this.buildToolsConfig(options);
     const hasTools = tools !== undefined && tools.length > 0;
-    const temperature = hasTools ? this.config.agentTemperature ?? 0 : DEFAULT_TEMPERATURE;
+    const temperature = hasTools ? this.config.agentTemperature : DEFAULT_TEMPERATURE;
 
     const requestOptions = buildChatRequest({
       model: model.id,
@@ -500,10 +530,14 @@ export class GatewayProvider implements vscode.LanguageModelChatProvider {
   // ---------- tool config + stream adapters ----------
 
   private mapToolChoice(toolMode: vscode.LanguageModelChatToolMode | undefined): ToolChoice | undefined {
-    if (toolMode === undefined) {
-      return undefined;
+    switch (toolMode) {
+      case vscode.LanguageModelChatToolMode.Required:
+        return 'required';
+      case vscode.LanguageModelChatToolMode.Auto:
+        return 'auto';
+      default:
+        return undefined;
     }
-    return toolMode === vscode.LanguageModelChatToolMode.Required ? 'required' : 'auto';
   }
 
   private buildToolsConfig(
@@ -520,7 +554,7 @@ export class GatewayProvider implements vscode.LanguageModelChatProvider {
     const tools: OpenAIToolDefinition[] = options.tools.map((tool) => {
       this.outputChannel.appendLine(`Tool: ${tool.name}`);
       this.outputChannel.appendLine(
-        `  Description: ${tool.description?.substring(0, MAX_TOOL_DESCRIPTION_LOG_LENGTH) || 'none'}...`
+        `  Description: ${formatToolDescription(tool.description)}`
       );
 
       const schema = tool.inputSchema as Record<string, unknown> | undefined;
@@ -680,8 +714,14 @@ export class GatewayProvider implements vscode.LanguageModelChatProvider {
       this.outputChannel.appendLine(`Stack trace: ${errorStack}`);
     }
 
+    // Be conservative — only treat the error as a tool-calling format error
+    // when the message contains a known tool-parser signal. The previous
+    // heuristic also matched on `unexpected tokens`, which appears in many
+    // unrelated errors and was triggering the "may not support tool calling"
+    // prompt incorrectly.
     const isToolError =
-      errorMessage.includes('HarmonyError') || errorMessage.includes('unexpected tokens');
+      errorMessage.includes('HarmonyError') ||
+      /tool[_ -]?call.*parse/i.test(errorMessage);
 
     if (isToolError) {
       this.outputChannel.appendLine('HINT: This appears to be a tool calling format error.');

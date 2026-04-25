@@ -10,7 +10,7 @@ declare module 'vscode' {
    * Copilot Chat renders this in a dedicated collapsible "Thinking" UI block.
    *
    * @param value   The thinking text for this chunk.
-   * @param id      Optional identifier for the thinking block (used for Anthropic extended thinking).
+   * @param id      Optional identifier for the thinking block.
    * @param metadata  Optional metadata. Pass `{ vscode_reasoning_done: true }` to close the block.
    */
   export class LanguageModelThinkingPart {
@@ -18,5 +18,16 @@ declare module 'vscode' {
     readonly id: string | undefined;
     readonly metadata: Record<string, unknown> | undefined;
     constructor(value: string, id?: string, metadata?: Record<string, unknown>);
+  }
+
+  /**
+   * Optional fields the Copilot Chat model picker renders if present.
+   * Not yet declared on `LanguageModelChatInformation` in the bundled
+   * `@types/vscode`; declared here so we don't need an unsafe cast.
+   */
+  interface LanguageModelChatInformation {
+    description?: string;
+    tooltip?: string;
+    detail?: string;
   }
 }
