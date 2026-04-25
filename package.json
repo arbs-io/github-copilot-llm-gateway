@@ -2,7 +2,7 @@
   "name": "github-copilot-llm-gateway",
   "displayName": "GitHub Copilot LLM Gateway",
   "description": "Connect GitHub Copilot to open-source models via vLLM or any OpenAI-compatible server",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "publisher": "AndrewButson",
   "icon": "assets/copilot-llm-gateway.png",
   "private": true,
@@ -51,13 +51,24 @@
     "languageModelChatProviders": [
       {
         "vendor": "copilot-llm-gateway",
-        "displayName": "LLM Gateway"
+        "displayName": "LLM Gateway",
+        "managementCommand": "github.copilot.llm-gateway.manage"
       }
     ],
     "commands": [
       {
+        "command": "github.copilot.llm-gateway.manage",
+        "title": "Configure Server",
+        "category": "GitHub Copilot LLM Gateway"
+      },
+      {
         "command": "github.copilot.llm-gateway.testConnection",
         "title": "Test Server Connection",
+        "category": "GitHub Copilot LLM Gateway"
+      },
+      {
+        "command": "github.copilot.llm-gateway.refreshModels",
+        "title": "Refresh Models",
         "category": "GitHub Copilot LLM Gateway"
       }
     ],
@@ -119,6 +130,12 @@
           "maximum": 2.0,
           "description": "Temperature for agent/tool calling mode (lower = more consistent tool call formatting). Set to 0.0 for best results with fine-tuned models.",
           "order": 9
+        },
+        "github.copilot.llm-gateway.verboseLogging": {
+          "type": "boolean",
+          "default": false,
+          "description": "When enabled, the full chat request body (including messages and tool args) is written to the output channel. Keep disabled unless you are reproducing an issue — captured logs may contain conversation content from the user's current editor.",
+          "order": 10
         }
       }
     }
@@ -126,11 +143,11 @@
   "devDependencies": {
     "@types/node": "^25.6.0",
     "@types/vscode": "^1.106.0",
-    "@typescript-eslint/eslint-plugin": "^8.58.1",
-    "@typescript-eslint/parser": "^8.58.1",
-    "@vscode/vsce": "^3.7.1",
+    "@typescript-eslint/eslint-plugin": "^8.59.0",
+    "@typescript-eslint/parser": "^8.59.0",
+    "@vscode/vsce": "^3.9.1",
     "esbuild": "^0.28.0",
-    "eslint": "^10.2.0",
-    "typescript": "^6.0.2"
+    "eslint": "^10.2.1",
+    "typescript": "^6.0.3"
   }
 }

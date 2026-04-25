@@ -50,7 +50,7 @@ describe('streamResponse', () => {
       resolveToolCallArgs: identityArgs,
     });
     assert.equal(stats.totalTextParts, 1);
-    assert.equal(stats.totalContent, 'hello');
+    assert.equal(stats.totalContentLength, 5);
     assert.equal(events.length, 1);
     assert.equal(events[0].kind, 'text');
     assert.equal(events[0].value, 'hello');
@@ -211,7 +211,7 @@ describe('streamResponse', () => {
       isCancelled: () => false,
       resolveToolCallArgs: identityArgs,
     });
-    assert.equal(stats.totalContent, '');
+    assert.equal(stats.totalContentLength, 0);
     assert.equal(stats.totalTextParts, 0);
     assert.equal(stats.totalToolCalls, 0);
     assert.equal(stats.hadThinking, false);
@@ -224,7 +224,7 @@ describe('isEmptyStreamResult', () => {
   test('true for zeroed stats', () => {
     assert.equal(
       isEmptyStreamResult({
-        totalContent: '',
+        totalContentLength: 0,
         totalTextParts: 0,
         totalToolCalls: 0,
         hadThinking: false,
@@ -237,7 +237,7 @@ describe('isEmptyStreamResult', () => {
   test('false when there is content', () => {
     assert.equal(
       isEmptyStreamResult({
-        totalContent: 'hi',
+        totalContentLength: 2,
         totalTextParts: 1,
         totalToolCalls: 0,
         hadThinking: false,
@@ -250,7 +250,7 @@ describe('isEmptyStreamResult', () => {
   test('false when there are tool calls', () => {
     assert.equal(
       isEmptyStreamResult({
-        totalContent: '',
+        totalContentLength: 0,
         totalTextParts: 0,
         totalToolCalls: 1,
         hadThinking: false,
@@ -263,7 +263,7 @@ describe('isEmptyStreamResult', () => {
   test('false when thinking occurred', () => {
     assert.equal(
       isEmptyStreamResult({
-        totalContent: '',
+        totalContentLength: 0,
         totalTextParts: 0,
         totalToolCalls: 0,
         hadThinking: true,
@@ -276,7 +276,7 @@ describe('isEmptyStreamResult', () => {
   test('false when thinking was force-closed', () => {
     assert.equal(
       isEmptyStreamResult({
-        totalContent: '',
+        totalContentLength: 0,
         totalTextParts: 0,
         totalToolCalls: 0,
         hadThinking: false,

@@ -24,7 +24,8 @@ export interface StreamChunk {
 }
 
 export interface StreamStats {
-  totalContent: string;
+  /** Number of content characters observed across all chunks. */
+  totalContentLength: number;
   totalToolCalls: number;
   totalTextParts: number;
   hadThinking: boolean;
@@ -104,7 +105,7 @@ function processStreamChunk(
       inReasoningField = false;
       reporter.reportThinkingDone();
     }
-    stats.totalContent += chunk.content;
+    stats.totalContentLength += chunk.content.length;
     for (const piece of parser.process(chunk.content)) {
       reportParserPiece(piece, reporter, stats, false);
     }
@@ -130,7 +131,7 @@ export async function streamResponse(params: StreamResponseParams): Promise<Stre
   const { chunks, reporter, isCancelled, resolveToolCallArgs } = params;
 
   const stats: StreamStats = {
-    totalContent: '',
+    totalContentLength: 0,
     totalToolCalls: 0,
     totalTextParts: 0,
     hadThinking: false,
@@ -177,7 +178,7 @@ export async function streamResponse(params: StreamResponseParams): Promise<Stre
  */
 export function isEmptyStreamResult(stats: StreamStats): boolean {
   return (
-    stats.totalContent.length === 0 &&
+    stats.totalContentLength === 0 &&
     stats.totalToolCalls === 0 &&
     !stats.hadThinking &&
     !stats.thinkingForceClosed

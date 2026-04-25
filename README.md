@@ -130,10 +130,10 @@ Configure the extension through VS Code Settings (`Ctrl+,` / `Cmd+,`) → search
 
 ### Model Settings
 
-| Setting                       | Default | Description                                                           |
-| ----------------------------- | ------- | --------------------------------------------------------------------- |
-| **Default Max Tokens**        | `32768` | Context window size (input tokens). Match to your model's capability. |
-| **Default Max Output Tokens** | `4096`  | Maximum tokens the model can generate per response                    |
+| Setting                       | Default  | Description                                                                                                  |
+| ----------------------------- | -------- | ------------------------------------------------------------------------------------------------------------ |
+| **Default Max Tokens**        | `262144` | Fallback context window size (input tokens) used only when the inference server does not report one itself.  |
+| **Default Max Output Tokens** | `4096`   | Fallback maximum output tokens used only when the server does not report a context size.                     |
 
 ### Tool Calling Settings
 
@@ -146,6 +146,12 @@ These settings control how the extension handles agentic features like code edit
 | **Agent Temperature**     | `0.0`   | Temperature for tool calling mode. Lower values produce more consistent tool call formatting.          |
 
 > **Tip**: If your model outputs tool descriptions as text instead of actually calling tools, try setting **Agent Temperature** to `0.0` and disabling **Parallel Tool Calling**.
+
+### Diagnostic Settings
+
+| Setting              | Default | Description                                                                                                                                        |
+| -------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Verbose Logging**  | `false` | When enabled, the full request body (including messages and tool args) is written to the output channel. Keep disabled unless debugging an issue. |
 
 ## Recommended Models
 
@@ -231,8 +237,11 @@ vllm serve Qwen/Qwen2.5-14B-Instruct-AWQ \
 ### Model not appearing in Copilot
 
 1. Verify server is running: `curl http://your-server:port/v1/models`
-2. Check **Server URL** in settings matches exactly
-3. Run command **"Copilot LLM Gateway: Test Server Connection"** from the Command Palette
+2. Check **Server URL** in settings — paste the **base URL only**, e.g. `http://your-server:port`. Do **not** include a trailing `/v1` or a trailing slash; the extension appends `/v1/models` itself.
+3. Check **API Key** — paste the key only. Do **not** prefix it with `Bearer `; the extension adds that automatically.
+4. Run command **"GitHub Copilot LLM Gateway: Test Server Connection"** from the Command Palette.
+5. If the connection worked earlier but models vanished, run **"GitHub Copilot LLM Gateway: Refresh Models"** from the Command Palette (or click the status-bar entry).
+6. Inspect the **"GitHub Copilot LLM Gateway"** output channel for the exact URL being probed and the server's response.
 
 ### "Model returned empty response"
 
@@ -261,9 +270,10 @@ The model outputs text like "Using the read_file tool..." instead of actually ca
 
 Access from the Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`):
 
-| Command                                                | Description                                 |
-| ------------------------------------------------------ | ------------------------------------------- |
-| **GitHub Copilot LLM Gateway: Test Server Connection** | Test connectivity and list available models |
+| Command                                                | Description                                           |
+| ------------------------------------------------------ | ----------------------------------------------------- |
+| **GitHub Copilot LLM Gateway: Test Server Connection** | Test connectivity and list available models          |
+| **GitHub Copilot LLM Gateway: Refresh Models**         | Re-probe the inference server and refresh the picker |
 
 ## Privacy & Network Requests
 

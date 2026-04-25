@@ -7,16 +7,9 @@
  * that the server will ignore or reject.
  */
 
-import { OpenAIChatCompletionRequest, OpenAIMessage } from './types';
+import { OpenAIChatCompletionRequest, OpenAIMessage, OpenAIToolDefinition } from './types';
 
-export interface OpenAIToolDefinition {
-  type: 'function';
-  function: {
-    name: string;
-    description?: string;
-    parameters?: unknown;
-  };
-}
+export type { OpenAIToolDefinition } from './types';
 
 export type ToolChoice = 'auto' | 'required' | 'none';
 

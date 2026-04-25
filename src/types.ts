@@ -107,4 +107,5 @@ export interface GatewayConfig {
   enableToolCalling: boolean;
   parallelToolCalling: boolean;
   agentTemperature: number;
+  verboseLogging: boolean;
 }

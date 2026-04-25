@@ -44,9 +44,13 @@ type UserContentPart =
 /**
  * Encode an image data part as a `data:` URL suitable for the OpenAI
  * multimodal `image_url` message shape.
+ *
+ * Uses Node's Buffer for base64 encoding — the previous `btoa(String.fromCodePoint(...data))`
+ * approach spread the whole byte array onto the JS call stack and threw
+ * `RangeError: Maximum call stack size exceeded` on images larger than ~65 KB.
  */
 export function encodeImageAsDataUrl(part: { mimeType: string; data: Uint8Array }): string {
-  const base64Data = btoa(String.fromCodePoint(...part.data));
+  const base64Data = Buffer.from(part.data).toString('base64');
   return `data:${part.mimeType};base64,${base64Data}`;
 }
 

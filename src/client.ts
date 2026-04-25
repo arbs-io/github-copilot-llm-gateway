@@ -1,65 +1,86 @@
 import * as vscode from 'vscode';
-import { randomBytes } from 'node:crypto';
 import {
   OpenAIChatCompletionRequest,
   OpenAIModelsResponse,
-  GatewayConfig
+  GatewayConfig,
 } from './types';
+import {
+  AccumulatedToolCall,
+  LegacyFunctionCall,
+  ToolCallAccumulator,
+  ToolCallDelta,
+} from './toolCallAccumulator';
 
 /**
- * Accumulated tool call during streaming
+ * Trim trailing slashes and a trailing `/v1` (or `/openai/v1`) segment so the
+ * client can safely append `/v1/models` / `/v1/chat/completions` regardless of
+ * how the user typed their Server URL in settings.
  */
-interface StreamingToolCall {
-  id: string;
-  name: string;
-  arguments: string;
+export function normalizeBaseUrl(rawUrl: string): string {
+  let url = rawUrl.trim();
+  while (url.endsWith('/')) { url = url.slice(0, -1); }
+  url = url.replace(/\/(openai\/)?v1$/i, '');
+  return url;
 }
 
 /**
- * State for tracking tool calls during streaming
+ * Strip a leading `Bearer ` (case-insensitive) from the configured API key
+ * and trim whitespace. The client always prepends `Bearer`, so users who
+ * paste their full `Authorization: Bearer …` header would otherwise send
+ * `Bearer Bearer …` and get 401s.
  */
-interface ToolCallState {
-  toolCallsByIndex: Map<number, StreamingToolCall>;
-  finalizedIndices: Set<number>;
-  requestId: string;
-  toolCallCounter: number;
+export function normalizeApiKey(rawKey: string | undefined): string {
+  if (!rawKey) { return ''; }
+  return rawKey.trim().replace(/^Bearer\s+/i, '');
 }
 
 /**
- * Parsed SSE chunk data
+ * Wire-format chat-completion chunk that downstream consumers see.
+ */
+export interface GatewayStreamChunk {
+  content: string;
+  reasoning_content: string;
+  tool_calls: AccumulatedToolCall[];
+  finished_tool_calls: AccumulatedToolCall[];
+}
+
+/**
+ * Re-export so existing imports of `StreamingToolCall` from this module keep
+ * working without churn.
+ */
+export type StreamingToolCall = AccumulatedToolCall;
+
+/**
+ * Shape of an OpenAI streaming/non-streaming choice payload that we know
+ * how to read. Kept loose; servers vary.
  */
 interface ParsedChunk {
   delta?: {
     content?: string;
-    /** LM Studio / DeepSeek-R1 separate reasoning field */
     reasoning_content?: string;
-    tool_calls?: Array<{
-      index?: number;
-      id?: string;
-      function?: { name?: string; arguments?: string };
-    }>;
-    function_call?: { name?: string; arguments?: string };
+    tool_calls?: ToolCallDelta[];
+    function_call?: LegacyFunctionCall;
   };
   message?: {
     content?: string;
-    /** LM Studio / DeepSeek-R1 separate reasoning field */
     reasoning_content?: string;
     text?: string;
-    tool_calls?: Array<{
-      index?: number;
-      id?: string;
-      function?: { name?: string; arguments?: string };
-    }>;
-    function_call?: { name?: string; arguments?: string };
+    tool_calls?: ToolCallDelta[];
+    function_call?: LegacyFunctionCall;
   };
   finishReason?: string;
   id?: string;
 }
 
-/**
- * HTTP client for OpenAI-compatible inference servers
- */
+interface ServerErrorPayload {
+  error: { message?: string } | string;
+}
+
 export type GatewayLogger = (message: string) => void;
+
+const SSE_DATA_PREFIX = 'data: ';
+const SSE_DONE_LINE = 'data: [DONE]';
+const ERROR_PREFIX = 'Inference server reported an error mid-stream: ';
 
 export class GatewayClient {
   private config: GatewayConfig;
@@ -67,284 +88,112 @@ export class GatewayClient {
 
   constructor(config: GatewayConfig, logger?: GatewayLogger) {
     this.config = config;
-    this.log = logger ?? (() => { /* no-op logger */ });
+    this.log = logger ?? (() => { /* no-op */ });
   }
 
-  /**
-   * Update client configuration
-   */
   public updateConfig(config: GatewayConfig): void {
     this.config = config;
   }
 
   /**
-   * Fetch available models from /v1/models endpoint
-   */
-  public async fetchModels(): Promise<OpenAIModelsResponse> {
-    const url = `${this.config.serverUrl}/v1/models`;
-
-    try {
-      const response = await this.fetch(url, {
-        method: 'GET',
-        headers: this.getHeaders(),
-      });
-
-      if (!response.ok) {
-        throw new Error(`Failed to fetch models: ${response.status} ${response.statusText}`);
-      }
-
-      return await response.json();
-    } catch (error) {
-      if (error instanceof Error) {
-        throw new Error(`Failed to connect to inference server: ${error.message}`);
-      }
-      throw error;
-    }
-  }
-
-  /**
-   * Create initial tool call tracking state
-   */
-  private createToolCallState(): ToolCallState {
-    return {
-      toolCallsByIndex: new Map<number, StreamingToolCall>(),
-      finalizedIndices: new Set<number>(),
-      requestId: `req_${Date.now()}_${randomBytes(4).toString('hex')}`,
-      toolCallCounter: 0,
-    };
-  }
-
-  /**
-   * Process a single streamed tool call delta
-   */
-  private processToolCallDelta(
-    tc: { index?: number; id?: string; function?: { name?: string; arguments?: string } },
-    state: ToolCallState
-  ): void {
-    const index = tc.index ?? state.toolCallCounter++;
-    const existing = state.toolCallsByIndex.get(index);
-
-    if (existing) {
-      if (tc.id) { existing.id = tc.id; }
-      if (tc.function?.name) { existing.name = tc.function.name; }
-      if (tc.function?.arguments) { existing.arguments += tc.function.arguments; }
-    } else {
-      state.toolCallsByIndex.set(index, {
-        id: tc.id || '',
-        name: tc.function?.name || '',
-        arguments: tc.function?.arguments || '',
-      });
-    }
-  }
-
-  /**
-   * Process legacy function_call format
-   */
-  private processLegacyFunctionCall(
-    functionCall: { name?: string; arguments?: string },
-    parsedId: string,
-    state: ToolCallState
-  ): void {
-    const index = 0;
-    const existing = state.toolCallsByIndex.get(index);
-
-    if (existing) {
-      if (functionCall.name) { existing.name = functionCall.name; }
-      if (functionCall.arguments) { existing.arguments += functionCall.arguments; }
-    } else {
-      state.toolCallsByIndex.set(index, {
-        id: parsedId || '',
-        name: functionCall.name || '',
-        arguments: functionCall.arguments || '',
-      });
-    }
-  }
-
-  /**
-   * Finalize all pending tool calls
-   */
-  private finalizeToolCalls(state: ToolCallState): StreamingToolCall[] {
-    const finishedToolCalls: StreamingToolCall[] = [];
-
-    for (const [index, tc] of state.toolCallsByIndex.entries()) {
-      if (!state.finalizedIndices.has(index)) {
-        state.finalizedIndices.add(index);
-        if (!tc.id) {
-          tc.id = `call_${state.requestId}_${index}`;
-        }
-        finishedToolCalls.push({ ...tc });
-      }
-    }
-
-    return finishedToolCalls;
-  }
-
-  /**
-   * Process delta format from streaming response
-   */
-  private processDeltaFormat(
-    parsed: ParsedChunk,
-    state: ToolCallState
-  ): { content: string; reasoningContent: string; finishedToolCalls: StreamingToolCall[] } {
-    const delta = parsed.delta!;
-    const finishedToolCalls: StreamingToolCall[] = [];
-
-    // Handle streamed tool_calls
-    if (Array.isArray(delta.tool_calls)) {
-      for (const tc of delta.tool_calls) {
-        this.processToolCallDelta(tc, state);
-      }
-    }
-
-    // Handle legacy function_call format
-    if (delta.function_call) {
-      this.processLegacyFunctionCall(delta.function_call, parsed.id || '', state);
-    }
-
-    // Check if tool calls are complete
-    if (parsed.finishReason === 'tool_calls' || parsed.finishReason === 'function_call') {
-      finishedToolCalls.push(...this.finalizeToolCalls(state));
-    }
-
-    return { content: delta.content || '', reasoningContent: delta.reasoning_content || '', finishedToolCalls };
-  }
-
-  /**
-   * Process non-delta (final) message format
-   */
-  private processMessageFormat(
-    parsed: ParsedChunk,
-    state: ToolCallState
-  ): { content: string; reasoningContent: string; finishedToolCalls: StreamingToolCall[] } {
-    const message = parsed.message!;
-    const finishedToolCalls: StreamingToolCall[] = [];
-
-    // Handle complete tool_calls array
-    if (Array.isArray(message.tool_calls)) {
-      for (let i = 0; i < message.tool_calls.length; i++) {
-        const tc = message.tool_calls[i];
-        const index = tc.index ?? i;
-        if (!state.finalizedIndices.has(index)) {
-          state.finalizedIndices.add(index);
-          finishedToolCalls.push({
-            id: tc.id || `call_${state.requestId}_${index}`,
-            name: tc.function?.name || '',
-            arguments: tc.function?.arguments || '',
-          });
-        }
-      }
-    }
-
-    // Handle legacy function_call format
-    if (message.function_call && !state.finalizedIndices.has(0)) {
-      state.finalizedIndices.add(0);
-      finishedToolCalls.push({
-        id: parsed.id || `call_${state.requestId}_0`,
-        name: message.function_call.name || '',
-        arguments: message.function_call.arguments || '',
-      });
-    }
-
-    return { content: message.content || message.text || '', reasoningContent: message.reasoning_content || '', finishedToolCalls };
-  }
-
-  /**
-   * Parse a raw SSE data string into structured chunk data
-   */
-  private parseSSEData(data: string): ParsedChunk | null {
-    try {
-      const parsed = JSON.parse(data);
-      return {
-        delta: parsed.choices?.[0]?.delta,
-        message: parsed.choices?.[0]?.message,
-        finishReason: parsed.choices?.[0]?.finish_reason,
-        id: parsed.id,
-      };
-    } catch {
-      this.log(`Failed to parse SSE chunk: ${data}`);
-      return null;
-    }
-  }
-
-  /**
-   * Process a single SSE line and return yield data if applicable
-   */
-  private processSSELine(
-    line: string,
-    state: ToolCallState
-  ): { content: string; reasoning_content: string; tool_calls: StreamingToolCall[]; finished_tool_calls: StreamingToolCall[] } | null {
-    const trimmed = line.trim();
-
-    if (trimmed === '' || trimmed === 'data: [DONE]') {
-      return null;
-    }
-
-    if (!trimmed.startsWith('data: ')) {
-      return null;
-    }
-
-    const data = trimmed.slice(6);
-    const parsed = this.parseSSEData(data);
-    if (!parsed) { return null; }
-
-    if (parsed.delta) {
-      const { content, reasoningContent, finishedToolCalls } = this.processDeltaFormat(parsed, state);
-      return { content, reasoning_content: reasoningContent, tool_calls: [], finished_tool_calls: finishedToolCalls };
-    }
-
-    if (parsed.message) {
-      const { content, reasoningContent, finishedToolCalls } = this.processMessageFormat(parsed, state);
-      return { content, reasoning_content: reasoningContent, tool_calls: [], finished_tool_calls: finishedToolCalls };
-    }
-
-    return null;
-  }
-
-  /**
-   * Get remaining unfinalised tool calls
-   */
-  private getRemainingToolCalls(state: ToolCallState): StreamingToolCall[] {
-    const remaining: StreamingToolCall[] = [];
-
-    for (const [index, tc] of state.toolCallsByIndex.entries()) {
-      if (!state.finalizedIndices.has(index) && (tc.name || tc.arguments)) {
-        state.finalizedIndices.add(index);
-        if (!tc.id) {
-          tc.id = `call_${state.requestId}_${index}`;
-        }
-        remaining.push({ ...tc });
-      }
-    }
-
-    return remaining;
-  }
-
-  /**
-   * Stream chat completions from /v1/chat/completions endpoint
+   * Fetch available models from the server's models endpoint.
    *
-   * IMPORTANT: Tool calls are tracked by INDEX during streaming, not by ID.
-   * OpenAI streaming format sends tool calls incrementally with an `index` field
-   * to identify which tool call is being updated. The `id` may arrive in a later chunk.
+   * Tries `/v1/models` first and falls back to `/models` so the client works
+   * against servers that mount the OpenAI API at the root.
+   */
+  public async fetchModels(cancellationToken?: vscode.CancellationToken): Promise<OpenAIModelsResponse> {
+    const base = normalizeBaseUrl(this.config.serverUrl);
+    const candidates = [`${base}/v1/models`, `${base}/models`];
+    let lastError: Error | undefined;
+
+    for (let i = 0; i < candidates.length; i++) {
+      const url = candidates[i];
+      const isLast = i === candidates.length - 1;
+      try {
+        const result = await this.tryFetchModels(url, isLast, cancellationToken);
+        if (result) { return result; }
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+        if (isLast) { break; }
+      }
+    }
+
+    const message = lastError?.message ?? 'unknown error';
+    throw new Error(`Failed to connect to inference server at ${base}: ${message}`);
+  }
+
+  /**
+   * Attempt a single model-fetch against `url`. Returns the parsed response
+   * on success, `undefined` if the endpoint returned 404 and `allowFallback`
+   * is true, or throws on any other failure.
+   */
+  private async tryFetchModels(
+    url: string,
+    isLast: boolean,
+    cancellationToken?: vscode.CancellationToken
+  ): Promise<OpenAIModelsResponse | undefined> {
+    const response = await this.fetchWithTimeout(url, {
+      method: 'GET',
+      headers: this.getHeaders(),
+    }, cancellationToken);
+
+    if (response.ok) {
+      return await response.json();
+    }
+
+    if (response.status === 404 && !isLast) {
+      this.log(`Models endpoint not found at ${url}, trying fallback...`);
+      return undefined;
+    }
+
+    const bodyText = await response.text().catch(() => '');
+    const truncated = bodyText.length > 200 ? bodyText.slice(0, 200) + '...' : bodyText;
+    const suffix = truncated ? ' — ' + truncated : '';
+    throw new Error(
+      `Failed to fetch models from ${url}: ${response.status} ${response.statusText}${suffix}`
+    );
+  }
+
+  /**
+   * Stream chat completions from `/v1/chat/completions`. Tool calls are
+   * accumulated by index across chunks (their `id` may arrive later than
+   * their name/arguments). Manages two timers explicitly:
+   *   - the configured `requestTimeout` applies until headers arrive,
+   *   - then a per-read inactivity timer of the same duration is reset on
+   *     each chunk so long generations aren't aborted mid-stream.
    */
   public async *streamChatCompletion(
     request: OpenAIChatCompletionRequest,
     cancellationToken: vscode.CancellationToken
-  ): AsyncGenerator<{ content: string; reasoning_content: string; tool_calls: StreamingToolCall[]; finished_tool_calls: StreamingToolCall[] }, void, unknown> {
-    const url = `${this.config.serverUrl}/v1/chat/completions`;
-    const state = this.createToolCallState();
+  ): AsyncGenerator<GatewayStreamChunk, void, unknown> {
+    const url = `${normalizeBaseUrl(this.config.serverUrl)}/v1/chat/completions`;
+    const accumulator = new ToolCallAccumulator();
+
+    const controller = new AbortController();
+    const cancelSub = cancellationToken.onCancellationRequested(() => controller.abort());
+    const headerTimeoutId = setTimeout(() => controller.abort(), this.config.requestTimeout);
+    let inactivityTimeoutId: ReturnType<typeof setTimeout> | undefined;
+    const resetInactivityTimer = (): void => {
+      if (inactivityTimeoutId) { clearTimeout(inactivityTimeoutId); }
+      inactivityTimeoutId = setTimeout(() => controller.abort(), this.config.requestTimeout);
+    };
 
     try {
-      const response = await this.fetch(url, {
+      const response = await fetch(url, {
         method: 'POST',
         headers: { ...this.getHeaders(), 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...request, stream: true }),
+        signal: controller.signal,
       });
+
+      // Headers received — switch to the inactivity timer.
+      clearTimeout(headerTimeoutId);
+      resetInactivityTimer();
 
       if (!response.ok) {
         const errorText = await response.text();
         throw new Error(`Chat completion failed: ${response.status} ${response.statusText} - ${errorText}`);
       }
-
       if (!response.body) {
         throw new Error('Response body is null');
       }
@@ -362,18 +211,19 @@ export class GatewayClient {
         const { done, value } = await reader.read();
         if (done) { break; }
 
+        resetInactivityTimer();
+
         buffer += decoder.decode(value, { stream: true });
         const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
+        buffer = lines.pop() ?? '';
 
         for (const line of lines) {
-          const result = this.processSSELine(line, state);
+          const result = this.processSSELine(line, accumulator);
           if (result) { yield result; }
         }
       }
 
-      // Finalize any remaining tool calls
-      const remaining = this.getRemainingToolCalls(state);
+      const remaining = accumulator.drain(true);
       if (remaining.length > 0) {
         yield { content: '', reasoning_content: '', tool_calls: [], finished_tool_calls: remaining };
       }
@@ -382,37 +232,177 @@ export class GatewayClient {
         throw new Error(`Chat completion request failed: ${error.message}`);
       }
       throw error;
+    } finally {
+      clearTimeout(headerTimeoutId);
+      if (inactivityTimeoutId) { clearTimeout(inactivityTimeoutId); }
+      cancelSub.dispose();
     }
   }
 
   /**
-   * Get headers for API requests
+   * Process one SSE line. Returns a chunk to yield, or null if there's
+   * nothing to emit. Throws if the server sent an inline error payload —
+   * the caller can then surface a real error instead of an empty stream.
    */
-  private getHeaders(): Record<string, string> {
-    const headers: Record<string, string> = {};
+  private processSSELine(line: string, accumulator: ToolCallAccumulator): GatewayStreamChunk | null {
+    const trimmed = line.trim();
+    if (trimmed === '' || trimmed === SSE_DONE_LINE) { return null; }
+    if (trimmed.startsWith('event:')) { return null; }
+    if (!trimmed.startsWith(SSE_DATA_PREFIX)) { return null; }
 
-    if (this.config.apiKey) {
-      headers['Authorization'] = `Bearer ${this.config.apiKey}`;
+    const data = trimmed.slice(SSE_DATA_PREFIX.length);
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(data);
+    } catch {
+      this.log(`Failed to parse SSE chunk: ${data}`);
+      return null;
+    }
+    if (!parsed || typeof parsed !== 'object') { return null; }
+
+    const obj = parsed as Record<string, unknown>;
+
+    // Inline error payload: `{ "error": { "message": "..." } }`. Distinguished
+    // from a normal chunk (which has `choices`).
+    if ('error' in obj && !('choices' in obj)) {
+      const message = extractServerErrorMessage(obj as unknown as ServerErrorPayload);
+      throw new Error(`${ERROR_PREFIX}${message}`);
     }
 
+    return this.dispatchParsedChunk(obj, accumulator);
+  }
+
+  private dispatchParsedChunk(
+    obj: Record<string, unknown>,
+    accumulator: ToolCallAccumulator
+  ): GatewayStreamChunk | null {
+    const choices = Array.isArray(obj.choices) ? obj.choices : undefined;
+    const choice = choices?.[0] as Record<string, unknown> | undefined;
+    if (!choice) { return null; }
+
+    const chunk: ParsedChunk = {
+      delta: choice.delta as ParsedChunk['delta'],
+      message: choice.message as ParsedChunk['message'],
+      finishReason: choice.finish_reason as string | undefined,
+      id: typeof obj.id === 'string' ? obj.id : undefined,
+    };
+
+    if (chunk.delta) {
+      const { content, reasoningContent, finishedToolCalls } = this.applyDeltaChoice(chunk, accumulator);
+      return {
+        content,
+        reasoning_content: reasoningContent,
+        tool_calls: [],
+        finished_tool_calls: finishedToolCalls,
+      };
+    }
+    if (chunk.message) {
+      const { content, reasoningContent, finishedToolCalls } = this.applyMessageChoice(chunk, accumulator);
+      return {
+        content,
+        reasoning_content: reasoningContent,
+        tool_calls: [],
+        finished_tool_calls: finishedToolCalls,
+      };
+    }
+    return null;
+  }
+
+  private applyDeltaChoice(
+    parsed: ParsedChunk,
+    accumulator: ToolCallAccumulator
+  ): { content: string; reasoningContent: string; finishedToolCalls: AccumulatedToolCall[] } {
+    const delta = parsed.delta!;
+    const finishedToolCalls: AccumulatedToolCall[] = [];
+
+    if (Array.isArray(delta.tool_calls)) {
+      for (const tc of delta.tool_calls) {
+        accumulator.applyDelta(tc);
+      }
+    }
+
+    if (delta.function_call) {
+      accumulator.applyLegacy(delta.function_call, parsed.id ?? '');
+    }
+
+    if (parsed.finishReason === 'tool_calls' || parsed.finishReason === 'function_call') {
+      finishedToolCalls.push(...accumulator.drain());
+    }
+
+    return {
+      content: delta.content ?? '',
+      reasoningContent: delta.reasoning_content ?? '',
+      finishedToolCalls,
+    };
+  }
+
+  private applyMessageChoice(
+    parsed: ParsedChunk,
+    accumulator: ToolCallAccumulator
+  ): { content: string; reasoningContent: string; finishedToolCalls: AccumulatedToolCall[] } {
+    const message = parsed.message!;
+    const finishedToolCalls: AccumulatedToolCall[] = [];
+
+    if (Array.isArray(message.tool_calls)) {
+      finishedToolCalls.push(...accumulator.applyComplete(message.tool_calls));
+    }
+
+    if (message.function_call) {
+      const completed = accumulator.applyComplete([
+        { index: 0, id: parsed.id, function: message.function_call },
+      ]);
+      finishedToolCalls.push(...completed);
+    }
+
+    return {
+      content: message.content ?? message.text ?? '',
+      reasoningContent: message.reasoning_content ?? '',
+      finishedToolCalls,
+    };
+  }
+
+  private getHeaders(): Record<string, string> {
+    const headers: Record<string, string> = {};
+    const key = normalizeApiKey(this.config.apiKey);
+    if (key) {
+      headers['Authorization'] = `Bearer ${key}`;
+    }
     return headers;
   }
 
   /**
-   * Fetch wrapper with timeout support
+   * Fetch wrapper with a fixed total-request timeout and optional
+   * cancellation-token wiring. Used for non-streaming requests like the
+   * model list. Streaming requests manage their own timers in
+   * `streamChatCompletion`.
    */
-  private async fetch(url: string, options: RequestInit): Promise<Response> {
+  private async fetchWithTimeout(
+    url: string,
+    options: RequestInit,
+    cancellationToken?: vscode.CancellationToken
+  ): Promise<Response> {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), this.config.requestTimeout);
+    const cancelSub = cancellationToken?.onCancellationRequested(() => controller.abort());
 
     try {
-      const response = await fetch(url, {
+      return await fetch(url, {
         ...options,
         signal: controller.signal,
       });
-      return response;
     } finally {
       clearTimeout(timeoutId);
+      cancelSub?.dispose();
     }
   }
+}
+
+function extractServerErrorMessage(payload: ServerErrorPayload): string {
+  const err = payload.error;
+  if (typeof err === 'string') { return err; }
+  if (err && typeof err === 'object' && 'message' in err && typeof err.message === 'string') {
+    return err.message;
+  }
+  return JSON.stringify(err);
 }
