@@ -149,6 +149,8 @@ export function activate(context: vscode.ExtensionContext): void {
       // automatically, but we also refresh the status bar here.
       provider.invalidateModelCache();
       await refreshStatusBar();
+
+      await offerAdvancedSettings();
     }
   );
 
@@ -178,6 +180,36 @@ export function activate(context: vscode.ExtensionContext): void {
  */
 export function deactivate(): void {
   // no-op
+}
+
+/**
+ * After the basic Configure Server flow, offer the user a chance to jump
+ * straight to the Settings UI for advanced options (custom headers, extra
+ * model options) that aren't worth dedicated InputBox steps. The Settings UI
+ * is filtered to this extension so the headers key/value table is one click
+ * away.
+ */
+async function offerAdvancedSettings(): Promise<void> {
+  const completePick: vscode.QuickPickItem = {
+    label: 'Complete',
+    description: 'Finish configuration',
+  };
+  const advancedPick: vscode.QuickPickItem = {
+    label: 'Edit advanced settings...',
+    description: 'Custom headers, extra model options, timeouts, logging',
+  };
+
+  const pick = await vscode.window.showQuickPick([completePick, advancedPick], {
+    title: 'LLM Gateway — Configuration saved',
+    placeHolder: 'Done, or open advanced settings?',
+    ignoreFocusOut: true,
+  });
+  if (pick === advancedPick) {
+    await vscode.commands.executeCommand(
+      'workbench.action.openSettings',
+      'github.copilot.llm-gateway'
+    );
+  }
 }
 
 /**

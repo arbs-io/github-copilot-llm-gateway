@@ -91,6 +91,22 @@ describe('buildChatRequest', () => {
     assert.equal(req.temperature, 0.9);
   });
 
+  test('per-request modelOptions take precedence over user-configured extras', () => {
+    // Mirrors how the provider merges them:
+    //   extraOptions: { ...config.extraModelOptions, ...options.modelOptions }
+    const userExtras = { top_k: 40, repetition_penalty: 1.1 };
+    const perRequest = { top_k: 20 };
+    const req = buildChatRequest({
+      model: 'm',
+      messages: [],
+      maxTokens: 10,
+      temperature: 0.5,
+      extraOptions: { ...userExtras, ...perRequest },
+    });
+    assert.equal(req.top_k, 20);
+    assert.equal(req.repetition_penalty, 1.1);
+  });
+
   test('handles `none` toolChoice', () => {
     const req = buildChatRequest({
       model: 'm',

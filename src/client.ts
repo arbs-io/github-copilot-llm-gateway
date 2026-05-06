@@ -35,6 +35,31 @@ export function normalizeApiKey(rawKey: string | undefined): string {
 }
 
 /**
+ * Build the request header set for the inference server. Authorization is
+ * applied first so user-configured `customHeaders` can override it for
+ * backends that need a non-Bearer auth scheme (e.g. Azure's `api-key`).
+ * Empty/non-string values and empty header names are dropped.
+ */
+export function buildHeaders(
+  apiKey: string | undefined,
+  customHeaders: Record<string, string> | undefined
+): Record<string, string> {
+  const headers: Record<string, string> = {};
+  const key = normalizeApiKey(apiKey);
+  if (key) {
+    headers['Authorization'] = `Bearer ${key}`;
+  }
+  if (customHeaders) {
+    for (const [name, value] of Object.entries(customHeaders)) {
+      if (typeof value === 'string' && name.length > 0) {
+        headers[name] = value;
+      }
+    }
+  }
+  return headers;
+}
+
+/**
  * Wire-format chat-completion chunk that downstream consumers see.
  */
 export interface GatewayStreamChunk {
@@ -363,12 +388,7 @@ export class GatewayClient {
   }
 
   private getHeaders(): Record<string, string> {
-    const headers: Record<string, string> = {};
-    const key = normalizeApiKey(this.config.apiKey);
-    if (key) {
-      headers['Authorization'] = `Bearer ${key}`;
-    }
-    return headers;
+    return buildHeaders(this.config.apiKey, this.config.customHeaders);
   }
 
   /**

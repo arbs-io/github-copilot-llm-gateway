@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeBaseUrl, normalizeApiKey } from '../client';
+import { normalizeBaseUrl, normalizeApiKey, buildHeaders } from '../client';
 
 describe('normalizeBaseUrl', () => {
   test('returns the URL unchanged when no normalization is needed', () => {
@@ -50,5 +50,44 @@ describe('normalizeApiKey', () => {
 
   test('trims surrounding whitespace before stripping', () => {
     assert.equal(normalizeApiKey('   Bearer sk-abc   '), 'sk-abc');
+  });
+});
+
+describe('buildHeaders', () => {
+  test('returns empty headers when no apiKey or customHeaders are set', () => {
+    assert.deepEqual(buildHeaders(undefined, undefined), {});
+    assert.deepEqual(buildHeaders('', {}), {});
+  });
+
+  test('sets Bearer Authorization from a normalized apiKey', () => {
+    assert.deepEqual(buildHeaders('sk-abc', undefined), { Authorization: 'Bearer sk-abc' });
+    assert.deepEqual(buildHeaders('Bearer sk-abc', undefined), { Authorization: 'Bearer sk-abc' });
+  });
+
+  test('merges customHeaders alongside Authorization', () => {
+    const headers = buildHeaders('sk-abc', {
+      'Anthropic-Version': '2024-01-01',
+      'OpenAI-Organization': 'org_xyz',
+    });
+    assert.equal(headers['Authorization'], 'Bearer sk-abc');
+    assert.equal(headers['Anthropic-Version'], '2024-01-01');
+    assert.equal(headers['OpenAI-Organization'], 'org_xyz');
+  });
+
+  test('customHeaders can override Authorization for non-Bearer auth schemes', () => {
+    const headers = buildHeaders('sk-abc', { Authorization: 'Token raw-token' });
+    assert.equal(headers['Authorization'], 'Token raw-token');
+  });
+
+  test('drops headers with non-string values or empty names', () => {
+    const headers = buildHeaders(undefined, {
+      Valid: 'yes',
+      '': 'no-name',
+      // Simulate a JSON-loaded value that wasn't a string.
+      Bogus: 42 as unknown as string,
+    });
+    assert.equal(headers['Valid'], 'yes');
+    assert.equal(headers[''], undefined);
+    assert.equal(headers['Bogus'], undefined);
   });
 });

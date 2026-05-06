@@ -108,4 +108,6 @@ export interface GatewayConfig {
   parallelToolCalling: boolean;
   agentTemperature: number;
   verboseLogging: boolean;
+  customHeaders: Record<string, string>;
+  extraModelOptions: Record<string, unknown>;
 }

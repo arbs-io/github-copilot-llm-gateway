@@ -136,6 +136,20 @@
           "default": false,
           "description": "When enabled, the full chat request body (including messages and tool args) is written to the output channel. Keep disabled unless you are reproducing an issue — captured logs may contain conversation content from the user's current editor.",
           "order": 10
+        },
+        "github.copilot.llm-gateway.customHeaders": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": { "type": "string" },
+          "description": "Additional HTTP headers sent with every request to the inference server (e.g. Anthropic-Version, OpenAI-Organization, HTTP-Referer). Set as key/value pairs.",
+          "order": 11
+        },
+        "github.copilot.llm-gateway.extraModelOptions": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": true,
+          "description": "Extra parameters merged into the chat-completions request body (e.g. top_k, repetition_penalty, seed). Per-request modelOptions from the caller take precedence. Edit in settings.json for non-string values.",
+          "order": 12
         }
       }
     }

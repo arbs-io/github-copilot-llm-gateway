@@ -76,6 +76,7 @@ const MODEL_AFFECTING_KEYS: readonly string[] = [
   'github.copilot.llm-gateway.defaultMaxOutputTokens',
   'github.copilot.llm-gateway.enableImageInput',
   'github.copilot.llm-gateway.enableToolCalling',
+  'github.copilot.llm-gateway.customHeaders',
 ];
 
 /**
@@ -355,7 +356,7 @@ export class GatewayProvider implements vscode.LanguageModelChatProvider {
       tools,
       toolChoice: hasTools ? this.mapToolChoice(options.toolMode) : undefined,
       parallelToolCalls: hasTools ? this.config.parallelToolCalling : undefined,
-      extraOptions: options.modelOptions,
+      extraOptions: { ...this.config.extraModelOptions, ...options.modelOptions },
     });
 
     if (hasTools) {
@@ -826,6 +827,8 @@ export class GatewayProvider implements vscode.LanguageModelChatProvider {
       parallelToolCalling: config.get<boolean>('parallelToolCalling', true),
       agentTemperature: config.get<number>('agentTemperature', 0),
       verboseLogging: config.get<boolean>('verboseLogging', false),
+      customHeaders: config.get<Record<string, string>>('customHeaders', {}) ?? {},
+      extraModelOptions: config.get<Record<string, unknown>>('extraModelOptions', {}) ?? {},
     };
 
     if (cfg.requestTimeout <= 0) {
