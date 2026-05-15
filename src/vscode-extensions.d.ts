@@ -24,10 +24,15 @@ declare module 'vscode' {
    * Optional fields the Copilot Chat model picker renders if present.
    * Not yet declared on `LanguageModelChatInformation` in the bundled
    * `@types/vscode`; declared here so we don't need an unsafe cast.
+   *
+   * `isUserSelectable` was added in VS Code 1.120 and gates whether the
+   * model appears directly in the chat model picker — without it, our
+   * models only showed up in the read-only "Manage Models" list (issue #29).
    */
   interface LanguageModelChatInformation {
     description?: string;
     tooltip?: string;
     detail?: string;
+    isUserSelectable?: boolean;
   }
 }

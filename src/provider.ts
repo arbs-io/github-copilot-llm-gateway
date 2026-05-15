@@ -278,6 +278,10 @@ export class GatewayProvider implements vscode.LanguageModelChatProvider {
         },
         ...(detail ? { description: detail, detail } : {}),
         tooltip: detail ? `${model.id} — ${detail}` : model.id,
+        // VS Code 1.120 hid models from the chat picker unless the provider
+        // marks them user-selectable — without this, gateway models only
+        // appeared in the read-only Manage Models list (issue #29).
+        isUserSelectable: true,
       };
       return info;
     });
