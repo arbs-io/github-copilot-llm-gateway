@@ -241,6 +241,11 @@ async function offerAdvancedSettings(provider: GatewayProvider): Promise<void> {
   }
 }
 
+interface HeaderQuickPickItem extends vscode.QuickPickItem {
+  action: 'add' | 'edit' | 'clear' | 'done';
+  headerName?: string;
+}
+
 /**
  * Quick-pick driven editor for custom headers persisted in SecretStorage.
  * Shows only header names (not values) so peeking at someone else's screen
@@ -249,37 +254,8 @@ async function offerAdvancedSettings(provider: GatewayProvider): Promise<void> {
 async function editCustomHeadersFlow(provider: GatewayProvider): Promise<void> {
   while (true) {
     const headers = provider.getCustomHeadersSnapshot();
-    const headerNames = Object.keys(headers).sort();
-
-    interface HeaderItem extends vscode.QuickPickItem {
-      action: 'add' | 'edit' | 'clear' | 'done';
-      headerName?: string;
-    }
-
-    const items: HeaderItem[] = [
-      { label: 'Done', description: 'Save and close', action: 'done' },
-      { label: '$(add) Add header...', description: 'Add a new header', action: 'add' },
-    ];
-    if (headerNames.length > 0) {
-      items.push({
-        label: '$(trash) Clear all headers',
-        description: 'Remove every custom header',
-        action: 'clear',
-      });
-      items.push({
-        label: '',
-        kind: vscode.QuickPickItemKind.Separator,
-        action: 'done',
-      });
-      for (const name of headerNames) {
-        items.push({
-          label: name,
-          description: 'Edit or remove (value hidden)',
-          action: 'edit',
-          headerName: name,
-        });
-      }
-    }
+    const headerNames = Object.keys(headers).sort((a, b) => a.localeCompare(b));
+    const items = buildHeaderQuickPickItems(headerNames);
 
     const pick = await vscode.window.showQuickPick(items, {
       title: `LLM Gateway — Custom Headers (${headerNames.length})`,
@@ -293,22 +269,56 @@ async function editCustomHeadersFlow(provider: GatewayProvider): Promise<void> {
 
     if (pick.action === 'add') {
       await addHeader(provider, headers);
-      continue;
-    }
-    if (pick.action === 'clear') {
-      const confirm = await vscode.window.showWarningMessage(
-        `Remove all ${headerNames.length} custom header(s)?`,
-        { modal: true },
-        'Remove'
-      );
-      if (confirm === 'Remove') {
-        await provider.setCustomHeaders({});
-      }
-      continue;
-    }
-    if (pick.action === 'edit' && pick.headerName) {
+    } else if (pick.action === 'clear') {
+      await confirmAndClearHeaders(provider, headerNames.length);
+    } else if (pick.action === 'edit' && pick.headerName) {
       await editOrDeleteHeader(provider, headers, pick.headerName);
     }
+  }
+}
+
+/**
+ * Build the quick-pick items for the custom-headers editor. Pulled out so
+ * `editCustomHeadersFlow` stays under SonarCloud's cognitive-complexity
+ * budget — and so the item shape lives next to its uses.
+ */
+function buildHeaderQuickPickItems(headerNames: readonly string[]): HeaderQuickPickItem[] {
+  const items: HeaderQuickPickItem[] = [
+    { label: 'Done', description: 'Save and close', action: 'done' },
+    { label: '$(add) Add header...', description: 'Add a new header', action: 'add' },
+  ];
+  if (headerNames.length === 0) {
+    return items;
+  }
+  items.push(
+    {
+      label: '$(trash) Clear all headers',
+      description: 'Remove every custom header',
+      action: 'clear',
+    },
+    {
+      label: '',
+      kind: vscode.QuickPickItemKind.Separator,
+      action: 'done',
+    },
+    ...headerNames.map<HeaderQuickPickItem>((name) => ({
+      label: name,
+      description: 'Edit or remove (value hidden)',
+      action: 'edit',
+      headerName: name,
+    }))
+  );
+  return items;
+}
+
+async function confirmAndClearHeaders(provider: GatewayProvider, count: number): Promise<void> {
+  const confirm = await vscode.window.showWarningMessage(
+    `Remove all ${count} custom header(s)?`,
+    { modal: true },
+    'Remove'
+  );
+  if (confirm === 'Remove') {
+    await provider.setCustomHeaders({});
   }
 }
 
@@ -392,12 +402,12 @@ async function pickConfigurationTarget(
   const inspection = config.inspect('serverUrl');
   const workspacePick: vscode.QuickPickItem = {
     label: 'Workspace Settings',
-    description: inspection?.workspaceValue !== undefined ? '(currently set)' : undefined,
+    description: inspection?.workspaceValue === undefined ? undefined : '(currently set)',
     detail: 'Apply to this workspace only — different VS Code windows can use different servers.',
   };
   const globalPick: vscode.QuickPickItem = {
     label: 'User Settings (Global)',
-    description: inspection?.globalValue !== undefined ? '(currently set)' : undefined,
+    description: inspection?.globalValue === undefined ? undefined : '(currently set)',
     detail: 'Apply to all VS Code windows.',
   };
 

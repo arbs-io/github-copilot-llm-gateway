@@ -109,23 +109,23 @@ export async function migrateLegacySecrets(
 
   if (hasLegacyKey) {
     const existing = await secrets.get(SECRET_KEYS.apiKey);
-    if (!existing) {
+    if (existing) {
+      log('Found legacy apiKey setting but a secret already exists; not overwriting.');
+    } else {
       await secrets.store(SECRET_KEYS.apiKey, legacyApiKey);
       result.apiKeyMigrated = true;
       log('Migrated legacy apiKey setting into SecretStorage.');
-    } else {
-      log('Found legacy apiKey setting but a secret already exists; not overwriting.');
     }
   }
 
   if (hasLegacyHeaders) {
     const existing = await secrets.get(SECRET_KEYS.customHeaders);
-    if (!existing) {
+    if (existing) {
+      log('Found legacy customHeaders setting but a secret already exists; not overwriting.');
+    } else {
       await secrets.store(SECRET_KEYS.customHeaders, JSON.stringify(legacyHeaders));
       result.customHeadersMigrated = true;
       log(`Migrated ${Object.keys(legacyHeaders).length} legacy customHeaders into SecretStorage.`);
-    } else {
-      log('Found legacy customHeaders setting but a secret already exists; not overwriting.');
     }
   }
 

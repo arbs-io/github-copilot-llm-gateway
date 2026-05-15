@@ -115,6 +115,35 @@ const SSE_DATA_PREFIX = 'data: ';
 const SSE_DONE_LINE = 'data: [DONE]';
 const ERROR_PREFIX = 'Inference server reported an error mid-stream: ';
 
+/**
+ * Lifecycle handles for the AbortController + the two timers used by a
+ * streaming chat-completion request. Returned by `createStreamTimers` so the
+ * main streaming function doesn't have to track them inline.
+ */
+interface StreamTimers {
+  readonly controller: AbortController;
+  readonly resetInactivity: () => void;
+  /** Called once response headers arrive — switches to the inactivity timer. */
+  readonly onHeadersReceived: () => void;
+  /** Clears every outstanding timer + cancellation subscription. */
+  readonly dispose: () => void;
+}
+
+/**
+ * Throw a descriptive error for a failed chat-completion response, including
+ * the response body when the server provided one. Pulled out of
+ * `streamChatCompletion` so the main function stays under the
+ * cognitive-complexity budget.
+ */
+async function assertChatStreamResponseOk(response: Response): Promise<void> {
+  if (response.ok && response.body) { return; }
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Chat completion failed: ${response.status} ${response.statusText} - ${errorText}`);
+  }
+  throw new Error('Response body is null');
+}
+
 export class GatewayClient {
   private config: GatewayConfig;
   private readonly log: GatewayLogger;
@@ -201,15 +230,7 @@ export class GatewayClient {
   ): AsyncGenerator<GatewayStreamChunk, void, unknown> {
     const url = `${normalizeBaseUrl(this.config.serverUrl)}/v1/chat/completions`;
     const accumulator = new ToolCallAccumulator();
-
-    const controller = new AbortController();
-    const cancelSub = cancellationToken.onCancellationRequested(() => controller.abort());
-    const headerTimeoutId = setTimeout(() => controller.abort(), this.config.requestTimeout);
-    let inactivityTimeoutId: ReturnType<typeof setTimeout> | undefined;
-    const resetInactivityTimer = (): void => {
-      if (inactivityTimeoutId) { clearTimeout(inactivityTimeoutId); }
-      inactivityTimeoutId = setTimeout(() => controller.abort(), this.config.requestTimeout);
-    };
+    const timers = this.createStreamTimers(cancellationToken);
 
     try {
       const response = await fetch(url, {
@@ -223,47 +244,18 @@ export class GatewayClient {
         body: JSON.stringify({
           ...request,
           stream: true,
-          stream_options: { ...((request.stream_options as object | undefined) ?? {}), include_usage: true },
+          stream_options: { ...(request.stream_options as object | undefined), include_usage: true },
         }),
-        signal: controller.signal,
+        signal: timers.controller.signal,
       });
 
-      // Headers received — switch to the inactivity timer.
-      clearTimeout(headerTimeoutId);
-      resetInactivityTimer();
+      // Headers received — switch from the request-deadline timer to the
+      // per-chunk inactivity timer so long generations aren't aborted.
+      timers.onHeadersReceived();
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Chat completion failed: ${response.status} ${response.statusText} - ${errorText}`);
-      }
-      if (!response.body) {
-        throw new Error('Response body is null');
-      }
+      await assertChatStreamResponseOk(response);
 
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      while (true) {
-        if (cancellationToken.isCancellationRequested) {
-          reader.cancel();
-          break;
-        }
-
-        const { done, value } = await reader.read();
-        if (done) { break; }
-
-        resetInactivityTimer();
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() ?? '';
-
-        for (const line of lines) {
-          const result = this.processSSELine(line, accumulator);
-          if (result) { yield result; }
-        }
-      }
+      yield* this.readChatStreamChunks(response.body!, accumulator, cancellationToken, timers.resetInactivity);
 
       const remaining = accumulator.drain(true);
       if (remaining.length > 0) {
@@ -275,10 +267,76 @@ export class GatewayClient {
       }
       throw error;
     } finally {
-      clearTimeout(headerTimeoutId);
-      if (inactivityTimeoutId) { clearTimeout(inactivityTimeoutId); }
-      cancelSub.dispose();
+      timers.dispose();
     }
+  }
+
+  /**
+   * Read SSE chunks off the response body until done or cancelled, parsing
+   * each line through {@link processSSELine}. Split out of
+   * `streamChatCompletion` so the parent function stays under SonarCloud's
+   * cognitive-complexity budget.
+   */
+  private async *readChatStreamChunks(
+    body: ReadableStream<Uint8Array>,
+    accumulator: ToolCallAccumulator,
+    cancellationToken: vscode.CancellationToken,
+    resetInactivity: () => void
+  ): AsyncGenerator<GatewayStreamChunk, void, unknown> {
+    const reader = body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      if (cancellationToken.isCancellationRequested) {
+        reader.cancel();
+        return;
+      }
+
+      const { done, value } = await reader.read();
+      if (done) { return; }
+
+      resetInactivity();
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
+
+      for (const line of lines) {
+        const result = this.processSSELine(line, accumulator);
+        if (result) { yield result; }
+      }
+    }
+  }
+
+  /**
+   * Wire up the AbortController, request-deadline timer, and per-chunk
+   * inactivity timer used by the streaming request. The two timers run
+   * sequentially: the request timer fires until headers arrive, then the
+   * inactivity timer takes over and is reset on each chunk.
+   */
+  private createStreamTimers(cancellationToken: vscode.CancellationToken): StreamTimers {
+    const controller = new AbortController();
+    const cancelSub = cancellationToken.onCancellationRequested(() => controller.abort());
+    const headerTimeoutId = setTimeout(() => controller.abort(), this.config.requestTimeout);
+    let inactivityTimeoutId: ReturnType<typeof setTimeout> | undefined;
+    const resetInactivity = (): void => {
+      if (inactivityTimeoutId) { clearTimeout(inactivityTimeoutId); }
+      inactivityTimeoutId = setTimeout(() => controller.abort(), this.config.requestTimeout);
+    };
+    return {
+      controller,
+      resetInactivity,
+      onHeadersReceived: () => {
+        clearTimeout(headerTimeoutId);
+        resetInactivity();
+      },
+      dispose: () => {
+        clearTimeout(headerTimeoutId);
+        if (inactivityTimeoutId) { clearTimeout(inactivityTimeoutId); }
+        cancelSub.dispose();
+      },
+    };
   }
 
   /**

@@ -64,7 +64,7 @@ class FakeConfig implements LegacyConfigAccessor {
 }
 
 class FakeSecrets implements SecretAccessor {
-  private store_: Map<string, string> = new Map();
+  private readonly store_: Map<string, string> = new Map();
 
   async get(key: string): Promise<string | undefined> {
     return this.store_.get(key);
