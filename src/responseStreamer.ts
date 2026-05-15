@@ -9,18 +9,27 @@
  */
 
 import { ThinkingParser, ThinkingChunk } from './thinking';
+import { OpenAIUsage } from './types';
 
 export interface StreamReporter {
   reportText(text: string): void;
   reportThinking(text: string): void;
   reportThinkingDone(): void;
   reportToolCall(id: string, name: string, args: Record<string, unknown>): void;
+  /**
+   * Report a usage frame from the inference server. Called at most once per
+   * stream — the OpenAI convention is to emit a trailing chunk with totals
+   * after the last delta. Wired to VS Code's chat context-window widget via
+   * a `LanguageModelDataPart` (issue #24).
+   */
+  reportUsage(usage: OpenAIUsage): void;
 }
 
 export interface StreamChunk {
   content?: string;
   reasoning_content?: string;
   finished_tool_calls?: Array<{ id: string; name: string; arguments: string }>;
+  usage?: OpenAIUsage;
 }
 
 export interface StreamStats {
@@ -30,6 +39,13 @@ export interface StreamStats {
   totalTextParts: number;
   hadThinking: boolean;
   thinkingForceClosed: boolean;
+  /**
+   * True once a usage frame has been dispatched to the reporter. Internal
+   * book-keeping to dedupe re-emitted totals from chatty servers; optional
+   * so callers constructing `StreamStats` for `isEmptyStreamResult` checks
+   * don't need to pass it.
+   */
+  reportedUsage?: boolean;
 }
 
 export interface StreamResponseParams {
@@ -119,6 +135,14 @@ function processStreamChunk(
     }
   }
 
+  if (chunk.usage && !stats.reportedUsage) {
+    // Latch on the first usage frame; some servers re-emit the same totals
+    // across the trailing few chunks. Reporting twice would briefly double
+    // VS Code's running context-window count before settling.
+    stats.reportedUsage = true;
+    reporter.reportUsage(chunk.usage);
+  }
+
   return inReasoningField;
 }
 
@@ -136,6 +160,7 @@ export async function streamResponse(params: StreamResponseParams): Promise<Stre
     totalTextParts: 0,
     hadThinking: false,
     thinkingForceClosed: false,
+    reportedUsage: false,
   };
 
   const parser = new ThinkingParser();

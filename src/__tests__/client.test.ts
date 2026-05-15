@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeBaseUrl, normalizeApiKey, buildHeaders } from '../client';
+import { normalizeBaseUrl, normalizeApiKey, buildHeaders, extractUsage } from '../client';
 
 describe('normalizeBaseUrl', () => {
   test('returns the URL unchanged when no normalization is needed', () => {
@@ -89,5 +89,80 @@ describe('buildHeaders', () => {
     assert.equal(headers['Valid'], 'yes');
     assert.equal(headers[''], undefined);
     assert.equal(headers['Bogus'], undefined);
+  });
+});
+
+describe('extractUsage', () => {
+  test('returns undefined for non-objects', () => {
+    assert.equal(extractUsage(undefined), undefined);
+    assert.equal(extractUsage(null), undefined);
+    assert.equal(extractUsage('foo'), undefined);
+    assert.equal(extractUsage(123), undefined);
+  });
+
+  test('returns undefined when no token fields are present', () => {
+    // A proxy that strips usage entirely (issue #24 scenario) returns
+    // either no `usage` object at all or one with all fields missing.
+    assert.equal(extractUsage({}), undefined);
+    assert.equal(extractUsage({ prompt_tokens_details: { cached_tokens: 0 } }), undefined);
+  });
+
+  test('normalizes a typical OpenAI usage payload', () => {
+    const result = extractUsage({
+      prompt_tokens: 100,
+      completion_tokens: 50,
+      total_tokens: 150,
+      prompt_tokens_details: { cached_tokens: 10 },
+    });
+    assert.deepEqual(result, {
+      prompt_tokens: 100,
+      completion_tokens: 50,
+      total_tokens: 150,
+      prompt_tokens_details: { cached_tokens: 10 },
+    });
+  });
+
+  test('defaults missing cached_tokens to 0', () => {
+    const result = extractUsage({
+      prompt_tokens: 10,
+      completion_tokens: 5,
+      total_tokens: 15,
+    });
+    assert.deepEqual(result?.prompt_tokens_details, { cached_tokens: 0 });
+  });
+
+  test('computes total_tokens from prompt+completion when the server omits it', () => {
+    const result = extractUsage({
+      prompt_tokens: 20,
+      completion_tokens: 8,
+    });
+    assert.equal(result?.total_tokens, 28);
+  });
+
+  test('clamps sentinel negative values to 0', () => {
+    // Some BYOK-style backends emit -1 for fields that aren't yet known.
+    const result = extractUsage({
+      prompt_tokens: -1,
+      completion_tokens: -1,
+      total_tokens: -1,
+      prompt_tokens_details: { cached_tokens: -5 },
+    });
+    assert.deepEqual(result, {
+      prompt_tokens: 0,
+      completion_tokens: 0,
+      total_tokens: 0,
+      prompt_tokens_details: { cached_tokens: 0 },
+    });
+  });
+
+  test('drops non-finite numbers', () => {
+    const result = extractUsage({
+      prompt_tokens: Number.NaN,
+      completion_tokens: 5,
+      total_tokens: Number.POSITIVE_INFINITY,
+    });
+    assert.equal(result?.prompt_tokens, 0);
+    assert.equal(result?.completion_tokens, 5);
+    assert.equal(result?.total_tokens, 5);
   });
 });

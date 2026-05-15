@@ -47,6 +47,13 @@ const MAX_TOOL_ARGS_LOG_LENGTH = 1000;
 const MAX_TOOL_DESCRIPTION_LOG_LENGTH = 100;
 
 /**
+ * MIME type VS Code 1.120 watches for on `LanguageModelDataPart`s to extract
+ * BYOK / language-model-provider token usage and feed it into the chat
+ * context-window widget. See microsoft/vscode#315394.
+ */
+const USAGE_DATA_PART_MIME_TYPE = 'usage';
+
+/**
  * Format a tool's description for the output channel: trim, truncate at
  * MAX_TOOL_DESCRIPTION_LOG_LENGTH characters, and only append `...` when an
  * actual truncation happened. Returns `'(none)'` when the tool didn't supply
@@ -810,6 +817,18 @@ export class GatewayProvider implements vscode.LanguageModelChatProvider {
         progress.report(new vscode.LanguageModelThinkingPart('', '', { vscode_reasoning_done: true })),
       reportToolCall: (id, name, args) =>
         progress.report(new vscode.LanguageModelToolCallPart(id, name, args)),
+      reportUsage: (usage) => {
+        // VS Code 1.120 picks up token usage emitted as a LanguageModelDataPart
+        // with the literal mime type `usage` (see microsoft/vscode#315394).
+        // The shape mirrors OpenAI's `usage` object. Surfacing it here makes
+        // the chat view's context-window widget render real numbers instead
+        // of `0%` for gateway models (issue #24).
+        this.outputChannel.appendLine(
+          `Usage: prompt=${usage.prompt_tokens}, completion=${usage.completion_tokens}, total=${usage.total_tokens}`
+        );
+        const payload = new TextEncoder().encode(JSON.stringify(usage));
+        progress.report(new vscode.LanguageModelDataPart(payload, USAGE_DATA_PART_MIME_TYPE));
+      },
     };
   }
 

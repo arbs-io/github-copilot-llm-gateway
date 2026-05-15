@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import {
   OpenAIChatCompletionRequest,
   OpenAIModelsResponse,
+  OpenAIUsage,
   GatewayConfig,
 } from './types';
 import {
@@ -61,12 +62,19 @@ export function buildHeaders(
 
 /**
  * Wire-format chat-completion chunk that downstream consumers see.
+ *
+ * `usage` is set only on the final chunk of a stream (OpenAI's convention
+ * when the request was sent with `stream_options.include_usage: true`).
+ * Older or stripped servers may omit it entirely — we surface it when
+ * present so VS Code's chat context-window widget can render running
+ * token counts (issue #24).
  */
 export interface GatewayStreamChunk {
   content: string;
   reasoning_content: string;
   tool_calls: AccumulatedToolCall[];
   finished_tool_calls: AccumulatedToolCall[];
+  usage?: OpenAIUsage;
 }
 
 /**
@@ -207,7 +215,16 @@ export class GatewayClient {
       const response = await fetch(url, {
         method: 'POST',
         headers: { ...this.getHeaders(), 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...request, stream: true }),
+        // `stream_options.include_usage` tells OpenAI-compatible servers to
+        // emit a final SSE chunk containing `usage` totals once the model
+        // finishes. We forward that to VS Code's chat context-window widget
+        // (issue #24). Servers that don't recognise the option simply
+        // ignore it; servers behind aggressive proxies may strip it.
+        body: JSON.stringify({
+          ...request,
+          stream: true,
+          stream_options: { ...((request.stream_options as object | undefined) ?? {}), include_usage: true },
+        }),
         signal: controller.signal,
       });
 
@@ -302,9 +319,24 @@ export class GatewayClient {
     obj: Record<string, unknown>,
     accumulator: ToolCallAccumulator
   ): GatewayStreamChunk | null {
+    const usage = extractUsage(obj.usage);
     const choices = Array.isArray(obj.choices) ? obj.choices : undefined;
     const choice = choices?.[0] as Record<string, unknown> | undefined;
-    if (!choice) { return null; }
+
+    // OpenAI's stream-with-include_usage convention puts the totals on a
+    // trailing chunk with an empty `choices` array — surface it as a
+    // usage-only stream chunk so the provider can forward it to the chat
+    // context-window widget (issue #24).
+    if (!choice) {
+      if (!usage) { return null; }
+      return {
+        content: '',
+        reasoning_content: '',
+        tool_calls: [],
+        finished_tool_calls: [],
+        usage,
+      };
+    }
 
     const chunk: ParsedChunk = {
       delta: choice.delta as ParsedChunk['delta'],
@@ -320,6 +352,7 @@ export class GatewayClient {
         reasoning_content: reasoningContent,
         tool_calls: [],
         finished_tool_calls: finishedToolCalls,
+        ...(usage ? { usage } : {}),
       };
     }
     if (chunk.message) {
@@ -329,6 +362,7 @@ export class GatewayClient {
         reasoning_content: reasoningContent,
         tool_calls: [],
         finished_tool_calls: finishedToolCalls,
+        ...(usage ? { usage } : {}),
       };
     }
     return null;
@@ -416,6 +450,44 @@ export class GatewayClient {
       cancelSub?.dispose();
     }
   }
+}
+
+/**
+ * Validate and shape a raw `usage` payload from the inference server. Coerces
+ * NaN/missing fields to 0 and clamps negative sentinel values (some servers
+ * emit -1 when totals aren't yet available) so VS Code's chat context-window
+ * widget doesn't render nonsensical numbers (issue #24).
+ */
+export function extractUsage(raw: unknown): OpenAIUsage | undefined {
+  if (!raw || typeof raw !== 'object') { return undefined; }
+  const obj = raw as Record<string, unknown>;
+  const prompt = toNonNegativeNumber(obj.prompt_tokens);
+  const completion = toNonNegativeNumber(obj.completion_tokens);
+  const total = toNonNegativeNumber(obj.total_tokens, prompt + completion);
+
+  // Some servers omit `prompt_tokens` and `completion_tokens` entirely.
+  // Require at least one signal so we don't emit an all-zero usage frame
+  // that would briefly reset the context-window widget to 0% mid-stream.
+  if (obj.prompt_tokens === undefined && obj.completion_tokens === undefined && obj.total_tokens === undefined) {
+    return undefined;
+  }
+
+  const detailsRaw = obj.prompt_tokens_details;
+  const cached = detailsRaw && typeof detailsRaw === 'object'
+    ? toNonNegativeNumber((detailsRaw as Record<string, unknown>).cached_tokens)
+    : 0;
+
+  return {
+    prompt_tokens: prompt,
+    completion_tokens: completion,
+    total_tokens: total,
+    prompt_tokens_details: { cached_tokens: cached },
+  };
+}
+
+function toNonNegativeNumber(value: unknown, fallback = 0): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) { return fallback; }
+  return value < 0 ? 0 : value;
 }
 
 function extractServerErrorMessage(payload: ServerErrorPayload): string {

@@ -8,11 +8,12 @@ import {
 } from '../responseStreamer';
 
 interface ReporterEvent {
-  kind: 'text' | 'thinking' | 'thinkingDone' | 'toolCall';
+  kind: 'text' | 'thinking' | 'thinkingDone' | 'toolCall' | 'usage';
   value?: string;
   id?: string;
   name?: string;
   args?: Record<string, unknown>;
+  usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
 }
 
 function makeReporter(): { reporter: StreamReporter; events: ReporterEvent[] } {
@@ -22,6 +23,14 @@ function makeReporter(): { reporter: StreamReporter; events: ReporterEvent[] } {
     reportThinking: (text) => events.push({ kind: 'thinking', value: text }),
     reportThinkingDone: () => events.push({ kind: 'thinkingDone' }),
     reportToolCall: (id, name, args) => events.push({ kind: 'toolCall', id, name, args }),
+    reportUsage: (usage) => events.push({
+      kind: 'usage',
+      usage: {
+        prompt_tokens: usage.prompt_tokens,
+        completion_tokens: usage.completion_tokens,
+        total_tokens: usage.total_tokens,
+      },
+    }),
   };
   return { reporter, events };
 }
@@ -217,6 +226,68 @@ describe('streamResponse', () => {
     assert.equal(stats.hadThinking, false);
     assert.equal(stats.thinkingForceClosed, false);
     assert.equal(events.length, 0);
+  });
+
+  test('reports a usage frame to the reporter when chunk has usage', async () => {
+    const { reporter, events } = makeReporter();
+    const stats = await streamResponse({
+      chunks: iter([
+        { content: 'hi' },
+        {
+          usage: {
+            prompt_tokens: 42,
+            completion_tokens: 7,
+            total_tokens: 49,
+            prompt_tokens_details: { cached_tokens: 3 },
+          },
+        },
+      ]),
+      reporter,
+      isCancelled: () => false,
+      resolveToolCallArgs: identityArgs,
+    });
+    assert.equal(stats.reportedUsage, true);
+    const usageEvents = events.filter((e) => e.kind === 'usage');
+    assert.equal(usageEvents.length, 1);
+    assert.deepEqual(usageEvents[0].usage, {
+      prompt_tokens: 42,
+      completion_tokens: 7,
+      total_tokens: 49,
+    });
+  });
+
+  test('emits the usage frame only once even when the server repeats totals', async () => {
+    const { reporter, events } = makeReporter();
+    const usage = {
+      prompt_tokens: 10,
+      completion_tokens: 5,
+      total_tokens: 15,
+      prompt_tokens_details: { cached_tokens: 0 },
+    };
+    await streamResponse({
+      chunks: iter([
+        { content: 'x', usage },
+        { content: 'y', usage },
+        { usage },
+      ]),
+      reporter,
+      isCancelled: () => false,
+      resolveToolCallArgs: identityArgs,
+    });
+    const usageEvents = events.filter((e) => e.kind === 'usage');
+    assert.equal(usageEvents.length, 1);
+  });
+
+  test('does not emit usage when no chunk carries it', async () => {
+    const { reporter, events } = makeReporter();
+    const stats = await streamResponse({
+      chunks: iter([{ content: 'plain content' }]),
+      reporter,
+      isCancelled: () => false,
+      resolveToolCallArgs: identityArgs,
+    });
+    assert.equal(stats.reportedUsage, false);
+    assert.equal(events.filter((e) => e.kind === 'usage').length, 0);
   });
 });
 

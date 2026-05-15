@@ -75,6 +75,26 @@ export interface OpenAIChatCompletionChunk {
     };
     finish_reason: string | null;
   }>;
+  /**
+   * Present only on the trailing chunk when the request asked for
+   * `stream_options.include_usage = true`. OpenAI omits `choices` (or sends
+   * an empty array) on that chunk.
+   */
+  usage?: OpenAIUsage;
+}
+
+/**
+ * OpenAI-compatible token usage stats. `prompt_tokens_details.cached_tokens`
+ * is supported by OpenAI and a growing set of compatible servers; absent
+ * elsewhere, we default to 0 when surfacing to VS Code.
+ */
+export interface OpenAIUsage {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  prompt_tokens_details?: {
+    cached_tokens?: number;
+  };
 }
 
 export interface OpenAIChatCompletionResponse {
@@ -90,11 +110,7 @@ export interface OpenAIChatCompletionResponse {
     };
     finish_reason: string;
   }>;
-  usage: {
-    prompt_tokens: number;
-    completion_tokens: number;
-    total_tokens: number;
-  };
+  usage: OpenAIUsage;
 }
 
 export interface GatewayConfig {
