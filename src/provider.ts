@@ -1035,11 +1035,17 @@ export class GatewayProvider implements vscode.LanguageModelChatProvider {
       extraModelOptions: config.get<Record<string, unknown>>('extraModelOptions', {}) ?? {},
     };
 
+    const MAX_INT32 = 2147483647; // Maximum value for setTimeout (signed 32-bit integer)
     if (cfg.requestTimeout <= 0) {
       this.outputChannel.appendLine(
         `ERROR: requestTimeout must be > 0; using default ${DEFAULT_REQUEST_TIMEOUT_MS}`
       );
       cfg.requestTimeout = DEFAULT_REQUEST_TIMEOUT_MS;
+    } else if (cfg.requestTimeout > MAX_INT32) {
+      this.outputChannel.appendLine(
+        `WARNING: requestTimeout (${cfg.requestTimeout}) exceeds the maximum value of 2147483647 ms (signed 32-bit integer). Setting to ${MAX_INT32}.`
+      );
+      cfg.requestTimeout = MAX_INT32;
     }
 
     try {
