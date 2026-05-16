@@ -52,7 +52,17 @@
       {
         "vendor": "copilot-llm-gateway",
         "displayName": "LLM Gateway",
-        "managementCommand": "github.copilot.llm-gateway.manage"
+        "managementCommand": "github.copilot.llm-gateway.manage",
+        "configuration": {
+          "properties": {
+            "apiKey": {
+              "type": "string",
+              "secret": true,
+              "title": "API Key",
+              "description": "Optional bearer token sent to the inference server. Leave blank for unauthenticated local servers (vLLM, Ollama, llama.cpp). Stored by VS Code; takes precedence over the 'Configure Server' command's SecretStorage entry."
+            }
+          }
+        }
       }
     ],
     "commands": [

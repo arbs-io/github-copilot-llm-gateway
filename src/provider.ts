@@ -24,12 +24,13 @@ import {
   isEmptyStreamResult,
   streamResponse,
 } from './responseStreamer';
+import { dedupeModels } from './modelDisplay';
+import { buildModelInfo } from './modelInfoBuilder';
 import {
-  dedupeModels,
-  describeModel,
-  friendlyModelName,
-  inferModelFamily,
-} from './modelDisplay';
+  FrameworkConfigOverride,
+  readFrameworkConfiguration,
+  resolveApiKey,
+} from './frameworkConfig';
 import { diagnoseModelFetchError } from './errorDiagnostics';
 import {
   ConfigurationTarget as SecretConfigurationTarget,
@@ -132,6 +133,16 @@ export class GatewayProvider implements vscode.LanguageModelChatProvider {
     apiKey: '',
     customHeaders: {},
   };
+  /**
+   * Latest API-key override supplied by VS Code's framework-managed
+   * `configuration` schema (the `chatProvider@4` proposed API used by native
+   * BYOK providers). Wins over the SecretStorage cache when set so users can
+   * manage credentials from the native model-picker UI without going through
+   * our bespoke `Configure Server` command. Empty values are meaningful —
+   * a user clearing the field in the native UI should override any stale
+   * SecretStorage entry.
+   */
+  private frameworkOverride: FrameworkConfigOverride = {};
   /**
    * Real server-reported context per model id (`max_model_len` / etc.).
    * Needed because the picker-facing `maxInputTokens` is the full context
@@ -343,9 +354,15 @@ export class GatewayProvider implements vscode.LanguageModelChatProvider {
    * and the status bar don't double-probe.
    */
   async provideLanguageModelChatInformation(
-    options: { silent: boolean },
+    options: { silent: boolean; configuration?: { readonly [key: string]: unknown } },
     token: vscode.CancellationToken
   ): Promise<vscode.LanguageModelChatInformation[]> {
+    // Pick up any framework-managed configuration (e.g. an apiKey entered via
+    // VS Code's native model-picker UI). Only mutates state when the
+    // configuration actually changed so we don't churn the cache on every
+    // picker open.
+    this.applyFrameworkConfiguration(options.configuration);
+
     const outcome = await this.getOrFetchModels(token);
     if (!options.silent && outcome.error) {
       this.promptOpenSettings(
@@ -353,6 +370,32 @@ export class GatewayProvider implements vscode.LanguageModelChatProvider {
       );
     }
     return outcome.models;
+  }
+
+  /**
+   * Merge a framework-supplied configuration into the in-memory override.
+   * Only forwards `apiKey` for now — `serverUrl` stays in workspace settings
+   * so the per-window scope picker (issue #23) keeps working. An explicit
+   * empty string is preserved as a "no key" override; a missing/non-string
+   * `apiKey` leaves the previous override untouched (defensive — the framework
+   * may simply not pass `configuration` on every call).
+   */
+  private applyFrameworkConfiguration(
+    configuration: { readonly [key: string]: unknown } | undefined
+  ): void {
+    const next = readFrameworkConfiguration(configuration);
+    if (next.apiKey === undefined) {
+      return;
+    }
+    if (next.apiKey === this.frameworkOverride.apiKey) {
+      return;
+    }
+    this.frameworkOverride.apiKey = next.apiKey;
+    this.outputChannel.appendLine(
+      'API key updated from VS Code framework configuration; reloading.'
+    );
+    this.invalidateModelCache();
+    this.reloadConfig();
   }
 
   /**
@@ -425,46 +468,23 @@ export class GatewayProvider implements vscode.LanguageModelChatProvider {
     this.contextByModelId.clear();
 
     const models = uniqueModels.map((model) => {
-      const serverContext = model.max_model_len ?? model.context_length ?? model.context_window;
-      const totalContext = serverContext ?? this.config.defaultMaxTokens;
-      this.contextByModelId.set(model.id, totalContext);
-      const maxOutputTokens = Math.min(
-        this.config.defaultMaxOutputTokens,
-        Math.max(
-          TOKEN_CONSTANTS.MIN_OUTPUT_TOKENS,
-          totalContext - TOKEN_CONSTANTS.ADJUST_TOKEN_BUFFER
-        )
-      );
-      // Expose the full server-reported context as `maxInputTokens` so the
-      // VS Code model picker displays the true window size. The chat-response
-      // path uses `contextByModelId` to get the real context for budgeting.
-      const maxInputTokens = totalContext;
-
-      if (serverContext) {
-        this.outputChannel.appendLine(
-          `  Model ${model.id}: server-reported context ${serverContext} tokens (exposed as input=${maxInputTokens}, output=${maxOutputTokens})`
-        );
-      }
-
-      const detail = describeModel(model);
-      const info: vscode.LanguageModelChatInformation = {
-        id: model.id,
-        name: friendlyModelName(model.id),
-        family: inferModelFamily(model.id),
-        maxInputTokens,
-        maxOutputTokens,
-        version: friendlyModelName(model.id),
+      const { info, totalContext, hasServerReportedContext } = buildModelInfo({
+        model,
+        defaultMaxTokens: this.config.defaultMaxTokens,
+        defaultMaxOutputTokens: this.config.defaultMaxOutputTokens,
         capabilities: {
           imageInput: this.config.enableImageInput,
           toolCalling: this.config.enableToolCalling,
         },
-        ...(detail ? { description: detail, detail } : {}),
-        tooltip: detail ? `${model.id} — ${detail}` : model.id,
-        // VS Code 1.120 hid models from the chat picker unless the provider
-        // marks them user-selectable — without this, gateway models only
-        // appeared in the read-only Manage Models list (issue #29).
-        isUserSelectable: true,
-      };
+      });
+      this.contextByModelId.set(model.id, totalContext);
+
+      if (hasServerReportedContext) {
+        this.outputChannel.appendLine(
+          `  Model ${model.id}: server-reported context ${totalContext} tokens (exposed as input=${info.maxInputTokens}, output=${info.maxOutputTokens})`
+        );
+      }
+
       return info;
     });
 
@@ -1019,7 +1039,12 @@ export class GatewayProvider implements vscode.LanguageModelChatProvider {
     // an early model fetch would just send unauthenticated requests.
     const cfg: GatewayConfig = {
       serverUrl: config.get<string>('serverUrl', 'http://localhost:8000'),
-      apiKey: this.secretCache.apiKey,
+      // Framework-managed API key (from VS Code's native model-picker UI) wins
+      // over the SecretStorage cache. Falls back to SecretStorage when nothing
+      // has come in via the configuration arg yet, which preserves the
+      // existing Configure Server flow for users on builds without the
+      // framework UI.
+      apiKey: resolveApiKey(this.frameworkOverride, this.secretCache.apiKey),
       requestTimeout: config.get<number>('requestTimeout', DEFAULT_REQUEST_TIMEOUT_MS),
       defaultMaxTokens: config.get<number>('defaultMaxTokens', TOKEN_CONSTANTS.DEFAULT_CONTEXT_TOKENS),
       defaultMaxOutputTokens: config.get<number>(
