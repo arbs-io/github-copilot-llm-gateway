@@ -24,8 +24,22 @@ import {
   isEmptyStreamResult,
   streamResponse,
 } from './responseStreamer';
-import { dedupeModels } from './modelDisplay';
+import { dedupeModels, friendlyModelName } from './modelDisplay';
 import { buildModelInfo } from './modelInfoBuilder';
+import { TokenUsage, extractHost } from './statusBarController';
+import {
+  SessionStats,
+  accumulateUsage,
+  emptySessionStats,
+  recordRequest,
+} from './sessionStats';
+import {
+  ConnectionState,
+  ModelSummary,
+  StatusSnapshot,
+  formatCapabilityLabels,
+  formatContextLabel,
+} from './statusSnapshot';
 import {
   FrameworkConfigOverride,
   readFrameworkConfiguration,
@@ -53,6 +67,26 @@ const MAX_TOOL_DESCRIPTION_LOG_LENGTH = 100;
  * context-window widget. See microsoft/vscode#315394.
  */
 const USAGE_DATA_PART_MIME_TYPE = 'usage';
+
+/**
+ * Lifecycle event the status bar (and any other listener) consumes to render
+ * live request state. Exactly one terminal event (`complete` or `error`)
+ * follows every `start` event for the same request.
+ */
+export type RequestStateEvent =
+  | { readonly kind: 'start'; readonly modelId: string; readonly modelName: string }
+  | {
+      readonly kind: 'complete';
+      readonly modelId: string;
+      readonly modelName: string;
+      readonly usage?: TokenUsage;
+    }
+  | {
+      readonly kind: 'error';
+      readonly modelId: string;
+      readonly modelName: string;
+      readonly errorMessage: string;
+    };
 
 /**
  * Format a tool's description for the output channel: trim, truncate at
@@ -158,13 +192,39 @@ export class GatewayProvider implements vscode.LanguageModelChatProvider {
    */
   private modelFetchInFlight?: Promise<vscode.LanguageModelChatInformation[]>;
   private modelFetchLast?: { at: number; result: vscode.LanguageModelChatInformation[] };
-  private hasShownWelcomeNotification = false;
   /** Tracks the last values we warned about, to avoid notification spam on each keystroke in the settings UI. */
   private lastInvalidUrlNotified?: string;
   private lastOutputTokenAdjustmentNotified?: { output: number; total: number };
 
   private readonly _onDidChangeLanguageModelChatInformation = new vscode.EventEmitter<void>();
   readonly onDidChangeLanguageModelChatInformation = this._onDidChangeLanguageModelChatInformation.event;
+
+  /**
+   * Fired around each chat request so the status bar (or other listeners) can
+   * surface live request state. `complete` may carry the usage frame the
+   * inference server reported; `error` carries the message that failed the
+   * request — both kinds always fire eventually, never both for the same call.
+   */
+  private readonly _onDidChangeRequestState = new vscode.EventEmitter<RequestStateEvent>();
+  readonly onDidChangeRequestState = this._onDidChangeRequestState.event;
+
+  /**
+   * Fired whenever the data behind `getStatusSnapshot()` changes (model
+   * fetch outcome, request completion, session totals). The status dialog
+   * subscribes to this to live-refresh while it's open.
+   */
+  private readonly _onDidChangeStatusSnapshot = new vscode.EventEmitter<void>();
+  readonly onDidChangeStatusSnapshot = this._onDidChangeStatusSnapshot.event;
+
+  private sessionStats: SessionStats = emptySessionStats();
+  private lastRequest?: {
+    modelId: string;
+    modelName: string;
+    completedAt: number;
+    usage?: TokenUsage;
+  };
+  private lastSuccessfulFetchAt?: number;
+  private lastConnectionError?: string;
 
   constructor(context: vscode.ExtensionContext) {
     this.outputChannel = vscode.window.createOutputChannel('GitHub Copilot LLM Gateway');
@@ -175,6 +235,8 @@ export class GatewayProvider implements vscode.LanguageModelChatProvider {
     context.subscriptions.push(
       this.outputChannel,
       this._onDidChangeLanguageModelChatInformation,
+      this._onDidChangeRequestState,
+      this._onDidChangeStatusSnapshot,
       vscode.workspace.onDidChangeConfiguration((e: vscode.ConfigurationChangeEvent) => {
         if (!e.affectsConfiguration('github.copilot.llm-gateway')) {
           return;
@@ -426,10 +488,15 @@ export class GatewayProvider implements vscode.LanguageModelChatProvider {
       // should re-probe instead of seeing a stale empty list.
       if (!token.isCancellationRequested) {
         this.modelFetchLast = { at: Date.now(), result };
+        this.lastSuccessfulFetchAt = Date.now();
+        this.lastConnectionError = undefined;
+        this._onDidChangeStatusSnapshot.fire();
       }
       return { models: result };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      this.lastConnectionError = message;
+      this._onDidChangeStatusSnapshot.fire();
       return { models: [], error: message };
     } finally {
       if (this.modelFetchInFlight === inFlight) {
@@ -510,7 +577,8 @@ export class GatewayProvider implements vscode.LanguageModelChatProvider {
     );
     this.outputChannel.appendLine(`Message count: ${messages.length}`);
 
-    this.showWelcomeNotification(model.id);
+    const modelName = friendlyModelName(model.id);
+    this._onDidChangeRequestState.fire({ kind: 'start', modelId: model.id, modelName });
 
     const openAIMessages = this.convertAllMessages(messages);
     this.outputChannel.appendLine(`Converted to ${openAIMessages.length} OpenAI messages`);
@@ -573,8 +641,11 @@ export class GatewayProvider implements vscode.LanguageModelChatProvider {
 
     this.logRequest(requestOptions);
 
+    let capturedUsage: TokenUsage | undefined;
     try {
-      const reporter = this.createStreamReporter(progress);
+      const reporter = this.createStreamReporter(progress, (usage) => {
+        capturedUsage = usage;
+      });
       const chunks = this.client.streamChatCompletion(requestOptions, token);
       const stats = await streamResponse({
         chunks: chunks as AsyncIterable<StreamChunk>,
@@ -591,7 +662,20 @@ export class GatewayProvider implements vscode.LanguageModelChatProvider {
         const toolCount = tools?.length ?? 0;
         await this.handleEmptyResponse(model, inputText, openAIMessages.length, toolCount, token, progress);
       }
+      this.recordCompletedRequest(model.id, modelName, capturedUsage);
+      this._onDidChangeRequestState.fire({
+        kind: 'complete',
+        modelId: model.id,
+        modelName,
+        usage: capturedUsage,
+      });
     } catch (error) {
+      this._onDidChangeRequestState.fire({
+        kind: 'error',
+        modelId: model.id,
+        modelName,
+        errorMessage: error instanceof Error ? error.message : String(error),
+      });
       this.handleChatError(error);
     }
   }
@@ -628,6 +712,89 @@ export class GatewayProvider implements vscode.LanguageModelChatProvider {
       }
     }
     return tokens;
+  }
+
+  /**
+   * Capture a successful request in the running session totals and the
+   * `lastRequest` slot the status dialog renders. Failed requests are not
+   * counted — the connection-state row already reflects them and a single
+   * failure shouldn't pad the request count.
+   */
+  private recordCompletedRequest(
+    modelId: string,
+    modelName: string,
+    usage: TokenUsage | undefined
+  ): void {
+    let next = recordRequest(this.sessionStats);
+    if (usage) {
+      next = accumulateUsage(next, usage);
+    }
+    this.sessionStats = next;
+    this.lastRequest = {
+      modelId,
+      modelName,
+      completedAt: Date.now(),
+      ...(usage ? { usage } : {}),
+    };
+    this._onDidChangeStatusSnapshot.fire();
+  }
+
+  /**
+   * Open the extension's output channel. Exposed so the status dialog's
+   * "Open output log" button can show the panel without the controller
+   * having to reach into the provider's internals.
+   */
+  public showOutput(): void {
+    this.outputChannel.show();
+  }
+
+  /**
+   * Snapshot of everything the status dialog renders: connection state, the
+   * cached model list, running session totals, last request, feature flags.
+   * Re-built fresh on every call so relative-time fields ("2m ago") move
+   * forward whenever the dialog re-renders.
+   */
+  public getStatusSnapshot(): StatusSnapshot {
+    const cachedModels = this.modelFetchLast?.result ?? [];
+    const models: ModelSummary[] = cachedModels.map((m) => {
+      const totalContext = this.contextByModelId.get(m.id);
+      return {
+        id: m.id,
+        name: m.name,
+        contextLabel: formatContextLabel(totalContext),
+        ...(totalContext !== undefined ? { totalContext } : {}),
+        capabilityLabels: formatCapabilityLabels(m.capabilities ?? {}),
+      };
+    });
+
+    let connection: { state: ConnectionState; errorMessage?: string };
+    if (this.lastConnectionError) {
+      connection = { state: 'error', errorMessage: this.lastConnectionError };
+    } else if (this.lastSuccessfulFetchAt === undefined) {
+      connection = { state: 'unknown' };
+    } else if (cachedModels.length === 0) {
+      connection = { state: 'noModels' };
+    } else {
+      connection = { state: 'ok' };
+    }
+
+    return {
+      host: extractHost(this.config.serverUrl),
+      connection,
+      ...(this.lastSuccessfulFetchAt !== undefined
+        ? { lastSuccessfulFetchAt: this.lastSuccessfulFetchAt }
+        : {}),
+      models,
+      sessionStats: this.sessionStats,
+      ...(this.lastRequest ? { lastRequest: this.lastRequest } : {}),
+      features: {
+        toolCalling: this.config.enableToolCalling,
+        imageInput: this.config.enableImageInput,
+        parallelToolCalling: this.config.parallelToolCalling,
+        agentTemperature: this.config.agentTemperature,
+      },
+      now: Date.now(),
+    };
   }
 
   /**
@@ -828,7 +995,8 @@ export class GatewayProvider implements vscode.LanguageModelChatProvider {
   }
 
   private createStreamReporter(
-    progress: vscode.Progress<vscode.LanguageModelResponsePart>
+    progress: vscode.Progress<vscode.LanguageModelResponsePart>,
+    onUsage?: (usage: TokenUsage) => void
   ): StreamReporter {
     return {
       reportText: (text) => progress.report(new vscode.LanguageModelTextPart(text)),
@@ -846,6 +1014,11 @@ export class GatewayProvider implements vscode.LanguageModelChatProvider {
         this.outputChannel.appendLine(
           `Usage: prompt=${usage.prompt_tokens}, completion=${usage.completion_tokens}, total=${usage.total_tokens}`
         );
+        onUsage?.({
+          prompt: usage.prompt_tokens,
+          completion: usage.completion_tokens,
+          total: usage.total_tokens,
+        });
         const payload = new TextEncoder().encode(JSON.stringify(usage));
         progress.report(new vscode.LanguageModelDataPart(payload, USAGE_DATA_PART_MIME_TYPE));
       },
@@ -1001,29 +1174,6 @@ export class GatewayProvider implements vscode.LanguageModelChatProvider {
           );
         }
       );
-  }
-
-  private showWelcomeNotification(modelId: string): void {
-    if (this.hasShownWelcomeNotification) {
-      return;
-    }
-    this.hasShownWelcomeNotification = true;
-    const message = `GitHub Copilot LLM Gateway is handling requests via "${modelId}".`;
-    vscode.window.showInformationMessage(message, 'Open Settings').then(
-      (selection: string | undefined) => {
-        if (selection === 'Open Settings') {
-          vscode.commands.executeCommand(
-            'workbench.action.openSettings',
-            'github.copilot.llm-gateway'
-          );
-        }
-      },
-      (err: unknown) => {
-        this.outputChannel.appendLine(
-          `Failed to show welcome notification: ${err instanceof Error ? err.message : String(err)}`
-        );
-      }
-    );
   }
 
   // ---------- config ----------
