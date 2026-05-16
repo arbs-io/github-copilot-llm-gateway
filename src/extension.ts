@@ -1,7 +1,189 @@
 import * as vscode from 'vscode';
-import { GatewayProvider } from './provider';
+import { GatewayProvider, RequestStateEvent } from './provider';
+import {
+  StatusBarState,
+  TokenUsage,
+  extractHost,
+  renderStatusBar,
+} from './statusBarController';
+import { StatusSnapshot } from './statusSnapshot';
+import { renderStatusTooltipHtml } from './statusTooltip';
 
 const STATUS_BAR_PROBE_DELAY_MS = 1500;
+/** How long the "responded" pulse stays in the bar before reverting to idle. */
+const RESPONDED_DISPLAY_MS = 10_000;
+
+/**
+ * Drives the LLM Gateway status bar. Pure rendering lives in
+ * `statusBarController.ts`; this class only handles the VS Code-side state
+ * machine: timers, in-flight counting, mapping events onto state transitions.
+ */
+class StatusBarManager implements vscode.Disposable {
+  private state: StatusBarState;
+  private respondedRevertTimer?: NodeJS.Timeout;
+  private activeRequestCount = 0;
+  private cachedIdle: { host: string; modelIds: readonly string[] } = {
+    host: '',
+    modelIds: [],
+  };
+
+  constructor(
+    private readonly item: vscode.StatusBarItem,
+    private readonly getServerUrl: () => string,
+    private readonly getSnapshot: () => StatusSnapshot
+  ) {
+    this.state = { kind: 'probing', host: extractHost(this.getServerUrl()) };
+    this.render();
+  }
+
+  /**
+   * Called from outside whenever the provider's snapshot changes (session
+   * totals, last request, models, connection state). The tooltip is rebuilt
+   * from the snapshot, so any new data shows up the next time the user hovers
+   * the status bar — even if the bar's icon state hasn't changed.
+   */
+  refreshTooltip(): void {
+    this.render();
+  }
+
+  dispose(): void {
+    this.cancelRespondedRevert();
+  }
+
+  setIdle(modelIds: readonly string[]): void {
+    this.cachedIdle = { host: this.host(), modelIds };
+    this.cancelRespondedRevert();
+    this.applyIdle();
+  }
+
+  setNoModels(): void {
+    this.cancelRespondedRevert();
+    this.state = { kind: 'noModels', host: this.host() };
+    this.render();
+  }
+
+  setError(errorMessage: string): void {
+    this.cancelRespondedRevert();
+    this.state = { kind: 'error', host: this.host(), errorMessage };
+    this.render();
+  }
+
+  onRequest(event: RequestStateEvent): void {
+    switch (event.kind) {
+      case 'start':
+        this.onRequestStart(event);
+        return;
+      case 'complete':
+        this.onRequestComplete(event);
+        return;
+      case 'error':
+        this.onRequestError(event);
+        return;
+      default: {
+        const _never: never = event;
+        throw new Error(`Unexpected request state kind: ${String(_never)}`);
+      }
+    }
+  }
+
+  private onRequestStart(event: Extract<RequestStateEvent, { kind: 'start' }>): void {
+    this.cancelRespondedRevert();
+    this.activeRequestCount++;
+    this.state = {
+      kind: 'streaming',
+      host: this.host(),
+      modelId: event.modelId,
+      modelName: event.modelName,
+      activeCount: this.activeRequestCount,
+    };
+    this.render();
+  }
+
+  private onRequestComplete(
+    event: Extract<RequestStateEvent, { kind: 'complete' }>
+  ): void {
+    this.activeRequestCount = Math.max(0, this.activeRequestCount - 1);
+    if (this.activeRequestCount > 0) {
+      // Other requests still streaming — keep the bar in streaming state with
+      // an updated count rather than briefly flashing "responded".
+      this.state = {
+        kind: 'streaming',
+        host: this.host(),
+        modelId: event.modelId,
+        modelName: event.modelName,
+        activeCount: this.activeRequestCount,
+      };
+      this.render();
+      return;
+    }
+    this.state = {
+      kind: 'responded',
+      host: this.host(),
+      modelId: event.modelId,
+      modelName: event.modelName,
+      ...(event.usage ? { usage: this.toUsage(event.usage) } : {}),
+    };
+    this.render();
+    this.scheduleRespondedRevert();
+  }
+
+  private onRequestError(event: Extract<RequestStateEvent, { kind: 'error' }>): void {
+    this.activeRequestCount = Math.max(0, this.activeRequestCount - 1);
+    this.setError(event.errorMessage);
+  }
+
+  private toUsage(usage: TokenUsage): TokenUsage {
+    return { prompt: usage.prompt, completion: usage.completion, total: usage.total };
+  }
+
+  private applyIdle(): void {
+    this.state = {
+      kind: 'idle',
+      host: this.cachedIdle.host,
+      modelCount: this.cachedIdle.modelIds.length,
+      modelIds: this.cachedIdle.modelIds,
+    };
+    this.render();
+  }
+
+  private scheduleRespondedRevert(): void {
+    this.cancelRespondedRevert();
+    this.respondedRevertTimer = setTimeout(() => {
+      this.respondedRevertTimer = undefined;
+      this.applyIdle();
+    }, RESPONDED_DISPLAY_MS);
+  }
+
+  private cancelRespondedRevert(): void {
+    if (this.respondedRevertTimer) {
+      clearTimeout(this.respondedRevertTimer);
+      this.respondedRevertTimer = undefined;
+    }
+  }
+
+  private host(): string {
+    return extractHost(this.getServerUrl());
+  }
+
+  private render(): void {
+    // Bar text stays minimal (vm-active/vm-disconnect + host) — that's the
+    // "is the gateway up" signal. All the rich data goes into the hover
+    // tooltip, which is the closest stable-API approximation to GHCP's
+    // floating popup (`chatStatusItem` is proposed-API-only).
+    const { text } = renderStatusBar(this.state);
+    this.item.text = text;
+    // Tooltip renders as the GHCP-style popup: HTML card with theme icons,
+    // section headers, and command-link buttons. MarkdownString runs the value
+    // through VS Code's hover renderer, which is the closest stable-API path
+    // to a click-triggered floating popup (`chatStatusItem` is proposed-only).
+    const tooltipHtml = renderStatusTooltipHtml(this.getSnapshot());
+    const md = new vscode.MarkdownString(tooltipHtml);
+    md.isTrusted = true;
+    md.supportThemeIcons = true;
+    md.supportHtml = true;
+    this.item.tooltip = md;
+  }
+}
 
 /**
  * Extension activation. Async so we can pull the API key + custom headers
@@ -22,17 +204,58 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   // Status bar entry so users can see connection state at a glance and
   // quickly refresh the model list. Without this, failed model fetches were
-  // invisible unless users happened to open the model picker.
+  // invisible unless users happened to open the model picker. The visible
+  // label is context-aware (host when idle, model name during streaming,
+  // model + token count after) — see statusBarController.ts.
   const statusBar = vscode.window.createStatusBarItem(
     vscode.StatusBarAlignment.Right,
     100
   );
   statusBar.name = 'LLM Gateway';
+  // Click refreshes the gateway. The rich GHCP-style popup is the hover
+  // tooltip — it's the closest stable-API approximation to a floating
+  // status-bar popup. Clicking is wired to a useful action so the bar
+  // isn't dead.
   statusBar.command = 'github.copilot.llm-gateway.refreshModels';
-  statusBar.text = '$(sync~spin) LLM Gateway';
-  statusBar.tooltip = 'Click to refresh the LLM Gateway models';
   statusBar.show();
   context.subscriptions.push(statusBar);
+
+  const statusManager = new StatusBarManager(
+    statusBar,
+    () =>
+      vscode.workspace
+        .getConfiguration('github.copilot.llm-gateway')
+        .get<string>('serverUrl', 'http://localhost:8000'),
+    () => provider.getStatusSnapshot()
+  );
+  context.subscriptions.push(statusManager);
+
+  // Live request state: streaming → responded → idle, with errors flashing in
+  // place. The provider fires `start` / `complete` / `error` events around
+  // each provideLanguageModelChatResponse call.
+  context.subscriptions.push(
+    provider.onDidChangeRequestState((event) => statusManager.onRequest(event))
+  );
+
+  // Rich hover tooltip is rebuilt from the provider's snapshot — refresh it
+  // whenever the snapshot changes (model refresh, request completion, session
+  // totals tick) so a hovering user always sees current numbers.
+  context.subscriptions.push(
+    provider.onDidChangeStatusSnapshot(() => statusManager.refreshTooltip())
+  );
+
+  // Status dialog (opened by clicking the status bar) — the GHCP-style
+  // QuickPick with connection state, session totals, models, feature toggles,
+  // and quick actions. The controller subscribes to the provider's snapshot
+  // event while open so the values stay fresh without polling.
+  // Tooltip's "Show output log" link needs a registered command (command-link
+  // anchors can't call class methods directly). Tiny wrapper around
+  // provider.showOutput.
+  context.subscriptions.push(
+    vscode.commands.registerCommand('github.copilot.llm-gateway.showOutput', () =>
+      provider.showOutput()
+    )
+  );
 
   /**
    * Probe the gateway silently (no error toast) and render the result in the
@@ -47,15 +270,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         cts.token
       );
       if (models.length > 0) {
-        statusBar.text = `$(check) LLM Gateway: ${models.length}`;
-        statusBar.tooltip = `LLM Gateway: ${models.length} model(s) available.\nClick to refresh.`;
+        statusManager.setIdle(models.map((m) => m.id));
       } else {
-        statusBar.text = '$(warning) LLM Gateway: no models';
-        statusBar.tooltip = 'No models reported by the inference server. Click to refresh.';
+        statusManager.setNoModels();
       }
-    } catch {
-      statusBar.text = '$(error) LLM Gateway';
-      statusBar.tooltip = 'LLM Gateway connection failed. Click to refresh.';
+    } catch (error) {
+      statusManager.setError(error instanceof Error ? error.message : String(error));
     } finally {
       cts.dispose();
     }
@@ -80,19 +300,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         );
 
         if (models.length > 0) {
-          statusBar.text = `$(check) LLM Gateway: ${models.length}`;
-          statusBar.tooltip = `LLM Gateway: ${models.length} model(s) available.\nClick to refresh.`;
+          statusManager.setIdle(models.map((m) => m.id));
           vscode.window.showInformationMessage(
             `GitHub Copilot LLM Gateway: Successfully connected! Found ${models.length} model(s): ${models.map((m) => m.name).join(', ')}`
           );
         } else {
-          statusBar.text = '$(warning) LLM Gateway: no models';
+          statusManager.setNoModels();
           vscode.window.showWarningMessage(
             'GitHub Copilot LLM Gateway: Connected but no models found.'
           );
         }
       } catch (error) {
-        statusBar.text = '$(error) LLM Gateway';
+        statusManager.setError(error instanceof Error ? error.message : String(error));
         vscode.window.showErrorMessage(
           `GitHub Copilot LLM Gateway: Connection test failed. ${error instanceof Error ? error.message : String(error)}`
         );
