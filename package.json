@@ -2,7 +2,7 @@
   "name": "github-copilot-llm-gateway",
   "displayName": "GitHub Copilot LLM Gateway",
   "description": "Connect GitHub Copilot to open-source models via vLLM or any OpenAI-compatible server",
-  "version": "1.0.6",
+  "version": "1.1.0",
   "publisher": "AndrewButson",
   "icon": "assets/copilot-llm-gateway.png",
   "private": true,
