@@ -116,6 +116,35 @@ The model integrates seamlessly with Copilot's features including:
 - **Tool calling** for file operations, terminal commands, and more
 - **Context awareness** with `@workspace` and file references
 
+### Using your models in the Agents window (Preview)
+
+VS Code 1.120+ adds the **Agents window** — a separate window for running multiple
+agent sessions in parallel. The Agents window and Chat view share the same model
+registry, so the gateway's models can be selected as a session's language model there
+too.
+
+Because the Agents window runs in its own window, extensions that execute code (like
+this one) don't activate there automatically — VS Code only auto-activates extensions
+that contribute purely static content (themes, grammars, keybindings). You opt this
+extension in with the `extensions.supportAgentsWindow` setting:
+
+```jsonc
+"extensions.supportAgentsWindow": {
+  "AndrewButson.github-copilot-llm-gateway": true
+}
+```
+
+Requirements and notes:
+
+1. The extension must be installed in your **default VS Code profile**.
+2. After adding the setting, reload/reopen the Agents window so the extension activates.
+3. Your gateway models then appear in the per-session **language model** picker, with the
+   same tool-calling and image capabilities they have in Copilot Chat.
+
+> Agents-window extension support is still a VS Code preview and is evolving. If a
+> gateway model doesn't appear after opting in, confirm the extension is enabled in your
+> default profile and check the **"GitHub Copilot LLM Gateway"** output channel.
+
 ## Configuration
 
 Configure the extension through VS Code Settings (`Ctrl+,` / `Cmd+,`) → search "Copilot LLM Gateway".
@@ -242,6 +271,15 @@ vllm serve Qwen/Qwen2.5-14B-Instruct-AWQ \
 4. Run command **"GitHub Copilot LLM Gateway: Test Server Connection"** from the Command Palette.
 5. If the connection worked earlier but models vanished, run **"GitHub Copilot LLM Gateway: Refresh Models"** from the Command Palette (or click the status-bar entry).
 6. Inspect the **"GitHub Copilot LLM Gateway"** output channel for the exact URL being probed and the server's response.
+
+### Model not appearing in the Agents window
+
+The Agents window is a separate window and won't activate this extension automatically.
+
+1. Add the opt-in setting (see [Using your models in the Agents window](#using-your-models-in-the-agents-window-preview)):
+   `"extensions.supportAgentsWindow": { "AndrewButson.github-copilot-llm-gateway": true }`
+2. Confirm the extension is installed in your **default VS Code profile**.
+3. Reload/reopen the Agents window, then re-check the session's language model picker.
 
 ### "Model returned empty response"
 
