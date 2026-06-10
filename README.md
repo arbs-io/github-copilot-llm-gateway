@@ -13,28 +13,41 @@
 [![Bugs](https://sonarcloud.io/api/project_badges/measure?project=arbs-io_github-copilot-llm-gateway&metric=bugs)](https://sonarcloud.io/summary/new_code?id=arbs-io_github-copilot-llm-gateway)
 [![Vulnerabilities](https://sonarcloud.io/api/project_badges/measure?project=arbs-io_github-copilot-llm-gateway&metric=vulnerabilities)](https://sonarcloud.io/summary/new_code?id=arbs-io_github-copilot-llm-gateway)
 
-Extend GitHub Copilot with open-source language models running on your own infrastructure.
+A robustness layer for running **self-hosted open-source models** inside GitHub Copilot Chat — built for the models and servers that don't _quite_ behave.
+
+## Do I need this, or is native BYOK enough?
+
+Since **VS Code 1.122**, VS Code ships a built-in **BYOK "Custom Endpoint" provider** (Generally Available) that connects any OpenAI-compatible server — vLLM, Ollama, llama.cpp, LM Studio, LocalAI — directly to Copilot chat, agent mode, tools, and MCP, with **no extension and no GitHub sign-in required**. For most setups that's the simplest path, and you should start there: run **Chat: Manage Language Models** from the Command Palette and add a Custom Endpoint.
+
+**This extension is for the harder cases native BYOK doesn't handle.** Native BYOK trusts your endpoint as-is and does no quirk-smoothing — its own docs note that tool-call reliability "depends on your server's tool-call parser." When you're stuck with a specific small or quantized model, or a server you can't reconfigure, that's where this extension earns its place:
+
+| Use **native BYOK** (built in) when…                                       | Use **this extension** when…                                                       |
+| -------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| Your model + server are well-behaved                                       | Tool calls fail with malformed / truncated JSON                                    |
+| You can pick the model and configure the server (e.g. `--tool-call-parser`) | You're locked to a specific small / quantized model that emits sloppy tool calls   |
+| You want the simplest, first-party path                                    | Reasoning models leak `<think>` blocks into chat or burn their budget mid-thought  |
+| You want cloud providers too (Anthropic, OpenAI, Gemini…)                  | You hit context-length errors and want safe, automatic token budgeting             |
+
+If native BYOK already works well for you, you don't need this extension. If your self-hosted small models keep tripping over tool calling, reasoning tags, or context limits, read on.
 
 ## About
 
-**GitHub Copilot LLM Gateway** is a companion extension for GitHub Copilot that adds support for self-hosted open-source models. It seamlessly integrates with the Copilot chat experience, allowing you to use models like Qwen, Llama, and Mistral alongside—or instead of—the default Copilot models.
+**GitHub Copilot LLM Gateway** registers as a language model provider inside GitHub Copilot Chat and adds a **resilience layer** for self-hosted open-source models served over any OpenAI-compatible API (vLLM, Ollama, llama.cpp, LM Studio, LocalAI). Models like Qwen, Llama, and Mistral appear in the Copilot model picker alongside the defaults — but unlike a plain passthrough, the gateway actively repairs the rough edges that small and quantized models produce.
 
-This extension connects to any **OpenAI-compatible inference server**, giving you complete control over your AI-assisted development environment.
+### What it does that a plain connection doesn't
 
-### Key Benefits
+| Capability                   | What it solves                                                                                                                                                                                                                                            |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Tool-call JSON repair**    | Recovers truncated / malformed tool-call arguments (unclosed strings or braces, trailing commas) instead of aborting the call, and fills in missing _required_ arguments from the tool schema so the call still runs.                                      |
+| **Streaming tool-call assembly** | Reassembles tool calls from incremental stream deltas across multiple wire formats, tolerating late or missing call IDs.                                                                                                                              |
+| **Reasoning / thinking handling** | Routes `<think>`/`<thinking>` blocks (and a separate `reasoning_content` field) into Copilot's thinking UI instead of dumping chain-of-thought into the chat — handling tags split across stream chunks and LM Studio's stray-tag quirk, with a fallback when a model exhausts its budget mid-thought. |
+| **Safe context budgeting**   | Auto-detects the real context window from `/v1/models` (across vLLM, Ollama, llama.cpp, and LocalAI field names) and shrinks `max_tokens` conservatively so small servers don't return context-length errors.                                            |
+| **Tool-call tuning**         | Sends a low agent temperature and exposes parallel-tool-call / tool-choice toggles to stabilize tool-call formatting from finicky fine-tuned models.                                                                                                      |
+| **Actionable diagnostics**   | Turns raw connection / auth / timeout and tool-parser failures into concrete fixes (remove a stray `/v1`, drop a `Bearer ` prefix, raise the timeout, disable tool calling).                                                                              |
 
-| Benefit                | Description                                                                                          |
-| ---------------------- | ---------------------------------------------------------------------------------------------------- |
-| **Data Sovereignty**   | LLM inference stays on your network. All model requests are sent to your own server, never to GitHub. |
-| **Zero API Costs**     | No per-token fees. Use your GPU resources without usage limits.                                      |
-| **Model Choice**       | Access thousands of open-source models from Hugging Face and beyond.                                 |
-| **Full Customization** | Fine-tune models for your specific codebase or domain.                                               |
+It also keeps the familiar benefits of self-hosting: inference stays on your network, there are no per-token fees, and your self-hosted models don't draw down Copilot premium quota.
 
-> **Important privacy note**: This extension redirects **LLM inference requests only**. It runs
-> inside GitHub Copilot Chat, which independently requires GitHub authentication and may send
-> additional requests to GitHub servers (e.g. conversation title generation, telemetry). This
-> extension cannot intercept or block those requests. See [Privacy & Network Requests](#privacy--network-requests)
-> for details.
+> **Privacy note**: This extension routes **LLM inference to your configured server only** — those requests never touch GitHub. It runs inside GitHub Copilot Chat, which is the host application and performs its own network activity (telemetry, and features such as conversation-title generation) that this extension cannot intercept or block. See [Privacy & Network Requests](#privacy--network-requests) for details.
 
 ### Compatible Inference Servers
 
@@ -47,9 +60,11 @@ This extension connects to any **OpenAI-compatible inference server**, giving yo
 
 ## Getting Started
 
+> **Tip**: If you only need to connect a well-behaved model, [native BYOK](#do-i-need-this-or-is-native-byok-enough) is the simpler path. Install this extension when you want the robustness layer for misbehaving small models.
+
 ### Prerequisites
 
-- **VS Code** 1.106.0 or later
+- **VS Code** 1.120.0 or later (VS Code's own native BYOK Custom Endpoint requires 1.122+)
 - **GitHub Copilot** extension installed and signed in
 - **Inference server** running with an OpenAI-compatible API
 
@@ -338,11 +353,12 @@ While you cannot fully eliminate GitHub network requests when using Copilot Chat
 - Set `"telemetry.telemetryLevel": "off"` in VS Code settings
 - Set `"github.copilot.advanced": { "authProvider": "github" }` telemetry-related options as available
 
-> **Note**: We have no control over the Copilot Chat host extension's behaviour. If full network
-> isolation is important to your use case, we encourage you to request upstream changes on the
-> [VS Code Copilot repository](https://github.com/microsoft/vscode-copilot-release) — specifically,
-> that title generation should use the selected model provider rather than hardcoded GitHub endpoints,
-> and that authentication should be optional when only third-party providers are in use.
+> **Note**: We have no control over the Copilot Chat host extension's behaviour. The good news is
+> that **VS Code 1.122 made BYOK work without a GitHub sign-in** — the native Custom Endpoint provider
+> can run chat, tools, and MCP fully air-gapped, so if strict network isolation is your priority that
+> path is worth evaluating. One gap remains worth requesting upstream on the
+> [VS Code Copilot repository](https://github.com/microsoft/vscode-copilot-release): that conversation
+> title generation use the selected model provider rather than hardcoded GitHub endpoints.
 
 ## Support
 
