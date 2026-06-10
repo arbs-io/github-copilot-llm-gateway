@@ -29,6 +29,48 @@ export interface NormalizedMessage {
 
 export type ConverterLogger = (message: string) => void;
 
+/**
+ * Flatten a tool result's `content` into a plain string for the OpenAI `tool`
+ * message.
+ *
+ * VS Code delivers `LanguageModelToolResultPart.content` as an *array* of parts
+ * (text parts, prompt-tsx parts, data parts, or opaque objects). Some of those
+ * objects are values that crossed the extension-host RPC boundary and carry
+ * VS Code's internal `$mid` marshalling marker (e.g. a Uri or a terminal link
+ * such as `{ "$mid": 21, "value": "#!/bin/bash..." }`). Blindly
+ * `JSON.stringify`-ing the array dumps those blobs into the model context, and
+ * the model then echoes the raw JSON back into the chat (issue #41).
+ *
+ * We instead pull the human-meaningful text out of each element: a string
+ * `value` field covers both `LanguageModelTextPart` and the marshalled
+ * `{ $mid, value }` shape, yielding the clean underlying text. Genuinely
+ * structured elements with no string `value` fall back to a JSON dump so no
+ * information is silently lost.
+ */
+export function flattenToolResultContent(content: unknown): string {
+  if (typeof content === 'string') {
+    return content;
+  }
+  const parts = Array.isArray(content) ? content : [content];
+  return parts.map(extractToolResultPartText).join('');
+}
+
+function extractToolResultPartText(part: unknown): string {
+  if (typeof part === 'string') {
+    return part;
+  }
+  if (part === null || part === undefined) {
+    return '';
+  }
+  if (typeof part === 'object') {
+    const value = (part as { value?: unknown }).value;
+    if (typeof value === 'string') {
+      return value;
+    }
+  }
+  return JSON.stringify(part);
+}
+
 export interface MessageConverterOptions {
   enableImageInput: boolean;
 }

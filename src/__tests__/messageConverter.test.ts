@@ -4,6 +4,7 @@ import {
   convertMessage,
   convertMessages,
   encodeImageAsDataUrl,
+  flattenToolResultContent,
   NormalizedMessage,
   NormalizedPart,
 } from '../messageConverter';
@@ -27,6 +28,44 @@ describe('encodeImageAsDataUrl', () => {
     assert.equal(decoded.length, 4);
     assert.equal(decoded.codePointAt(0), 1);
     assert.equal(decoded.codePointAt(3), 4);
+  });
+});
+
+describe('flattenToolResultContent', () => {
+  test('returns a plain string unchanged', () => {
+    assert.equal(flattenToolResultContent('hello world'), 'hello world');
+  });
+
+  test('extracts .value from text-part-shaped array elements', () => {
+    const content = [{ value: 'tool output line' }];
+    assert.equal(flattenToolResultContent(content), 'tool output line');
+  });
+
+  test('unwraps marshalled $mid objects to their clean value (issue #41)', () => {
+    // VS Code marshals RPC-boundary values (Uris, terminal links) with a $mid
+    // marker. The old JSON.stringify path leaked the wrapper into chat.
+    const content = [{ $mid: 21, value: '#!/bin/bash\necho hi' }];
+    assert.equal(flattenToolResultContent(content), '#!/bin/bash\necho hi');
+    assert.ok(!flattenToolResultContent(content).includes('$mid'));
+  });
+
+  test('concatenates multiple parts in order', () => {
+    const content = [{ value: 'a' }, 'b', { $mid: 1, value: 'c' }];
+    assert.equal(flattenToolResultContent(content), 'abc');
+  });
+
+  test('falls back to JSON for structured parts with no string value', () => {
+    const content = [{ kind: 'data', bytes: [1, 2, 3] }];
+    assert.equal(flattenToolResultContent(content), JSON.stringify(content[0]));
+  });
+
+  test('wraps a non-array object as a single part', () => {
+    assert.equal(flattenToolResultContent({ $mid: 7, value: 'solo' }), 'solo');
+  });
+
+  test('skips null/undefined elements without emitting "null"', () => {
+    const content = [null, { value: 'kept' }, undefined];
+    assert.equal(flattenToolResultContent(content), 'kept');
   });
 });
 

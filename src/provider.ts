@@ -3,6 +3,7 @@ import { GatewayClient } from './client';
 import { GatewayConfig, OpenAIChatCompletionRequest, OpenAIMessage } from './types';
 import {
   convertMessage,
+  flattenToolResultContent,
   NormalizedMessage,
   NormalizedPart,
   NormalizedRole,
@@ -703,7 +704,7 @@ export class GatewayProvider implements vscode.LanguageModelChatProvider {
       } else if (part instanceof vscode.LanguageModelToolCallPart) {
         tokens += estimateTextTokens(part.name + JSON.stringify(part.input ?? {}));
       } else if (part instanceof vscode.LanguageModelToolResultPart) {
-        const body = typeof part.content === 'string' ? part.content : JSON.stringify(part.content);
+        const body = flattenToolResultContent(part.content);
         tokens += estimateTextTokens(body);
       } else if (part instanceof vscode.LanguageModelDataPart) {
         // Images don't map cleanly to tokens — reserve a conservative fixed
@@ -855,7 +856,7 @@ export class GatewayProvider implements vscode.LanguageModelChatProvider {
       return {
         kind: 'toolResult',
         callId: part.callId,
-        content: typeof part.content === 'string' ? part.content : JSON.stringify(part.content),
+        content: flattenToolResultContent(part.content),
       };
     }
     if (part instanceof vscode.LanguageModelToolCallPart) {
@@ -883,8 +884,7 @@ export class GatewayProvider implements vscode.LanguageModelChatProvider {
       return {
         kind: 'toolResult',
         callId: String(anyPart.callId),
-        content:
-          typeof anyPart.content === 'string' ? anyPart.content : JSON.stringify(anyPart.content),
+        content: flattenToolResultContent(anyPart.content),
       };
     }
     if ('callId' in anyPart && 'name' in anyPart && 'input' in anyPart) {
