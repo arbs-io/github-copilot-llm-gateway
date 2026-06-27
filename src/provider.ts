@@ -588,7 +588,14 @@ export class GatewayProvider implements vscode.LanguageModelChatProvider {
     const modelMaxContext = this.resolveModelMaxContext(model);
     const configuredMaxOutput =
       model.maxOutputTokens || TOKEN_CONSTANTS.DEFAULT_OUTPUT_TOKENS;
-    const toolsSerializedLength = options.tools ? JSON.stringify(options.tools).length : 0;
+
+    // Filter the tool catalog up-front so the token budget reflects what we
+    // actually send on the wire. Otherwise the unfiltered Copilot tool catalog
+    // (~93 tools, ~24K chars) would reserve context that gets thrown away by
+    // buildToolsConfig() later — collapsing the user's prompt when tool
+    // calling is disabled.
+    const { tools: filteredTools, schemas: toolSchemas } = this.buildToolsConfig(options);
+    const toolsSerializedLength = filteredTools ? JSON.stringify(filteredTools).length : 0;
 
     const maxInputTokens = calculateMaxInputTokens({
       modelMaxContext,
@@ -619,8 +626,7 @@ export class GatewayProvider implements vscode.LanguageModelChatProvider {
       `Token estimate: input=${estimatedInputTokens}, tools=${toolsOverhead}, model_context=${modelMaxContext}, chosen_max_tokens=${safeMaxOutputTokens}`
     );
 
-    const { tools, schemas: toolSchemas } = this.buildToolsConfig(options);
-    const hasTools = tools !== undefined && tools.length > 0;
+    const hasTools = filteredTools !== undefined && filteredTools.length > 0;
     const temperature = hasTools ? this.config.agentTemperature : DEFAULT_TEMPERATURE;
 
     const requestOptions = buildChatRequest({
@@ -628,7 +634,7 @@ export class GatewayProvider implements vscode.LanguageModelChatProvider {
       messages: truncatedMessages,
       maxTokens: safeMaxOutputTokens,
       temperature,
-      tools,
+      tools: filteredTools,
       toolChoice: hasTools ? this.mapToolChoice(options.toolMode) : undefined,
       parallelToolCalls: hasTools ? this.config.parallelToolCalling : undefined,
       extraOptions: { ...this.config.extraModelOptions, ...options.modelOptions },
@@ -636,7 +642,7 @@ export class GatewayProvider implements vscode.LanguageModelChatProvider {
 
     if (hasTools) {
       this.outputChannel.appendLine(
-        `Sending ${tools.length} tools to model (parallel: ${this.config.parallelToolCalling})`
+        `Sending ${filteredTools.length} tools to model (parallel: ${this.config.parallelToolCalling})`
       );
     }
 
@@ -660,7 +666,7 @@ export class GatewayProvider implements vscode.LanguageModelChatProvider {
       );
 
       if (isEmptyStreamResult(stats)) {
-        const toolCount = tools?.length ?? 0;
+        const toolCount = filteredTools?.length ?? 0;
         await this.handleEmptyResponse(model, inputText, openAIMessages.length, toolCount, token, progress);
       }
       this.recordCompletedRequest(model.id, modelName, capturedUsage);
