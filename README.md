@@ -179,6 +179,33 @@ Configure the extension through VS Code Settings (`Ctrl+,` / `Cmd+,`) → search
 | **Default Max Tokens**        | `262144` | Fallback context window size (input tokens) used only when the inference server does not report one itself.  |
 | **Default Max Output Tokens** | `4096`   | Fallback maximum output tokens used only when the server does not report a context size.                     |
 
+### Advanced Model Parameters
+
+Two settings let you pass extra sampling parameters straight through to the chat-completions request body. This is useful when your endpoint expects parameters like `temperature`, `top_p`, `top_k`, or `repetition_penalty` from the caller rather than configuring them server-side. Both are edited in `settings.json`.
+
+| Setting                | Default | Description                                                                                  |
+| ---------------------- | ------- | -------------------------------------------------------------------------------------------- |
+| **Extra Model Options**| `{}`    | Parameters merged into every chat-completions request, regardless of which model is active.  |
+| **Per Model Options**  | `{}`    | Parameters scoped to specific models, keyed by model id (with optional `*` wildcards).       |
+
+Different model families often need different sampling parameters for the same task, so a single flat `extraModelOptions` set rarely fits every model you switch between. `perModelOptions` lets you pin parameters per model. Keys match the model id **exactly**, or use a `*` wildcard to cover a whole family (case-insensitive). When several keys match, an exact-id entry wins over a wildcard entry.
+
+```jsonc
+{
+  // Applied to every model:
+  "github.copilot.llm-gateway.extraModelOptions": {
+    "repetition_penalty": 1.05
+  },
+  // Applied only to matching models (overrides extraModelOptions on conflict):
+  "github.copilot.llm-gateway.perModelOptions": {
+    "qwen*": { "temperature": 0.7, "top_p": 0.8, "top_k": 20 },
+    "deepseek-r1": { "temperature": 0.6 }
+  }
+}
+```
+
+The merge order, lowest to highest priority, is: `extraModelOptions` → matching `perModelOptions` → per-request options supplied by Copilot itself.
+
 ### Tool Calling Settings
 
 These settings control how the extension handles agentic features like code editing and file operations.

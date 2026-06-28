@@ -126,4 +126,6 @@ export interface GatewayConfig {
   verboseLogging: boolean;
   customHeaders: Record<string, string>;
   extraModelOptions: Record<string, unknown>;
+  /** Per-model chat-completion overrides keyed by model id / wildcard (issue #43). */
+  perModelOptions: Record<string, unknown>;
 }

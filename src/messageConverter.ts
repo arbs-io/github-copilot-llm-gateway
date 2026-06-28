@@ -43,9 +43,16 @@ export type ConverterLogger = (message: string) => void;
  *
  * We instead pull the human-meaningful text out of each element: a string
  * `value` field covers both `LanguageModelTextPart` and the marshalled
- * `{ $mid, value }` shape, yielding the clean underlying text. Genuinely
- * structured elements with no string `value` fall back to a JSON dump so no
- * information is silently lost.
+ * `{ $mid, value }` shape, yielding the clean underlying text.
+ *
+ * `LanguageModelDataPart`s are skipped: they cross the RPC boundary as
+ * `{ $mid, mimeType, data }` and carry binary or control metadata with no text
+ * representation — notably the `cache_control` cache-breakpoint part whose
+ * `data` decodes to `ephemeral`. JSON-dumping those leaked raw marshalling
+ * garbage into the model context, which the model echoed back into chat
+ * (issue #47). Genuinely structured elements with no string `value` (and which
+ * are not data parts) fall back to a JSON dump so no information is silently
+ * lost.
  */
 export function flattenToolResultContent(content: unknown): string {
   if (typeof content === 'string') {
@@ -63,9 +70,16 @@ function extractToolResultPartText(part: unknown): string {
     return '';
   }
   if (typeof part === 'object') {
-    const value = (part as { value?: unknown }).value;
-    if (typeof value === 'string') {
-      return value;
+    const obj = part as { value?: unknown; mimeType?: unknown; data?: unknown };
+    if (typeof obj.value === 'string') {
+      return obj.value;
+    }
+    // Drop `LanguageModelDataPart`-shaped elements (a string `mimeType` plus a
+    // `data` payload). These are image bytes or control metadata such as the
+    // `cache_control` cache-breakpoint part — never text — and JSON-dumping
+    // them leaked marshalling garbage into chat (issue #47).
+    if (typeof obj.mimeType === 'string' && 'data' in obj) {
+      return '';
     }
   }
   return JSON.stringify(part);

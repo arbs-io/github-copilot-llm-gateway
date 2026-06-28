@@ -13,6 +13,8 @@ node_modules/**
 *.vsix
 .devcontainer/**
 .github/**
+.claude/**
+**/.DS_Store
 PROJECT_SUMMARY.md
 INSTALLATION_TESTING.md
 package-lock.json

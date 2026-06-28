@@ -59,6 +59,24 @@ describe('flattenToolResultContent', () => {
     assert.equal(flattenToolResultContent(content), JSON.stringify(content[0]));
   });
 
+  test('drops marshalled cache_control data parts (issue #47)', () => {
+    // VS Code appends a `LanguageModelDataPart` cache-breakpoint that crosses
+    // the RPC boundary as { $mid, mimeType, data }. The old JSON.stringify
+    // fallback leaked it (and its base64 "ephemeral" data) into chat.
+    const content = [
+      { value: 'real file contents' },
+      { $mid: 24, mimeType: 'cache_control', data: 'ZXBoZW1lcmFs' },
+    ];
+    assert.equal(flattenToolResultContent(content), 'real file contents');
+    assert.ok(!flattenToolResultContent(content).includes('$mid'));
+    assert.ok(!flattenToolResultContent(content).includes('cache_control'));
+  });
+
+  test('drops data parts even when data is a byte array', () => {
+    const content = [{ mimeType: 'image/png', data: new Uint8Array([1, 2, 3]) }];
+    assert.equal(flattenToolResultContent(content), '');
+  });
+
   test('wraps a non-array object as a single part', () => {
     assert.equal(flattenToolResultContent({ $mid: 7, value: 'solo' }), 'solo');
   });

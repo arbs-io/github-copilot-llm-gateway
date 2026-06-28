@@ -19,6 +19,7 @@ import {
 import { tryRepairJson } from './jsonRepair';
 import { fillMissingRequiredProperties } from './toolSchema';
 import { buildChatRequest, OpenAIToolDefinition, ToolChoice } from './requestBuilder';
+import { resolvePerModelOptions } from './perModelOptions';
 import {
   StreamChunk,
   StreamReporter,
@@ -637,7 +638,11 @@ export class GatewayProvider implements vscode.LanguageModelChatProvider {
       tools: filteredTools,
       toolChoice: hasTools ? this.mapToolChoice(options.toolMode) : undefined,
       parallelToolCalls: hasTools ? this.config.parallelToolCalling : undefined,
-      extraOptions: { ...this.config.extraModelOptions, ...options.modelOptions },
+      extraOptions: {
+        ...this.config.extraModelOptions,
+        ...resolvePerModelOptions(model.id, this.config.perModelOptions),
+        ...options.modelOptions,
+      },
     });
 
     if (hasTools) {
@@ -1214,6 +1219,7 @@ export class GatewayProvider implements vscode.LanguageModelChatProvider {
       verboseLogging: config.get<boolean>('verboseLogging', false),
       customHeaders: { ...this.secretCache.customHeaders },
       extraModelOptions: config.get<Record<string, unknown>>('extraModelOptions', {}) ?? {},
+      perModelOptions: config.get<Record<string, unknown>>('perModelOptions', {}) ?? {},
     };
 
     const MAX_INT32 = 2147483647; // Maximum value for setTimeout (signed 32-bit integer)
