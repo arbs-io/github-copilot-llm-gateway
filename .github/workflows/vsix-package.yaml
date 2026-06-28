@@ -4,9 +4,13 @@ on:
   push:
     branches:
       - main
-  release:
-    types:
-      - created
+    tags:
+      # Publish to the Marketplace on a semver tag push (e.g. 1.2.0).
+      # A tag ref guarantees github.ref == refs/tags/<tag>, which the
+      # publish step below relies on. The previous `release: created`
+      # trigger could fire during the draft phase with the `main` ref,
+      # silently skipping the publish step.
+      - '[0-9]+.[0-9]+.[0-9]+'
 
 jobs:
   build:
