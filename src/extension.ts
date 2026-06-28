@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { GatewayProvider, RequestStateEvent } from './provider';
+import { GatewayInlineCompletionProvider } from './inlineCompletionProvider';
 import {
   StatusBarState,
   TokenUsage,
@@ -201,6 +202,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
 
   context.subscriptions.push(disposable);
+
+  // Experimental standalone inline (ghost-text) completions backed by the
+  // inference server's /v1/completions endpoint. Registered unconditionally
+  // for all files; it no-ops unless the user opts in via
+  // `enableInlineCompletion`, so toggling the setting takes effect without a
+  // reload. This runs alongside GitHub Copilot because VS Code doesn't expose
+  // BYOK models to its own inline suggestions (issue #44).
+  context.subscriptions.push(
+    vscode.languages.registerInlineCompletionItemProvider(
+      { pattern: '**' },
+      new GatewayInlineCompletionProvider(provider)
+    )
+  );
 
   // Status bar entry so users can see connection state at a glance and
   // quickly refresh the model list. Without this, failed model fetches were

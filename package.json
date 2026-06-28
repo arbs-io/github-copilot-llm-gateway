@@ -184,6 +184,39 @@
           },
           "description": "Per-model chat-completion parameters, keyed by model id. Merged on top of 'extraModelOptions' for matching models; per-request modelOptions from the caller still take precedence. Keys match the model id exactly, or use a '*' wildcard for a whole family (case-insensitive, e.g. 'qwen*'). Exact-id entries win over wildcard entries. Example: { \"qwen*\": { \"temperature\": 0.7, \"top_p\": 0.8 }, \"deepseek-r1\": { \"temperature\": 0.6 } }. Edit in settings.json.",
           "order": 13
+        },
+        "github.copilot.llm-gateway.enableInlineCompletion": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Experimental. Provide inline (ghost-text) code completions from your inference server, running **alongside** GitHub Copilot (not through it — VS Code does not expose bring-your-own-key models to its own inline suggestions). Requires a model/server that supports fill-in-the-middle via the `/v1/completions` `suffix` parameter (vLLM, llama.cpp, LM Studio, …). Leave disabled if you already use Copilot completions, to avoid two suggestions competing.",
+          "order": 14
+        },
+        "github.copilot.llm-gateway.inlineCompletionModel": {
+          "type": "string",
+          "default": "",
+          "description": "Model id to use for inline completions. Leave blank to use the first model reported by the server. Tip: point this at a small fill-in-the-middle / base model (e.g. a *-base or code FIM model) rather than a chat model for faster, cleaner completions.",
+          "order": 15
+        },
+        "github.copilot.llm-gateway.inlineCompletionMaxTokens": {
+          "type": "number",
+          "default": 256,
+          "minimum": 1,
+          "description": "Maximum tokens generated per inline completion. Lower values are faster and cheaper.",
+          "order": 16
+        },
+        "github.copilot.llm-gateway.inlineCompletionDebounce": {
+          "type": "number",
+          "default": 300,
+          "minimum": 0,
+          "description": "Milliseconds to wait after the last keystroke before requesting an inline completion. Higher values reduce load on the inference server while typing.",
+          "order": 17
+        },
+        "github.copilot.llm-gateway.inlineCompletionTimeout": {
+          "type": "number",
+          "default": 3000,
+          "minimum": 1,
+          "description": "Per-request timeout (milliseconds) for inline completions. Kept short so a slow server doesn't block ghost-text suggestions.",
+          "order": 18
         }
       }
     }

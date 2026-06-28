@@ -21,6 +21,14 @@ import { fillMissingRequiredProperties } from './toolSchema';
 import { buildChatRequest, OpenAIToolDefinition, ToolChoice } from './requestBuilder';
 import { resolvePerModelOptions } from './perModelOptions';
 import {
+  buildCompletionRequestBody,
+  cleanCompletionText,
+  extractCompletionText,
+  extractFimContext,
+  shouldRequestCompletion,
+} from './inlineCompletion';
+import { InlineCompletionBackend } from './inlineCompletionProvider';
+import {
   StreamChunk,
   StreamReporter,
   isEmptyStreamResult,
@@ -153,7 +161,9 @@ const LEGACY_SECRET_KEYS: readonly string[] = [
  * pure modules (messageConverter, tokenBudget, responseStreamer, etc.) which
  * are unit-tested independently.
  */
-export class GatewayProvider implements vscode.LanguageModelChatProvider {
+export class GatewayProvider
+  implements vscode.LanguageModelChatProvider, InlineCompletionBackend
+{
   private readonly client: GatewayClient;
   private config: GatewayConfig;
   private readonly outputChannel: vscode.OutputChannel;
@@ -809,6 +819,84 @@ export class GatewayProvider implements vscode.LanguageModelChatProvider {
     };
   }
 
+  // ---------- inline completion (InlineCompletionBackend) ----------
+
+  /** Whether the experimental inline-completion provider should run (issue #44). */
+  public isInlineCompletionEnabled(): boolean {
+    return this.config.enableInlineCompletion;
+  }
+
+  /** Debounce window the VS Code provider waits before firing a request. */
+  public getInlineCompletionDebounceMs(): number {
+    return this.config.inlineCompletionDebounce;
+  }
+
+  /**
+   * Produce a fill-in-the-middle completion for the text around the cursor, or
+   * `undefined` when disabled, no model is available, the context is empty, or
+   * the server errored. Talks straight to `/v1/completions` — this runs
+   * alongside (not through) Copilot, which doesn't expose BYOK models to its
+   * own inline suggestions.
+   */
+  public async provideInlineCompletion(
+    textBefore: string,
+    textAfter: string,
+    token: vscode.CancellationToken
+  ): Promise<string | undefined> {
+    if (!this.config.enableInlineCompletion) {
+      return undefined;
+    }
+    const model = this.resolveInlineCompletionModel();
+    if (!model) {
+      this.outputChannel.appendLine(
+        'Inline completion skipped: no model available. Set github.copilot.llm-gateway.inlineCompletionModel or refresh the model list.'
+      );
+      return undefined;
+    }
+
+    const context = extractFimContext(textBefore, textAfter);
+    if (!shouldRequestCompletion(context)) {
+      return undefined;
+    }
+
+    const request = buildCompletionRequestBody({
+      model,
+      context,
+      maxTokens: this.config.inlineCompletionMaxTokens,
+    });
+
+    try {
+      const response = await this.client.fetchCompletion(
+        request,
+        token,
+        this.config.inlineCompletionTimeout
+      );
+      const text = cleanCompletionText(extractCompletionText(response));
+      return text.length > 0 ? text : undefined;
+    } catch (error) {
+      // Completions are best-effort: a failure should silently yield no
+      // suggestion rather than surfacing a toast on every keystroke.
+      this.outputChannel.appendLine(
+        `Inline completion failed: ${error instanceof Error ? error.message : String(error)}`
+      );
+      return undefined;
+    }
+  }
+
+  /**
+   * Pick the model id for inline completions: the explicit
+   * `inlineCompletionModel` setting if set, otherwise the first model from the
+   * most recent successful fetch. Returns undefined when neither is available.
+   */
+  private resolveInlineCompletionModel(): string | undefined {
+    const configured = this.config.inlineCompletionModel.trim();
+    if (configured.length > 0) {
+      return configured;
+    }
+    const cached = this.modelFetchLast?.result;
+    return cached && cached.length > 0 ? cached[0].id : undefined;
+  }
+
   /**
    * Resolve the real server-reported context size for a model. The
    * picker-facing `maxInputTokens` equals `totalContext`, so naive
@@ -1220,6 +1308,11 @@ export class GatewayProvider implements vscode.LanguageModelChatProvider {
       customHeaders: { ...this.secretCache.customHeaders },
       extraModelOptions: config.get<Record<string, unknown>>('extraModelOptions', {}) ?? {},
       perModelOptions: config.get<Record<string, unknown>>('perModelOptions', {}) ?? {},
+      enableInlineCompletion: config.get<boolean>('enableInlineCompletion', false),
+      inlineCompletionModel: config.get<string>('inlineCompletionModel', ''),
+      inlineCompletionMaxTokens: config.get<number>('inlineCompletionMaxTokens', 256),
+      inlineCompletionDebounce: config.get<number>('inlineCompletionDebounce', 300),
+      inlineCompletionTimeout: config.get<number>('inlineCompletionTimeout', 3000),
     };
 
     const MAX_INT32 = 2147483647; // Maximum value for setTimeout (signed 32-bit integer)

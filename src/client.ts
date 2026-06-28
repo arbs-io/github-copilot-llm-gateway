@@ -1,6 +1,8 @@
 import * as vscode from 'vscode';
 import {
   OpenAIChatCompletionRequest,
+  OpenAICompletionRequest,
+  OpenAICompletionResponse,
   OpenAIModelsResponse,
   OpenAIUsage,
   GatewayConfig,
@@ -479,23 +481,62 @@ export class GatewayClient {
     };
   }
 
+  /**
+   * Fetch a single non-streaming completion from `/v1/completions`. Used by the
+   * experimental inline-completion provider for fill-in-the-middle. Takes its
+   * own `timeoutMs` because completions need a much tighter latency budget than
+   * the chat `requestTimeout` default.
+   */
+  public async fetchCompletion(
+    request: OpenAICompletionRequest,
+    cancellationToken: vscode.CancellationToken,
+    timeoutMs: number
+  ): Promise<OpenAICompletionResponse> {
+    const url = `${normalizeBaseUrl(this.config.serverUrl)}/v1/completions`;
+    const response = await this.fetchWithTimeout(
+      url,
+      {
+        method: 'POST',
+        headers: { ...this.getHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...request, stream: false }),
+      },
+      cancellationToken,
+      timeoutMs
+    );
+
+    if (!response.ok) {
+      const bodyText = await response.text().catch(() => '');
+      const truncated = bodyText.length > 200 ? bodyText.slice(0, 200) + '...' : bodyText;
+      const suffix = truncated ? ' — ' + truncated : '';
+      throw new Error(
+        `Completion failed: ${response.status} ${response.statusText}${suffix}`
+      );
+    }
+    return await response.json();
+  }
+
   private getHeaders(): Record<string, string> {
     return buildHeaders(this.config.apiKey, this.config.customHeaders);
   }
 
   /**
-   * Fetch wrapper with a fixed total-request timeout and optional
-   * cancellation-token wiring. Used for non-streaming requests like the
-   * model list. Streaming requests manage their own timers in
-   * `streamChatCompletion`.
+   * Fetch wrapper with a total-request timeout (the configured
+   * `requestTimeout`, or `timeoutMs` when the caller needs a tighter budget)
+   * and optional cancellation-token wiring. Used for non-streaming requests
+   * like the model list and inline completions. Streaming requests manage
+   * their own timers in `streamChatCompletion`.
    */
   private async fetchWithTimeout(
     url: string,
     options: RequestInit,
-    cancellationToken?: vscode.CancellationToken
+    cancellationToken?: vscode.CancellationToken,
+    timeoutMs?: number
   ): Promise<Response> {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), this.config.requestTimeout);
+    const timeoutId = setTimeout(
+      () => controller.abort(),
+      timeoutMs ?? this.config.requestTimeout
+    );
     const cancelSub = cancellationToken?.onCancellationRequested(() => controller.abort());
 
     try {

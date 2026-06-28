@@ -54,6 +54,33 @@ export interface OpenAIChatCompletionRequest {
   [key: string]: unknown;
 }
 
+/**
+ * Legacy `/v1/completions` request. Used by the experimental inline-completion
+ * provider for fill-in-the-middle (FIM): `prompt` is the text before the
+ * cursor and `suffix` the text after, which FIM-capable servers (vLLM,
+ * llama.cpp, LM Studio, …) splice into the model's FIM template.
+ */
+export interface OpenAICompletionRequest {
+  model: string;
+  prompt: string;
+  suffix?: string;
+  max_tokens?: number;
+  temperature?: number;
+  stream?: boolean;
+  stop?: string[];
+  [key: string]: unknown;
+}
+
+export interface OpenAICompletionResponse {
+  id?: string;
+  object?: string;
+  choices?: Array<{
+    text?: string;
+    index?: number;
+    finish_reason?: string | null;
+  }>;
+}
+
 export interface OpenAIChatCompletionChunk {
   id: string;
   object: string;
@@ -128,4 +155,15 @@ export interface GatewayConfig {
   extraModelOptions: Record<string, unknown>;
   /** Per-model chat-completion overrides keyed by model id / wildcard (issue #43). */
   perModelOptions: Record<string, unknown>;
+  /**
+   * Experimental inline (fill-in-the-middle) code completion settings. Powers a
+   * standalone completion provider that runs alongside — not through — GitHub
+   * Copilot, since VS Code does not expose BYOK models to its own inline
+   * suggestions (issue #44, microsoft/vscode#318545).
+   */
+  enableInlineCompletion: boolean;
+  inlineCompletionModel: string;
+  inlineCompletionMaxTokens: number;
+  inlineCompletionDebounce: number;
+  inlineCompletionTimeout: number;
 }

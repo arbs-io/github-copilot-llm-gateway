@@ -224,6 +224,36 @@ These settings control how the extension handles agentic features like code edit
 | -------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Verbose Logging**  | `false` | When enabled, the full request body (including messages and tool args) is written to the output channel. Keep disabled unless debugging an issue. |
 
+### Inline Completions (Experimental)
+
+VS Code does **not** let bring-your-own-key models power its own inline ("ghost text") code suggestions — that path still requires GitHub Copilot ([microsoft/vscode#318545](https://github.com/microsoft/vscode/issues/318545)). To fill the gap, this extension can provide its **own** inline completions straight from your inference server's `/v1/completions` endpoint, running *alongside* Copilot rather than through it.
+
+| Setting                          | Default | Description                                                                                                       |
+| -------------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------- |
+| **Enable Inline Completion**     | `false` | Turn on server-backed ghost-text completions.                                                                     |
+| **Inline Completion Model**      | `""`    | Model id to use. Blank = the first model the server reports. Prefer a small fill-in-the-middle / base model.       |
+| **Inline Completion Max Tokens** | `256`   | Maximum tokens generated per completion. Lower is faster.                                                          |
+| **Inline Completion Debounce**   | `300`   | Milliseconds to wait after the last keystroke before requesting a completion.                                     |
+| **Inline Completion Timeout**    | `3000`  | Per-request timeout (ms). Kept short so a slow server doesn't stall suggestions.                                   |
+
+**Requirements & notes:**
+
+- Your model/server must support **fill-in-the-middle (FIM)** via the `/v1/completions` `suffix` parameter (vLLM, llama.cpp, LM Studio, and most local servers do). The text before the cursor is sent as `prompt` and the text after as `suffix`.
+- Point **Inline Completion Model** at a code/FIM or `*-base` model for best results — chat-tuned models tend to be slower and chattier for raw completion.
+- If you already use GitHub Copilot's inline suggestions, leave this **off** to avoid two providers competing for the same ghost text.
+- Completions are best-effort: server errors or timeouts simply yield no suggestion (details go to the output channel) rather than interrupting you.
+
+### Using Gateway Models for Titles & Other Utility Tasks
+
+VS Code uses small background models for "utility" work — chat **title generation**, commit messages, rename/branch-name suggestions, settings search, and Git review. By default these use GitHub Copilot's built-in utility models, which are unavailable if you run BYOK without signing into GitHub.
+
+You can point them at one of your Gateway models instead, via VS Code's own settings (no extension configuration needed):
+
+- `chat.utilityModel` — titles, summaries, settings search, Git review
+- `chat.utilitySmallModel` — commit messages, rename and branch-name suggestions
+
+Open **Settings**, search for `chat.utilityModel` / `chat.utilitySmallModel`, and pick your Gateway model from the dropdown (its `LLM Gateway` models appear there once the server is connected). When running BYOK without GitHub sign-in, VS Code also shows a prompt in the Chat view to configure these.
+
 ## Recommended Models
 
 These models have been tested with good tool calling support:
