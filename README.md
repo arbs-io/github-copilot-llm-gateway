@@ -47,7 +47,7 @@ If native BYOK already works well for you, you don't need this extension. If you
 
 It also keeps the familiar benefits of self-hosting: inference stays on your network, there are no per-token fees, and your self-hosted models don't draw down Copilot premium quota.
 
-> **Privacy note**: This extension routes **LLM inference to your configured server only** — those requests never touch GitHub. It runs inside GitHub Copilot Chat, which is the host application and performs its own network activity (telemetry, and features such as conversation-title generation) that this extension cannot intercept or block. See [Privacy & Network Requests](#privacy--network-requests) for details.
+> **Privacy note**: This extension routes **LLM inference to your configured server only** — those requests never touch GitHub. It runs inside GitHub Copilot Chat, which is the host application and performs its own network activity (such as telemetry) that this extension cannot intercept or block. Some host features that default to GitHub — including conversation-title generation — can be redirected to a gateway model via VS Code's `chat.utilityModel` setting. See [Privacy & Network Requests](#privacy--network-requests) for details.
 
 ### Compatible Inference Servers
 
@@ -98,7 +98,7 @@ curl http://localhost:42069/v1/models
 
 1. Open VS Code **Settings** (`Ctrl+,` / `Cmd+,`)
 2. Search for **"Copilot LLM Gateway"**
-3. Set **Server URL** to your inference server address (e.g., `http://localhost:8000`)
+3. Set **Server URL** to your inference server address (e.g., `http://localhost:42069` to match the server started above; the setting defaults to `http://localhost:8000`)
 4. Configure other settings as needed (token limits, tool calling, etc.)
 
 ![Extension settings panel showing all configuration options](assets/screenshot-settings.png)
@@ -130,6 +130,12 @@ The model integrates seamlessly with Copilot's features including:
 - **Agent mode** for autonomous coding tasks
 - **Tool calling** for file operations, terminal commands, and more
 - **Context awareness** with `@workspace` and file references
+
+### Status Bar & Connection Info
+
+A status-bar entry (bottom-right) shows the gateway's connection state at a glance and turns into a live indicator while a request streams. Hover it for a detailed info popup — connection status, the detected models with their context windows and capabilities, running session token totals, the last request, and the active feature toggles. Click it to refresh the model list.
+
+![LLM Gateway status info dialog](assets/screenshot-status-dialog.png)
 
 ### Using your models in the Agents window (Preview)
 
@@ -178,6 +184,7 @@ Configure the extension through VS Code Settings (`Ctrl+,` / `Cmd+,`) → search
 | ----------------------------- | -------- | ------------------------------------------------------------------------------------------------------------ |
 | **Default Max Tokens**        | `262144` | Fallback context window size (input tokens) used only when the inference server does not report one itself.  |
 | **Default Max Output Tokens** | `4096`   | Fallback maximum output tokens used only when the server does not report a context size.                     |
+| **Enable Image Input**        | `true`   | Advertise image-input capability for multimodal models and forward image parts as base64 `image_url`s.       |
 
 ### Advanced Model Parameters
 
@@ -380,10 +387,13 @@ The model outputs text like "Using the read_file tool..." instead of actually ca
 
 Access from the Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`):
 
-| Command                                                | Description                                           |
-| ------------------------------------------------------ | ----------------------------------------------------- |
-| **GitHub Copilot LLM Gateway: Test Server Connection** | Test connectivity and list available models          |
-| **GitHub Copilot LLM Gateway: Refresh Models**         | Re-probe the inference server and refresh the picker |
+| Command                                                | Description                                                          |
+| ------------------------------------------------------ | ------------------------------------------------------------------- |
+| **GitHub Copilot LLM Gateway: Configure Server**       | Set the server URL and API key (also opened from "Add Models…")     |
+| **GitHub Copilot LLM Gateway: Test Server Connection** | Test connectivity and list available models                         |
+| **GitHub Copilot LLM Gateway: Refresh Models**         | Re-probe the inference server and refresh the picker                |
+| **GitHub Copilot LLM Gateway: Edit Custom Headers**    | Add, edit, or remove custom HTTP headers (stored in secret storage) |
+| **GitHub Copilot LLM Gateway: Show Output Log**        | Open the extension's output channel                                 |
 
 ## Privacy & Network Requests
 
@@ -400,22 +410,22 @@ GitHub Copilot Chat is the host application. It performs its own network activit
 | Request | Why it happens | What is sent |
 | --- | --- | --- |
 | **GitHub authentication** | Copilot Chat requires a GitHub sign-in to activate, even for third-party model providers | OAuth tokens |
-| **Conversation title generation** | Copilot Chat sends your first message to GitHub's API to auto-generate a title | Your prompt text |
+| **Conversation title generation** | By default Copilot Chat sends your first message to GitHub's API to auto-generate a title — redirectable to a gateway model via `chat.utilityModel` | Your prompt text |
 | **Telemetry** | Copilot collects usage telemetry per its own policies | Usage metadata |
 
 ### Reducing exposure
 
 While you cannot fully eliminate GitHub network requests when using Copilot Chat, you can minimise them:
 
-- Set `"telemetry.telemetryLevel": "off"` in VS Code settings
-- Set `"github.copilot.advanced": { "authProvider": "github" }` telemetry-related options as available
+- Set `chat.utilityModel` (and `chat.utilitySmallModel`) to a gateway model so conversation titles, commit messages, and other utility prompts are sent to your server instead of GitHub — see [Using Gateway Models for Titles & Other Utility Tasks](#using-gateway-models-for-titles--other-utility-tasks).
+- Set `"telemetry.telemetryLevel": "off"` in VS Code settings to reduce VS Code/Copilot telemetry.
 
-> **Note**: We have no control over the Copilot Chat host extension's behaviour. The good news is
+> **Note**: We have no control over the Copilot Chat host extension's core behaviour (auth, telemetry). The good news is
 > that **VS Code 1.122 made BYOK work without a GitHub sign-in** — the native Custom Endpoint provider
 > can run chat, tools, and MCP fully air-gapped, so if strict network isolation is your priority that
-> path is worth evaluating. One gap remains worth requesting upstream on the
-> [VS Code Copilot repository](https://github.com/microsoft/vscode-copilot-release): that conversation
-> title generation use the selected model provider rather than hardcoded GitHub endpoints.
+> path is worth evaluating. Utility tasks that used to be hardcoded to GitHub — including conversation
+> title generation — can now be routed to your own model via the `chat.utilityModel` /
+> `chat.utilitySmallModel` settings, keeping that text on your server too.
 
 ## Support
 

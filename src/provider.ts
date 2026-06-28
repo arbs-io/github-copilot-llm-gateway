@@ -1300,7 +1300,7 @@ export class GatewayProvider
         'defaultMaxOutputTokens',
         TOKEN_CONSTANTS.FALLBACK_OUTPUT_TOKENS
       ),
-      enableImageInput: config.get<boolean>('enableImageInput', false),
+      enableImageInput: config.get<boolean>('enableImageInput', true),
       enableToolCalling: config.get<boolean>('enableToolCalling', true),
       parallelToolCalling: config.get<boolean>('parallelToolCalling', true),
       agentTemperature: config.get<number>('agentTemperature', 0),
