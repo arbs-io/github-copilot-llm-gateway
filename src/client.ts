@@ -146,6 +146,24 @@ async function assertChatStreamResponseOk(response: Response): Promise<void> {
   throw new Error('Response body is null');
 }
 
+/**
+ * Node's `fetch` (undici) throws an opaque `TypeError: fetch failed` and stashes
+ * the real reason — DNS failure (`ENOTFOUND`), connection refused
+ * (`ECONNREFUSED`), timeout (`ETIMEDOUT`), TLS error, etc. — on `error.cause`.
+ * Surface that cause so users see *why* the connection failed instead of a bare
+ * "fetch failed".
+ */
+export function describeFetchError(error: unknown): string {
+  if (!(error instanceof Error)) {
+    return String(error);
+  }
+  const cause = (error as { cause?: unknown }).cause;
+  if (cause instanceof Error && cause.message && !error.message.includes(cause.message)) {
+    return `${error.message}: ${cause.message}`;
+  }
+  return error.message;
+}
+
 export class GatewayClient {
   private config: GatewayConfig;
   private readonly log: GatewayLogger;
@@ -182,7 +200,7 @@ export class GatewayClient {
       }
     }
 
-    const message = lastError?.message ?? 'unknown error';
+    const message = lastError ? describeFetchError(lastError) : 'unknown error';
     throw new Error(`Failed to connect to inference server at ${base}: ${message}`);
   }
 
@@ -265,7 +283,7 @@ export class GatewayClient {
       }
     } catch (error) {
       if (error instanceof Error) {
-        throw new Error(`Chat completion request failed: ${error.message}`);
+        throw new Error(`Chat completion request failed: ${describeFetchError(error)}`);
       }
       throw error;
     } finally {
