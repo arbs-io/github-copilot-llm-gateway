@@ -64,7 +64,7 @@ It also keeps the familiar benefits of self-hosting: inference stays on your net
 
 ### Prerequisites
 
-- **VS Code** 1.120.0 or later (VS Code's own native BYOK Custom Endpoint requires 1.122+)
+- **VS Code** 1.125.0 or later
 - **GitHub Copilot** extension installed and signed in
 - **Inference server** running with an OpenAI-compatible API
 
