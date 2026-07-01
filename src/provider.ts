@@ -1,6 +1,11 @@
 import * as vscode from 'vscode';
-import { GatewayClient } from './client';
-import { GatewayConfig, OpenAIChatCompletionRequest, OpenAIMessage } from './types';
+import { CompletionHttpError, GatewayClient } from './client';
+import {
+  GatewayConfig,
+  OpenAIChatCompletionRequest,
+  OpenAICompletionRequest,
+  OpenAIMessage,
+} from './types';
 import {
   convertMessage,
   flattenToolResultContent,
@@ -25,6 +30,7 @@ import {
   cleanCompletionText,
   extractCompletionText,
   extractFimContext,
+  isSuffixUnsupportedError,
   shouldRequestCompletion,
 } from './inlineCompletion';
 import { InlineCompletionBackend } from './inlineCompletionProvider';
@@ -204,6 +210,12 @@ export class GatewayProvider
    */
   private modelFetchInFlight?: Promise<vscode.LanguageModelChatInformation[]>;
   private modelFetchLast?: { at: number; result: vscode.LanguageModelChatInformation[] };
+  /**
+   * Set once the server rejects the FIM `suffix` parameter (vLLM — issue #51).
+   * Subsequent completions go prefix-only instead of failing on every
+   * keystroke; cleared on config reload since the server may change.
+   */
+  private completionSuffixUnsupported = false;
   /** Tracks the last values we warned about, to avoid notification spam on each keystroke in the settings UI. */
   private lastInvalidUrlNotified?: string;
   private lastOutputTokenAdjustmentNotified?: { output: number; total: number };
@@ -863,17 +875,39 @@ export class GatewayProvider
       model,
       context,
       maxTokens: this.config.inlineCompletionMaxTokens,
+      includeSuffix: !this.completionSuffixUnsupported,
     });
 
     try {
-      const response = await this.client.fetchCompletion(
-        request,
-        token,
-        this.config.inlineCompletionTimeout
-      );
-      const text = cleanCompletionText(extractCompletionText(response));
-      return text.length > 0 ? text : undefined;
+      return await this.fetchInlineCompletionText(request, token);
     } catch (error) {
+      if (
+        request.suffix !== undefined &&
+        error instanceof CompletionHttpError &&
+        isSuffixUnsupportedError(error.status, error.body)
+      ) {
+        this.completionSuffixUnsupported = true;
+        this.outputChannel.appendLine(
+          'Inline completion: server rejected the FIM "suffix" parameter (vLLM does not implement it). ' +
+            'Falling back to prefix-only completions — the text after the cursor will be ignored.'
+        );
+        try {
+          return await this.fetchInlineCompletionText(
+            buildCompletionRequestBody({
+              model,
+              context,
+              maxTokens: this.config.inlineCompletionMaxTokens,
+              includeSuffix: false,
+            }),
+            token
+          );
+        } catch (retryError) {
+          this.outputChannel.appendLine(
+            `Inline completion failed: ${retryError instanceof Error ? retryError.message : String(retryError)}`
+          );
+          return undefined;
+        }
+      }
       // Completions are best-effort: a failure should silently yield no
       // suggestion rather than surfacing a toast on every keystroke.
       this.outputChannel.appendLine(
@@ -881,6 +915,20 @@ export class GatewayProvider
       );
       return undefined;
     }
+  }
+
+  /** Fire one `/v1/completions` request and normalise the result to ghost text. */
+  private async fetchInlineCompletionText(
+    request: OpenAICompletionRequest,
+    token: vscode.CancellationToken
+  ): Promise<string | undefined> {
+    const response = await this.client.fetchCompletion(
+      request,
+      token,
+      this.config.inlineCompletionTimeout
+    );
+    const text = cleanCompletionText(extractCompletionText(response));
+    return text.length > 0 ? text : undefined;
   }
 
   /**
@@ -1384,6 +1432,8 @@ export class GatewayProvider
   private reloadConfig(): void {
     this.config = this.loadConfig();
     this.client.updateConfig(this.config);
+    // The server (or its capabilities) may have changed — probe suffix support again.
+    this.completionSuffixUnsupported = false;
     this.outputChannel.appendLine('Configuration reloaded');
   }
 }

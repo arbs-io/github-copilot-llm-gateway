@@ -164,6 +164,23 @@ export function describeFetchError(error: unknown): string {
   return error.message;
 }
 
+/**
+ * HTTP-level failure from `/v1/completions`. Carries the raw status and
+ * response body so callers can react to specific server limitations — e.g.
+ * vLLM's `400 "suffix is not currently supported"` — instead of string-matching
+ * the human-facing message.
+ */
+export class CompletionHttpError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number,
+    public readonly body: string
+  ) {
+    super(message);
+    this.name = 'CompletionHttpError';
+  }
+}
+
 export class GatewayClient {
   private config: GatewayConfig;
   private readonly log: GatewayLogger;
@@ -526,8 +543,10 @@ export class GatewayClient {
       const bodyText = await response.text().catch(() => '');
       const truncated = bodyText.length > 200 ? bodyText.slice(0, 200) + '...' : bodyText;
       const suffix = truncated ? ' — ' + truncated : '';
-      throw new Error(
-        `Completion failed: ${response.status} ${response.statusText}${suffix}`
+      throw new CompletionHttpError(
+        `Completion failed: ${response.status} ${response.statusText}${suffix}`,
+        response.status,
+        bodyText
       );
     }
     return await response.json();
