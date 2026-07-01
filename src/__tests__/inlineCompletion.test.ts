@@ -8,6 +8,7 @@ import {
   cleanCompletionText,
   extractCompletionText,
   extractFimContext,
+  isSuffixUnsupportedError,
   shouldRequestCompletion,
 } from '../inlineCompletion';
 
@@ -72,6 +73,60 @@ describe('buildCompletionRequestBody', () => {
       maxTokens: 64,
     });
     assert.equal('suffix' in req, false);
+  });
+
+  test('omits suffix when includeSuffix is false (server rejects the parameter)', () => {
+    const req = buildCompletionRequestBody({
+      model: 'm',
+      context: { prefix: 'tail', suffix: 'rest of file' },
+      maxTokens: 64,
+      includeSuffix: false,
+    });
+    assert.equal('suffix' in req, false);
+    assert.equal(req.prompt, 'tail');
+  });
+
+  test('keeps suffix when includeSuffix is explicitly true', () => {
+    const req = buildCompletionRequestBody({
+      model: 'm',
+      context: { prefix: 'tail', suffix: 'rest' },
+      maxTokens: 64,
+      includeSuffix: true,
+    });
+    assert.equal(req.suffix, 'rest');
+  });
+});
+
+describe('isSuffixUnsupportedError', () => {
+  test('matches the vLLM 400 response verbatim (issue #51)', () => {
+    const body =
+      '{"error":{"message":"suffix is not currently supported","type":"BadRequestError","param":null,"code":400}}';
+    assert.equal(isSuffixUnsupportedError(400, body), true);
+  });
+
+  test('matches wording variations that still name suffix as unsupported', () => {
+    assert.equal(
+      isSuffixUnsupportedError(400, '{"error":"the suffix parameter is not supported"}'),
+      true
+    );
+  });
+
+  test('ignores unrelated 400s', () => {
+    assert.equal(
+      isSuffixUnsupportedError(400, '{"error":{"message":"model not found"}}'),
+      false
+    );
+    assert.equal(
+      isSuffixUnsupportedError(400, '{"error":{"message":"context length exceeded"}}'),
+      false
+    );
+  });
+
+  test('ignores non-400 statuses even if the body mentions suffix', () => {
+    assert.equal(
+      isSuffixUnsupportedError(500, 'suffix is not currently supported'),
+      false
+    );
   });
 });
 

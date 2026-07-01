@@ -1,6 +1,12 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeBaseUrl, normalizeApiKey, buildHeaders, extractUsage } from '../client';
+import {
+  CompletionHttpError,
+  normalizeBaseUrl,
+  normalizeApiKey,
+  buildHeaders,
+  extractUsage,
+} from '../client';
 
 describe('normalizeBaseUrl', () => {
   test('returns the URL unchanged when no normalization is needed', () => {
@@ -164,5 +170,17 @@ describe('extractUsage', () => {
     assert.equal(result?.prompt_tokens, 0);
     assert.equal(result?.completion_tokens, 5);
     assert.equal(result?.total_tokens, 5);
+  });
+});
+
+describe('CompletionHttpError', () => {
+  test('exposes status and raw body for capability-specific handling', () => {
+    const body = '{"error":{"message":"suffix is not currently supported"}}';
+    const err = new CompletionHttpError('Completion failed: 400 Bad Request', 400, body);
+    assert.ok(err instanceof Error);
+    assert.equal(err.name, 'CompletionHttpError');
+    assert.equal(err.status, 400);
+    assert.equal(err.body, body);
+    assert.equal(err.message, 'Completion failed: 400 Bad Request');
   });
 });

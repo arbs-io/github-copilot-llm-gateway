@@ -245,7 +245,8 @@ VS Code does **not** let bring-your-own-key models power its own inline ("ghost 
 
 **Requirements & notes:**
 
-- Your model/server must support **fill-in-the-middle (FIM)** via the `/v1/completions` `suffix` parameter (vLLM, llama.cpp, LM Studio, and most local servers do). The text before the cursor is sent as `prompt` and the text after as `suffix`.
+- For true **fill-in-the-middle (FIM)**, your server must support the `/v1/completions` `suffix` parameter (llama.cpp, LM Studio, and most local servers do). The text before the cursor is sent as `prompt` and the text after as `suffix`.
+- Servers that reject the `suffix` parameter — notably **vLLM**, which answers `400 "suffix is not currently supported"` — are detected automatically: the extension falls back to **prefix-only** completions (plain continuation of the code before the cursor) for the rest of the session. Completions still work, but the model can't see the code after the cursor.
 - Point **Inline Completion Model** at a code/FIM or `*-base` model for best results — chat-tuned models tend to be slower and chattier for raw completion.
 - If you already use GitHub Copilot's inline suggestions, leave this **off** to avoid two providers competing for the same ghost text.
 - Completions are best-effort: server errors or timeouts simply yield no suggestion (details go to the output channel) rather than interrupting you.

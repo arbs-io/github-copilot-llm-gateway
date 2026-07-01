@@ -57,6 +57,13 @@ export interface CompletionRequestParams {
   model: string;
   context: FimContext;
   maxTokens: number;
+  /**
+   * When false, `suffix` is omitted even if the context has one. Fallback for
+   * servers whose `/v1/completions` rejects the parameter outright (vLLM
+   * returns `400 "suffix is not currently supported"` — issue #51); the model
+   * then plain-continues the prefix instead of filling in the middle.
+   */
+  includeSuffix?: boolean;
 }
 
 /**
@@ -74,10 +81,20 @@ export function buildCompletionRequestBody(
     temperature: COMPLETION_TEMPERATURE,
     stream: false,
   };
-  if (params.context.suffix.length > 0) {
+  if (params.includeSuffix !== false && params.context.suffix.length > 0) {
     request.suffix = params.context.suffix;
   }
   return request;
+}
+
+/**
+ * Whether a `/v1/completions` HTTP error means the server rejects the `suffix`
+ * parameter itself (as opposed to a transient or unrelated 400). vLLM answers
+ * `400 {"error":{"message":"suffix is not currently supported",...}}` for any
+ * request carrying `suffix`, regardless of the model's FIM ability.
+ */
+export function isSuffixUnsupportedError(status: number, body: string): boolean {
+  return status === 400 && /suffix\b[\s\S]{0,80}?not[\s\S]{0,40}?support/i.test(body);
 }
 
 /**
