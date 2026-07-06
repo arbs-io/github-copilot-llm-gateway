@@ -14,12 +14,13 @@
 import { OpenAICompletionRequest, OpenAICompletionResponse } from './types';
 
 /**
- * How much surrounding text to send. Completion latency and server prompt
- * limits both scale with context size, so we clamp to a generous-but-bounded
- * window around the cursor rather than shipping the whole file every keystroke.
+ * Default values for how much surrounding text to send. Completion latency and
+ * server prompt limits both scale with context size, so we clamp to a
+ * generous-but-bounded window around the cursor rather than shipping the whole
+ * file every keystroke. These can be overridden via settings.
  */
-export const MAX_PREFIX_CHARS = 4000;
-export const MAX_SUFFIX_CHARS = 1000;
+export const DEFAULT_MAX_PREFIX_CHARS = 4000;
+export const DEFAULT_MAX_SUFFIX_CHARS = 1000;
 
 /** Low temperature keeps completions deterministic and on-distribution. */
 export const COMPLETION_TEMPERATURE = 0.2;
@@ -34,12 +35,17 @@ export interface FimContext {
  * prefix keeps its *tail* (the code immediately before the cursor matters
  * most) and the suffix keeps its *head* (the code immediately after).
  */
-export function extractFimContext(textBefore: string, textAfter: string): FimContext {
-  const prefix = textBefore.length > MAX_PREFIX_CHARS
-    ? textBefore.slice(textBefore.length - MAX_PREFIX_CHARS)
+export function extractFimContext(
+  textBefore: string,
+  textAfter: string,
+  maxPrefixChars: number = DEFAULT_MAX_PREFIX_CHARS,
+  maxSuffixChars: number = DEFAULT_MAX_SUFFIX_CHARS
+): FimContext {
+  const prefix = textBefore.length > maxPrefixChars
+    ? textBefore.slice(textBefore.length - maxPrefixChars)
     : textBefore;
-  const suffix = textAfter.length > MAX_SUFFIX_CHARS
-    ? textAfter.slice(0, MAX_SUFFIX_CHARS)
+  const suffix = textAfter.length > maxSuffixChars
+    ? textAfter.slice(0, maxSuffixChars)
     : textAfter;
   return { prefix, suffix };
 }

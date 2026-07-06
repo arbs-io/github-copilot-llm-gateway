@@ -166,4 +166,6 @@ export interface GatewayConfig {
   inlineCompletionMaxTokens: number;
   inlineCompletionDebounce: number;
   inlineCompletionTimeout: number;
+  inlineCompletionMaxPrefixChars: number;
+  inlineCompletionMaxSuffixChars: number;
 }

@@ -866,7 +866,12 @@ export class GatewayProvider
       return undefined;
     }
 
-    const context = extractFimContext(textBefore, textAfter);
+    const context = extractFimContext(
+      textBefore,
+      textAfter,
+      this.config.inlineCompletionMaxPrefixChars,
+      this.config.inlineCompletionMaxSuffixChars
+    );
     if (!shouldRequestCompletion(context)) {
       return undefined;
     }
@@ -1361,6 +1366,8 @@ export class GatewayProvider
       inlineCompletionMaxTokens: config.get<number>('inlineCompletionMaxTokens', 256),
       inlineCompletionDebounce: config.get<number>('inlineCompletionDebounce', 300),
       inlineCompletionTimeout: config.get<number>('inlineCompletionTimeout', 3000),
+      inlineCompletionMaxPrefixChars: config.get<number>('inlineCompletionMaxPrefixChars', 4000),
+      inlineCompletionMaxSuffixChars: config.get<number>('inlineCompletionMaxSuffixChars', 1000),
     };
 
     const MAX_INT32 = 2147483647; // Maximum value for setTimeout (signed 32-bit integer)

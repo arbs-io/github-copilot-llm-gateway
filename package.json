@@ -217,6 +217,20 @@
           "minimum": 1,
           "description": "Per-request timeout (milliseconds) for inline completions. Kept short so a slow server doesn't block ghost-text suggestions.",
           "order": 18
+        },
+        "github.copilot.llm-gateway.inlineCompletionMaxPrefixChars": {
+          "type": "number",
+          "default": 4000,
+          "minimum": 1,
+          "description": "Maximum characters of context before the cursor to send for inline completions. Lower values reduce latency but provide less context.",
+          "order": 19
+        },
+        "github.copilot.llm-gateway.inlineCompletionMaxSuffixChars": {
+          "type": "number",
+          "default": 1000,
+          "minimum": 1,
+          "description": "Maximum characters of context after the cursor to send for inline completions. Lower values reduce latency but provide less context.",
+          "order": 20
         }
       }
     }
