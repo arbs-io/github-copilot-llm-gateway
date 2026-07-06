@@ -13,6 +13,17 @@ export interface OpenAIModel {
   context_length?: number;
   /** llama.cpp */
   context_window?: number;
+  /**
+   * llama.cpp nests model metadata here. `n_ctx` is the actual serving
+   * context (`-c`); `n_ctx_train` the model's training context. In
+   * llama-server router mode these appear only while the model is loaded
+   * (issue #55).
+   */
+  meta?: {
+    n_ctx?: number;
+    n_ctx_train?: number;
+    [key: string]: unknown;
+  };
 }
 
 export interface OpenAIModelsResponse {
@@ -155,6 +166,12 @@ export interface GatewayConfig {
   extraModelOptions: Record<string, unknown>;
   /** Per-model chat-completion overrides keyed by model id / wildcard (issue #43). */
   perModelOptions: Record<string, unknown>;
+  /**
+   * Per-model context-window overrides (total tokens) keyed by model id /
+   * wildcard. Wins over server-reported values — for servers that report the
+   * wrong size or none at all, e.g. llama-server router mode (issue #55).
+   */
+  modelContextWindows: Record<string, number>;
   /**
    * Experimental inline (fill-in-the-middle) code completion settings. Powers a
    * standalone completion provider that runs alongside — not through — GitHub

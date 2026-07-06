@@ -25,6 +25,7 @@ import { tryRepairJson } from './jsonRepair';
 import { fillMissingRequiredProperties } from './toolSchema';
 import { buildChatRequest, OpenAIToolDefinition, ToolChoice } from './requestBuilder';
 import { resolvePerModelOptions } from './perModelOptions';
+import { parseContextOverflowError, resolveContextWindowOverride } from './contextWindow';
 import {
   buildCompletionRequestBody,
   cleanCompletionText,
@@ -148,6 +149,7 @@ const MODEL_AFFECTING_KEYS: readonly string[] = [
   'github.copilot.llm-gateway.enableImageInput',
   'github.copilot.llm-gateway.enableToolCalling',
   'github.copilot.llm-gateway.customHeaders',
+  'github.copilot.llm-gateway.modelContextWindows',
 ];
 
 /**
@@ -202,6 +204,14 @@ export class GatewayProvider
    * so it doesn't double-count when budgeting output tokens.
    */
   private readonly contextByModelId: Map<string, number> = new Map();
+  /**
+   * Context sizes learned from the server's own context-overflow errors
+   * (issue #55). Ground truth from the backend, so it wins over anything the
+   * model list reported — llama-server router mode in particular advertises
+   * nothing until a model is loaded. Survives model-list refreshes; cleared
+   * on config reload since the server (or its presets) may have changed.
+   */
+  private readonly learnedContextByModelId: Map<string, number> = new Map();
   /**
    * In-flight model-fetch promise + its completion timestamp. Shared between
    * `provideLanguageModelChatInformation` (called by VS Code's picker) and
@@ -559,6 +569,10 @@ export class GatewayProvider
     this.contextByModelId.clear();
 
     const models = uniqueModels.map((model) => {
+      const contextOverride = resolveContextWindowOverride(
+        model.id,
+        this.config.modelContextWindows
+      );
       const { info, totalContext, hasServerReportedContext } = buildModelInfo({
         model,
         defaultMaxTokens: this.config.defaultMaxTokens,
@@ -567,12 +581,21 @@ export class GatewayProvider
           imageInput: this.config.enableImageInput,
           toolCalling: this.config.enableToolCalling,
         },
+        contextOverride,
       });
       this.contextByModelId.set(model.id, totalContext);
 
-      if (hasServerReportedContext) {
+      if (contextOverride !== undefined) {
+        this.outputChannel.appendLine(
+          `  Model ${model.id}: context ${totalContext} tokens from 'modelContextWindows' setting (exposed as input=${info.maxInputTokens}, output=${info.maxOutputTokens})`
+        );
+      } else if (hasServerReportedContext) {
         this.outputChannel.appendLine(
           `  Model ${model.id}: server-reported context ${totalContext} tokens (exposed as input=${info.maxInputTokens}, output=${info.maxOutputTokens})`
+        );
+      } else {
+        this.outputChannel.appendLine(
+          `  Model ${model.id}: no server-reported context; using defaultMaxTokens=${totalContext}. If this is wrong, set 'github.copilot.llm-gateway.modelContextWindows'.`
         );
       }
 
@@ -608,7 +631,6 @@ export class GatewayProvider
     this.outputChannel.appendLine(`Converted to ${openAIMessages.length} OpenAI messages`);
     this.logMessageStructure(openAIMessages);
 
-    const modelMaxContext = this.resolveModelMaxContext(model);
     const configuredMaxOutput =
       model.maxOutputTokens || TOKEN_CONSTANTS.DEFAULT_OUTPUT_TOKENS;
 
@@ -620,64 +642,79 @@ export class GatewayProvider
     const { tools: filteredTools, schemas: toolSchemas } = this.buildToolsConfig(options);
     const toolsSerializedLength = filteredTools ? JSON.stringify(filteredTools).length : 0;
 
-    const maxInputTokens = calculateMaxInputTokens({
-      modelMaxContext,
-      configuredMaxOutput,
-      toolsSerializedLength,
-    });
-
-    const truncatedMessages = truncateMessagesToFit(openAIMessages, maxInputTokens, (msg) =>
-      this.outputChannel.appendLine(msg)
-    );
-    if (truncatedMessages.length < openAIMessages.length) {
-      this.outputChannel.appendLine(
-        `WARNING: Truncated conversation from ${openAIMessages.length} to ${truncatedMessages.length} messages to fit context limit`
-      );
-    }
-
-    const inputText = buildInputText(truncatedMessages);
-    const toolsOverhead = Math.ceil(toolsSerializedLength / TOKEN_CONSTANTS.CHARS_PER_TOKEN);
-    const estimatedInputTokens = await this.provideTokenCount(model, inputText, token);
-    const safeMaxOutputTokens = calculateSafeMaxOutputTokens({
-      estimatedInputTokens,
-      toolsOverhead,
-      modelMaxContext,
-      configuredMaxOutput,
-    });
-
-    this.outputChannel.appendLine(
-      `Token estimate: input=${estimatedInputTokens}, tools=${toolsOverhead}, model_context=${modelMaxContext}, chosen_max_tokens=${safeMaxOutputTokens}`
-    );
-
-    const hasTools = filteredTools !== undefined && filteredTools.length > 0;
-    const temperature = hasTools ? this.config.agentTemperature : DEFAULT_TEMPERATURE;
-
-    const requestOptions = buildChatRequest({
-      model: model.id,
-      messages: truncatedMessages,
-      maxTokens: safeMaxOutputTokens,
-      temperature,
-      tools: filteredTools,
-      toolChoice: hasTools ? this.mapToolChoice(options.toolMode) : undefined,
-      parallelToolCalls: hasTools ? this.config.parallelToolCalling : undefined,
-      extraOptions: {
-        ...this.config.extraModelOptions,
-        ...resolvePerModelOptions(model.id, this.config.perModelOptions),
-        ...options.modelOptions,
+    // Once anything has been streamed to the chat view we can no longer
+    // transparently re-issue the request without duplicating output, so track
+    // whether the wrapped progress ever fired.
+    let partsReported = false;
+    const trackingProgress: vscode.Progress<vscode.LanguageModelResponsePart> = {
+      report: (part) => {
+        partsReported = true;
+        progress.report(part);
       },
-    });
-
-    if (hasTools) {
-      this.outputChannel.appendLine(
-        `Sending ${filteredTools.length} tools to model (parallel: ${this.config.parallelToolCalling})`
-      );
-    }
-
-    this.logRequest(requestOptions);
+    };
 
     let capturedUsage: TokenUsage | undefined;
-    try {
-      const reporter = this.createStreamReporter(progress, (usage) => {
+
+    // The whole budget → request → stream pipeline, resolved against the
+    // model's current context size, so a corrected context can re-run it.
+    const attempt = async (): Promise<void> => {
+      const modelMaxContext = this.resolveModelMaxContext(model);
+      const maxInputTokens = calculateMaxInputTokens({
+        modelMaxContext,
+        configuredMaxOutput,
+        toolsSerializedLength,
+      });
+
+      const truncatedMessages = truncateMessagesToFit(openAIMessages, maxInputTokens, (msg) =>
+        this.outputChannel.appendLine(msg)
+      );
+      if (truncatedMessages.length < openAIMessages.length) {
+        this.outputChannel.appendLine(
+          `WARNING: Truncated conversation from ${openAIMessages.length} to ${truncatedMessages.length} messages to fit context limit`
+        );
+      }
+
+      const inputText = buildInputText(truncatedMessages);
+      const toolsOverhead = Math.ceil(toolsSerializedLength / TOKEN_CONSTANTS.CHARS_PER_TOKEN);
+      const estimatedInputTokens = await this.provideTokenCount(model, inputText, token);
+      const safeMaxOutputTokens = calculateSafeMaxOutputTokens({
+        estimatedInputTokens,
+        toolsOverhead,
+        modelMaxContext,
+        configuredMaxOutput,
+      });
+
+      this.outputChannel.appendLine(
+        `Token estimate: input=${estimatedInputTokens}, tools=${toolsOverhead}, model_context=${modelMaxContext}, chosen_max_tokens=${safeMaxOutputTokens}`
+      );
+
+      const hasTools = filteredTools !== undefined && filteredTools.length > 0;
+      const temperature = hasTools ? this.config.agentTemperature : DEFAULT_TEMPERATURE;
+
+      const requestOptions = buildChatRequest({
+        model: model.id,
+        messages: truncatedMessages,
+        maxTokens: safeMaxOutputTokens,
+        temperature,
+        tools: filteredTools,
+        toolChoice: hasTools ? this.mapToolChoice(options.toolMode) : undefined,
+        parallelToolCalls: hasTools ? this.config.parallelToolCalling : undefined,
+        extraOptions: {
+          ...this.config.extraModelOptions,
+          ...resolvePerModelOptions(model.id, this.config.perModelOptions),
+          ...options.modelOptions,
+        },
+      });
+
+      if (hasTools) {
+        this.outputChannel.appendLine(
+          `Sending ${filteredTools.length} tools to model (parallel: ${this.config.parallelToolCalling})`
+        );
+      }
+
+      this.logRequest(requestOptions);
+
+      const reporter = this.createStreamReporter(trackingProgress, (usage) => {
         capturedUsage = usage;
       });
       const chunks = this.client.streamChatCompletion(requestOptions, token);
@@ -694,7 +731,28 @@ export class GatewayProvider
 
       if (isEmptyStreamResult(stats)) {
         const toolCount = filteredTools?.length ?? 0;
-        await this.handleEmptyResponse(model, inputText, openAIMessages.length, toolCount, token, progress);
+        await this.handleEmptyResponse(model, inputText, openAIMessages.length, toolCount, token, trackingProgress);
+      }
+    };
+
+    try {
+      try {
+        await attempt();
+      } catch (error) {
+        // Context-overflow errors carry the server's real context size
+        // (issue #55: llama-server router mode reports nothing up-front, so
+        // the first request can overshoot). Learn it and, if nothing has been
+        // streamed to the chat view yet, transparently retry once with the
+        // corrected budget.
+        if (
+          !this.learnContextSizeFromError(model, error) ||
+          partsReported ||
+          token.isCancellationRequested
+        ) {
+          throw error;
+        }
+        this.outputChannel.appendLine('Retrying chat request with corrected context size...');
+        await attempt();
       }
       this.recordCompletedRequest(model.id, modelName, capturedUsage);
       this._onDidChangeRequestState.fire({
@@ -712,6 +770,35 @@ export class GatewayProvider
       });
       this.handleChatError(error);
     }
+  }
+
+  /**
+   * Inspect a failed chat request for a context-overflow error and record the
+   * context size the server says it actually has. Returns true when a new,
+   * smaller size was learned — i.e. retrying with a recomputed budget can
+   * succeed. Returns false when the error is unrelated, or when we were
+   * already budgeting within the reported window (estimation drift — a retry
+   * with the same numbers would fail identically).
+   */
+  private learnContextSizeFromError(
+    model: vscode.LanguageModelChatInformation,
+    error: unknown
+  ): boolean {
+    const message = error instanceof Error ? error.message : String(error);
+    const serverContext = parseContextOverflowError(message);
+    if (serverContext === undefined) {
+      return false;
+    }
+    const current = this.resolveModelMaxContext(model);
+    if (serverContext >= current) {
+      return false;
+    }
+    this.learnedContextByModelId.set(model.id, serverContext);
+    this.outputChannel.appendLine(
+      `Learned context size for ${model.id} from server error: ${serverContext} tokens (was budgeting for ${current}). ` +
+        `Add it to 'github.copilot.llm-gateway.modelContextWindows' to persist across sessions.`
+    );
+    return true;
   }
 
   /**
@@ -957,18 +1044,26 @@ export class GatewayProvider
    * and cause context-length errors at the server.
    */
   private resolveModelMaxContext(model: vscode.LanguageModelChatInformation): number {
+    let context: number;
     const cached = this.contextByModelId.get(model.id);
     if (cached && cached > 0) {
-      return cached;
+      context = cached;
+    } else if (model.maxInputTokens && model.maxInputTokens > 0) {
+      // Fallback path: the model list hasn't been fetched yet in this session
+      // (e.g. VS Code routed a cached chat directly to the provider). Use the
+      // picker-facing input window, which equals totalContext after the
+      // provideLanguageModelChatInformation change.
+      context = model.maxInputTokens;
+    } else {
+      context = TOKEN_CONSTANTS.DEFAULT_CONTEXT_TOKENS;
     }
-    // Fallback path: the model list hasn't been fetched yet in this session
-    // (e.g. VS Code routed a cached chat directly to the provider). Use the
-    // picker-facing input window, which equals totalContext after the
-    // provideLanguageModelChatInformation change.
-    if (model.maxInputTokens && model.maxInputTokens > 0) {
-      return model.maxInputTokens;
+    // A size learned from the server's own overflow error is ground truth —
+    // it wins whenever it's smaller than what the model list claimed.
+    const learned = this.learnedContextByModelId.get(model.id);
+    if (learned !== undefined && learned < context) {
+      return learned;
     }
-    return TOKEN_CONSTANTS.DEFAULT_CONTEXT_TOKENS;
+    return context;
   }
 
   // ---------- message classification ----------
@@ -1269,7 +1364,17 @@ export class GatewayProvider
       errorMessage.includes('HarmonyError') ||
       /tool[_ -]?call.*parse/i.test(errorMessage);
 
-    if (isToolError) {
+    const overflowContext = parseContextOverflowError(errorMessage);
+    if (overflowContext !== undefined) {
+      // Reaching here means the learn-and-retry path couldn't recover
+      // (output already streamed, or we were already budgeting within the
+      // reported window and the char/4 estimate drifted). Give the user an
+      // actionable fix instead of the raw server body.
+      this.promptOpenSettings(
+        `GitHub Copilot LLM Gateway: Request exceeded the model's context window (server reports ${overflowContext} tokens). ` +
+          `Retry the request — the gateway now budgets for this limit. If it recurs, set 'modelContextWindows' for this model to a value below ${overflowContext}.`
+      );
+    } else if (isToolError) {
       this.outputChannel.appendLine('HINT: This appears to be a tool calling format error.');
       this.outputChannel.appendLine('The model may not support function calling properly.');
       this.outputChannel.appendLine(
@@ -1361,6 +1466,7 @@ export class GatewayProvider
       customHeaders: { ...this.secretCache.customHeaders },
       extraModelOptions: config.get<Record<string, unknown>>('extraModelOptions', {}) ?? {},
       perModelOptions: config.get<Record<string, unknown>>('perModelOptions', {}) ?? {},
+      modelContextWindows: config.get<Record<string, number>>('modelContextWindows', {}) ?? {},
       enableInlineCompletion: config.get<boolean>('enableInlineCompletion', false),
       inlineCompletionModel: config.get<string>('inlineCompletionModel', ''),
       inlineCompletionMaxTokens: config.get<number>('inlineCompletionMaxTokens', 256),
@@ -1441,6 +1547,8 @@ export class GatewayProvider
     this.client.updateConfig(this.config);
     // The server (or its capabilities) may have changed — probe suffix support again.
     this.completionSuffixUnsupported = false;
+    // Context sizes learned from a previous server's errors no longer apply.
+    this.learnedContextByModelId.clear();
     this.outputChannel.appendLine('Configuration reloaded');
   }
 }

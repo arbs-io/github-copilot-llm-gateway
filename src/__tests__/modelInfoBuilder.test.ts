@@ -135,6 +135,42 @@ describe('buildModelInfo context resolution', () => {
     assert.equal(totalContext, 32768);
     assert.equal(hasServerReportedContext, false);
   });
+
+  test('reads llama.cpp meta.n_ctx when the flat fields are absent (issue #55)', () => {
+    const { totalContext, hasServerReportedContext } = buildModelInfo({
+      model: baseModel({ meta: { n_ctx: 123904, n_ctx_train: 262144 } }),
+      defaultMaxTokens: 9999,
+      defaultMaxOutputTokens: 2048,
+      capabilities: {},
+    });
+    assert.equal(totalContext, 123904);
+    assert.equal(hasServerReportedContext, true);
+  });
+
+  test('a user contextOverride wins over server-reported values', () => {
+    const { totalContext, info, hasServerReportedContext } = buildModelInfo({
+      model: baseModel({ max_model_len: 131072 }),
+      defaultMaxTokens: 9999,
+      defaultMaxOutputTokens: 2048,
+      capabilities: {},
+      contextOverride: 32768,
+    });
+    assert.equal(totalContext, 32768);
+    assert.equal(info.maxInputTokens, 32768);
+    // Server still reported a value; the override just outranked it.
+    assert.equal(hasServerReportedContext, true);
+  });
+
+  test('a user contextOverride also wins over defaultMaxTokens when nothing is reported', () => {
+    const { totalContext } = buildModelInfo({
+      model: baseModel(),
+      defaultMaxTokens: 9999,
+      defaultMaxOutputTokens: 2048,
+      capabilities: {},
+      contextOverride: 16384,
+    });
+    assert.equal(totalContext, 16384);
+  });
 });
 
 describe('buildModelInfo output token math', () => {

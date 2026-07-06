@@ -7,6 +7,7 @@
 
 import { OpenAIModel } from './types';
 import { describeModel, friendlyModelName, inferModelFamily } from './modelDisplay';
+import { serverReportedContext } from './contextWindow';
 import { TOKEN_CONSTANTS } from './tokenBudget';
 
 /**
@@ -32,6 +33,11 @@ export interface BuildModelInfoInput {
   readonly defaultMaxTokens: number;
   readonly defaultMaxOutputTokens: number;
   readonly capabilities: ModelCapabilities;
+  /**
+   * User-configured context window for this model (from the
+   * `modelContextWindows` setting). Wins over server-reported values.
+   */
+  readonly contextOverride?: number;
 }
 
 /**
@@ -71,9 +77,10 @@ export function buildModelInfo({
   defaultMaxTokens,
   defaultMaxOutputTokens,
   capabilities,
+  contextOverride,
 }: BuildModelInfoInput): BuildModelInfoResult {
-  const serverContext = model.max_model_len ?? model.context_length ?? model.context_window;
-  const totalContext = serverContext ?? defaultMaxTokens;
+  const serverContext = serverReportedContext(model);
+  const totalContext = contextOverride ?? serverContext ?? defaultMaxTokens;
   const maxOutputTokens = Math.min(
     defaultMaxOutputTokens,
     Math.max(

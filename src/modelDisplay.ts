@@ -6,6 +6,7 @@
  */
 
 import { OpenAIModel } from './types';
+import { serverReportedContext } from './contextWindow';
 
 /**
  * Produce a display-friendly short name for a model ID.
@@ -52,7 +53,7 @@ export function inferModelFamily(id: string): string {
  * Used as the `detail` shown under the model name in the picker.
  */
 export function describeModel(model: OpenAIModel): string {
-  const context = model.max_model_len ?? model.context_length ?? model.context_window;
+  const context = serverReportedContext(model);
   const parts: string[] = [];
   if (context) {
     parts.push(`${formatTokens(context)} ctx`);
