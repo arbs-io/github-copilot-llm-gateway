@@ -2,8 +2,8 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   COMPLETION_TEMPERATURE,
-  MAX_PREFIX_CHARS,
-  MAX_SUFFIX_CHARS,
+  DEFAULT_MAX_PREFIX_CHARS,
+  DEFAULT_MAX_SUFFIX_CHARS,
   buildCompletionRequestBody,
   cleanCompletionText,
   extractCompletionText,
@@ -19,16 +19,16 @@ describe('extractFimContext', () => {
   });
 
   test('keeps the tail of an over-long prefix (code nearest the cursor)', () => {
-    const before = 'x'.repeat(MAX_PREFIX_CHARS) + 'TAIL';
+    const before = 'x'.repeat(DEFAULT_MAX_PREFIX_CHARS) + 'TAIL';
     const ctx = extractFimContext(before, '');
-    assert.equal(ctx.prefix.length, MAX_PREFIX_CHARS);
+    assert.equal(ctx.prefix.length, DEFAULT_MAX_PREFIX_CHARS);
     assert.ok(ctx.prefix.endsWith('TAIL'));
   });
 
   test('keeps the head of an over-long suffix (code nearest the cursor)', () => {
-    const after = 'HEAD' + 'y'.repeat(MAX_SUFFIX_CHARS);
+    const after = 'HEAD' + 'y'.repeat(DEFAULT_MAX_SUFFIX_CHARS);
     const ctx = extractFimContext('', after);
-    assert.equal(ctx.suffix.length, MAX_SUFFIX_CHARS);
+    assert.equal(ctx.suffix.length, DEFAULT_MAX_SUFFIX_CHARS);
     assert.ok(ctx.suffix.startsWith('HEAD'));
   });
 });
