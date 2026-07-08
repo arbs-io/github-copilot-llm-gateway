@@ -1,48 +1,14 @@
 import * as vscode from 'vscode';
-import { CompletionHttpError, GatewayClient } from '../api/client';
-import {
-  OpenAIChatCompletionRequest,
-  OpenAICompletionRequest,
-  OpenAIMessage,
-} from '../api/types';
+import { GatewayClient } from '../api/client';
 import { GatewayConfig } from '../config/gatewayConfig';
 import {
-  convertMessage,
-  flattenToolResultContent,
-  NormalizedMessage,
-  NormalizedPart,
-  NormalizedRole,
-} from '../chat/messageConverter';
-import {
-  TOKEN_CONSTANTS,
-  buildInputText,
-  calculateMaxInputTokens,
-  calculateSafeMaxOutputTokens,
-  estimateTextTokens,
-  truncateMessagesToFit,
-} from '../chat/tokenBudget';
-import { tryRepairJson } from '../chat/jsonRepair';
-import { fillMissingRequiredProperties } from '../chat/toolSchema';
-import { buildChatRequest, OpenAIToolDefinition, ToolChoice } from '../api/requestBuilder';
-import { resolvePerModelOptions } from '../config/perModelOptions';
-import { parseContextOverflowError, resolveContextWindowOverride } from '../chat/contextWindow';
-import {
-  buildCompletionRequestBody,
-  cleanCompletionText,
-  extractCompletionText,
-  extractFimContext,
-  isSuffixUnsupportedError,
-  shouldRequestCompletion,
-} from '../completions/inlineCompletion';
+  FrameworkConfigOverride,
+  readFrameworkConfiguration,
+  resolveApiKey,
+} from '../config/frameworkConfig';
+import { estimateTextTokens } from '../chat/tokenBudget';
+import { diagnoseModelFetchError } from '../chat/errorDiagnostics';
 import { InlineCompletionBackend } from '../completions/inlineCompletionProvider';
-import {
-  StreamChunk,
-  StreamReporter,
-  isEmptyStreamResult,
-  streamResponse,
-} from '../chat/responseStreamer';
-import { dedupeModels, friendlyModelName } from '../models/modelDisplay';
-import { buildModelInfo } from '../models/modelInfoBuilder';
 import { TokenUsage, extractHost } from '../status/statusBarController';
 import {
   SessionStats,
@@ -57,77 +23,15 @@ import {
   formatCapabilityLabels,
   formatContextLabel,
 } from '../status/statusSnapshot';
-import {
-  FrameworkConfigOverride,
-  readFrameworkConfiguration,
-  resolveApiKey,
-} from '../config/frameworkConfig';
-import { diagnoseModelFetchError } from '../chat/errorDiagnostics';
-import {
-  ConfigurationTarget as SecretConfigurationTarget,
-  LegacyConfigAccessor,
-  SECRET_KEYS,
-  formatMigrationToast,
-  migrateLegacySecrets,
-  parseCustomHeadersJson,
-} from '../config/secretMigration';
+import { ChatRequestHandler, RequestStateEvent } from './chatRequestHandler';
+import { ConfigService } from './configService';
+import { InlineCompletionService } from './inlineCompletionService';
+import { ModelCatalog } from './modelCatalog';
+import { SecretsManager } from './secretsManager';
+import { promptOpenSettings } from './notifications';
+import { countMessageTokens } from './vscodeParts';
 
-const DEFAULT_REQUEST_TIMEOUT_MS = 60000;
-const DEFAULT_TEMPERATURE = 0.7;
-const DEBUG_REQUEST_MAX_LOG_LENGTH = 2000;
-const MAX_TOOL_ARGS_LOG_LENGTH = 1000;
-const MAX_TOOL_DESCRIPTION_LOG_LENGTH = 100;
-
-/**
- * MIME type VS Code 1.120 watches for on `LanguageModelDataPart`s to extract
- * BYOK / language-model-provider token usage and feed it into the chat
- * context-window widget. See microsoft/vscode#315394.
- */
-const USAGE_DATA_PART_MIME_TYPE = 'usage';
-
-/**
- * Lifecycle event the status bar (and any other listener) consumes to render
- * live request state. Exactly one terminal event (`complete` or `error`)
- * follows every `start` event for the same request.
- */
-export type RequestStateEvent =
-  | { readonly kind: 'start'; readonly modelId: string; readonly modelName: string }
-  | {
-      readonly kind: 'complete';
-      readonly modelId: string;
-      readonly modelName: string;
-      readonly usage?: TokenUsage;
-    }
-  | {
-      readonly kind: 'error';
-      readonly modelId: string;
-      readonly modelName: string;
-      readonly errorMessage: string;
-    };
-
-/**
- * Format a tool's description for the output channel: trim, truncate at
- * MAX_TOOL_DESCRIPTION_LOG_LENGTH characters, and only append `...` when an
- * actual truncation happened. Returns `'(none)'` when the tool didn't supply
- * a description at all.
- */
-function formatToolDescription(description: string | undefined): string {
-  if (!description) { return '(none)'; }
-  if (description.length <= MAX_TOOL_DESCRIPTION_LOG_LENGTH) { return description; }
-  return `${description.substring(0, MAX_TOOL_DESCRIPTION_LOG_LENGTH)}...`;
-}
-
-/**
- * Map a `LanguageModelChatToolMode` enum value to a human-readable label for
- * the output channel. The enum is numeric at runtime, so the raw `${toolMode}`
- * was rendering as `0` / `1` and looked like a stray index.
- */
-function describeToolMode(toolMode: vscode.LanguageModelChatToolMode | undefined): string {
-  if (toolMode === undefined) { return 'unset'; }
-  if (toolMode === vscode.LanguageModelChatToolMode.Required) { return 'required'; }
-  if (toolMode === vscode.LanguageModelChatToolMode.Auto) { return 'auto'; }
-  return String(toolMode);
-}
+export type { RequestStateEvent } from './chatRequestHandler';
 
 /**
  * Setting keys that change the shape of the model list returned from the
@@ -165,9 +69,14 @@ const LEGACY_SECRET_KEYS: readonly string[] = [
 /**
  * Language model provider for OpenAI-compatible inference servers.
  *
- * This class is the VS Code surface area; most of the logic lives in focused
- * pure modules (messageConverter, tokenBudget, responseStreamer, etc.) which
- * are unit-tested independently.
+ * A thin facade over focused services: {@link ConfigService} (settings +
+ * validation), {@link SecretsManager} (SecretStorage cache + legacy
+ * migration), {@link ModelCatalog} (model list cache + context sizes),
+ * {@link ChatRequestHandler} (the chat pipeline), and
+ * {@link InlineCompletionService} (FIM ghost text). This class owns the
+ * VS Code API surface, the event emitters, and the session stats the status
+ * dialog renders — the services carry the logic and are unit-tested
+ * independently (as are the pure modules under chat/, models/, api/…).
  */
 export class GatewayProvider
   implements vscode.LanguageModelChatProvider, InlineCompletionBackend
@@ -175,18 +84,11 @@ export class GatewayProvider
   private readonly client: GatewayClient;
   private config: GatewayConfig;
   private readonly outputChannel: vscode.OutputChannel;
-  private readonly secrets: vscode.SecretStorage;
-  /**
-   * Snapshot of secret values read from `vscode.ExtensionContext.secrets`.
-   * `loadConfig` is synchronous (called from the constructor and every
-   * config-change event), so we cache the secret values here and refresh the
-   * cache via `loadSecrets` / `setApiKey` / `setCustomHeaders` instead of
-   * hitting SecretStorage on every read.
-   */
-  private secretCache: { apiKey: string; customHeaders: Record<string, string> } = {
-    apiKey: '',
-    customHeaders: {},
-  };
+  private readonly configService: ConfigService;
+  private readonly secretsManager: SecretsManager;
+  private readonly catalog: ModelCatalog;
+  private readonly chatHandler: ChatRequestHandler;
+  private readonly inlineCompletions: InlineCompletionService;
   /**
    * Latest API-key override supplied by VS Code's framework-managed
    * `configuration` schema (the `chatProvider@4` proposed API used by native
@@ -197,38 +99,6 @@ export class GatewayProvider
    * SecretStorage entry.
    */
   private frameworkOverride: FrameworkConfigOverride = {};
-  /**
-   * Real server-reported context per model id (`max_model_len` / etc.).
-   * Needed because the picker-facing `maxInputTokens` is the full context
-   * on purpose — the chat-response code path needs the separate true value
-   * so it doesn't double-count when budgeting output tokens.
-   */
-  private readonly contextByModelId: Map<string, number> = new Map();
-  /**
-   * Context sizes learned from the server's own context-overflow errors
-   * (issue #55). Ground truth from the backend, so it wins over anything the
-   * model list reported — llama-server router mode in particular advertises
-   * nothing until a model is loaded. Survives model-list refreshes; cleared
-   * on config reload since the server (or its presets) may have changed.
-   */
-  private readonly learnedContextByModelId: Map<string, number> = new Map();
-  /**
-   * In-flight model-fetch promise + its completion timestamp. Shared between
-   * `provideLanguageModelChatInformation` (called by VS Code's picker) and
-   * the status-bar probe, so rapid-fire calls don't stack HTTP requests
-   * against the inference server.
-   */
-  private modelFetchInFlight?: Promise<vscode.LanguageModelChatInformation[]>;
-  private modelFetchLast?: { at: number; result: vscode.LanguageModelChatInformation[] };
-  /**
-   * Set once the server rejects the FIM `suffix` parameter (vLLM — issue #51).
-   * Subsequent completions go prefix-only instead of failing on every
-   * keystroke; cleared on config reload since the server may change.
-   */
-  private completionSuffixUnsupported = false;
-  /** Tracks the last values we warned about, to avoid notification spam on each keystroke in the settings UI. */
-  private lastInvalidUrlNotified?: string;
-  private lastOutputTokenAdjustmentNotified?: { output: number; total: number };
 
   private readonly _onDidChangeLanguageModelChatInformation = new vscode.EventEmitter<void>();
   readonly onDidChangeLanguageModelChatInformation = this._onDidChangeLanguageModelChatInformation.event;
@@ -257,14 +127,46 @@ export class GatewayProvider
     completedAt: number;
     usage?: TokenUsage;
   };
-  private lastSuccessfulFetchAt?: number;
-  private lastConnectionError?: string;
 
   constructor(context: vscode.ExtensionContext) {
     this.outputChannel = vscode.window.createOutputChannel('GitHub Copilot LLM Gateway');
-    this.secrets = context.secrets;
-    this.config = this.loadConfig();
-    this.client = new GatewayClient(this.config, (msg) => this.outputChannel.appendLine(msg));
+    const log = (msg: string): void => this.outputChannel.appendLine(msg);
+
+    this.secretsManager = new SecretsManager(context.secrets, {
+      log,
+      onDidUpdate: () => this.reloadConfig(),
+    });
+    this.configService = new ConfigService({
+      getApiKey: () =>
+        resolveApiKey(this.frameworkOverride, this.secretsManager.getCache().apiKey),
+      getCustomHeaders: () => this.secretsManager.getCache().customHeaders,
+      log,
+      promptOpenSettings: (message) => promptOpenSettings(message, log),
+    });
+    this.config = this.configService.load();
+    this.client = new GatewayClient(this.config, log);
+    this.catalog = new ModelCatalog({
+      client: this.client,
+      getConfig: () => this.config,
+      log,
+      onStatusChanged: () => this._onDidChangeStatusSnapshot.fire(),
+    });
+    this.chatHandler = new ChatRequestHandler({
+      client: this.client,
+      catalog: this.catalog,
+      getConfig: () => this.config,
+      log,
+      onRequestState: (event) => this._onDidChangeRequestState.fire(event),
+      onCompleted: (modelId, modelName, usage) =>
+        this.recordCompletedRequest(modelId, modelName, usage),
+      showOutput: () => this.outputChannel.show(),
+    });
+    this.inlineCompletions = new InlineCompletionService({
+      client: this.client,
+      getConfig: () => this.config,
+      getDefaultModelId: () => this.catalog.getCachedModels()[0]?.id,
+      log,
+    });
 
     context.subscriptions.push(
       this.outputChannel,
@@ -281,7 +183,7 @@ export class GatewayProvider
         // back into SecretStorage and clear the plain-text copy. Errors are
         // logged but never thrown — the config-change listener can't be async.
         if (LEGACY_SECRET_KEYS.some((key) => e.affectsConfiguration(key))) {
-          void this.reMigrateLegacySecrets();
+          void this.secretsManager.reMigrateLegacySecrets();
         }
         this.reloadConfig();
         // Only nudge VS Code to refetch models when a setting that actually
@@ -291,15 +193,15 @@ export class GatewayProvider
           this._onDidChangeLanguageModelChatInformation.fire();
         }
       }),
-      this.secrets.onDidChange((e: vscode.SecretStorageChangeEvent) => {
-        if (e.key !== SECRET_KEYS.apiKey && e.key !== SECRET_KEYS.customHeaders) {
+      context.secrets.onDidChange((e: vscode.SecretStorageChangeEvent) => {
+        if (!this.secretsManager.ownsSecretKey(e.key)) {
           return;
         }
         // Another VS Code window (or our own setApiKey) updated a secret —
         // refresh the cache + config so subsequent requests use the new
         // values. Errors here would silently produce stale credentials, so
         // we surface them in the output channel.
-        void this.refreshSecretCache().catch((err: unknown) => {
+        void this.secretsManager.refreshCache().catch((err: unknown) => {
           this.outputChannel.appendLine(
             `Failed to refresh secret cache after change: ${err instanceof Error ? err.message : String(err)}`
           );
@@ -308,123 +210,30 @@ export class GatewayProvider
     );
   }
 
+  // ---------- secrets ----------
+
   /**
    * Called from `extension.activate` after construction so the first chat
-   * request uses the right credentials. Performs one-time migration of legacy
-   * plain-text settings into SecretStorage and surfaces a single toast if
-   * anything was actually moved.
+   * request uses the right credentials (issue #28).
    */
   public async loadSecrets(): Promise<void> {
-    const config = this.legacyConfigAccessor();
-    try {
-      const result = await migrateLegacySecrets(config, this.secrets, (m) =>
-        this.outputChannel.appendLine(m)
-      );
-      const toast = formatMigrationToast(result);
-      if (toast) {
-        vscode.window.showInformationMessage(toast);
-      }
-    } catch (error) {
-      this.outputChannel.appendLine(
-        `Failed to migrate legacy secrets: ${error instanceof Error ? error.message : String(error)}`
-      );
-    }
-    await this.refreshSecretCache();
+    await this.secretsManager.loadSecrets();
   }
 
-  /**
-   * Persist a new API key in SecretStorage and refresh the cache. Pass `''`
-   * to clear the stored key. Called from the Configure Server command.
-   */
   public async setApiKey(apiKey: string): Promise<void> {
-    const trimmed = apiKey.trim();
-    if (trimmed.length === 0) {
-      await this.secrets.delete(SECRET_KEYS.apiKey);
-    } else {
-      await this.secrets.store(SECRET_KEYS.apiKey, trimmed);
-    }
-    // `onDidChange` will repopulate the cache, but we also refresh
-    // synchronously so callers can immediately use the new value.
-    await this.refreshSecretCache();
+    await this.secretsManager.setApiKey(apiKey);
   }
 
-  /**
-   * Persist a new customHeaders map in SecretStorage and refresh the cache.
-   * Pass `{}` to clear the stored headers. Called from the Edit Custom
-   * Headers command.
-   */
   public async setCustomHeaders(headers: Record<string, string>): Promise<void> {
-    if (Object.keys(headers).length === 0) {
-      await this.secrets.delete(SECRET_KEYS.customHeaders);
-    } else {
-      await this.secrets.store(SECRET_KEYS.customHeaders, JSON.stringify(headers));
-    }
-    await this.refreshSecretCache();
+    await this.secretsManager.setCustomHeaders(headers);
   }
 
   /** Snapshot of the cached custom headers — used by the Edit flow. */
   public getCustomHeadersSnapshot(): Record<string, string> {
-    return { ...this.secretCache.customHeaders };
+    return this.secretsManager.getCustomHeadersSnapshot();
   }
 
-  private async refreshSecretCache(): Promise<void> {
-    const apiKey = await this.secrets.get(SECRET_KEYS.apiKey);
-    const headersJson = await this.secrets.get(SECRET_KEYS.customHeaders);
-    this.secretCache = {
-      apiKey: apiKey ?? '',
-      customHeaders: parseCustomHeadersJson(headersJson, (m) =>
-        this.outputChannel.appendLine(m)
-      ),
-    };
-    this.reloadConfig();
-  }
-
-  private async reMigrateLegacySecrets(): Promise<void> {
-    try {
-      const result = await migrateLegacySecrets(
-        this.legacyConfigAccessor(),
-        this.secrets,
-        (m) => this.outputChannel.appendLine(m)
-      );
-      if (result.apiKeyMigrated || result.customHeadersMigrated) {
-        // No toast on the re-migration path — the user is actively editing
-        // settings and a popup mid-keystroke is jarring. The output channel
-        // line is enough for diagnostics.
-        await this.refreshSecretCache();
-      }
-    } catch (error) {
-      this.outputChannel.appendLine(
-        `Failed to re-migrate legacy secret setting: ${error instanceof Error ? error.message : String(error)}`
-      );
-    }
-  }
-
-  /**
-   * Adapter from `vscode.WorkspaceConfiguration` to the
-   * `LegacyConfigAccessor` interface the migration helpers expect. Done as a
-   * small wrapper so the migration logic can be unit-tested without `vscode`.
-   */
-  private legacyConfigAccessor(): LegacyConfigAccessor {
-    const config = vscode.workspace.getConfiguration('github.copilot.llm-gateway');
-    return {
-      get: <T>(section: string, defaultValue: T): T => config.get<T>(section, defaultValue),
-      inspect: <T>(section: string) => {
-        const inspection = config.inspect<T>(section);
-        if (!inspection) { return undefined; }
-        return {
-          workspaceValue: inspection.workspaceValue,
-          globalValue: inspection.globalValue,
-        };
-      },
-      update: async (section: string, value: unknown, target: SecretConfigurationTarget) => {
-        const vsTarget =
-          target === SecretConfigurationTarget.Workspace
-            ? vscode.ConfigurationTarget.Workspace
-            : vscode.ConfigurationTarget.Global;
-        await config.update(section, value, vsTarget);
-      },
-    };
-  }
+  // ---------- model list ----------
 
   /**
    * Force a refresh of the language model list. Called from the
@@ -440,7 +249,7 @@ export class GatewayProvider
    * the server. Called from the `Refresh Models` command.
    */
   public invalidateModelCache(): void {
-    this.modelFetchLast = undefined;
+    this.catalog.invalidateCache();
   }
 
   /**
@@ -459,10 +268,11 @@ export class GatewayProvider
     // picker open.
     this.applyFrameworkConfiguration(options.configuration);
 
-    const outcome = await this.getOrFetchModels(token);
+    const outcome = await this.catalog.getOrFetchModels(token);
     if (!options.silent && outcome.error) {
-      this.promptOpenSettings(
-        `GitHub Copilot LLM Gateway: Failed to fetch models. ${diagnoseModelFetchError(outcome.error)}`
+      promptOpenSettings(
+        `GitHub Copilot LLM Gateway: Failed to fetch models. ${diagnoseModelFetchError(outcome.error)}`,
+        (msg) => this.outputChannel.appendLine(msg)
       );
     }
     return outcome.models;
@@ -490,123 +300,11 @@ export class GatewayProvider
     this.outputChannel.appendLine(
       'API key updated from VS Code framework configuration; reloading.'
     );
-    this.invalidateModelCache();
+    this.catalog.invalidateCache();
     this.reloadConfig();
   }
 
-  /**
-   * Underlying model-fetch with cache + single-flight dedup. Never shows any
-   * UI itself — that decision belongs to the caller based on its `silent` flag.
-   */
-  private async getOrFetchModels(
-    token: vscode.CancellationToken
-  ): Promise<{ models: vscode.LanguageModelChatInformation[]; error?: string }> {
-    const now = Date.now();
-    const cacheTtlMs = 1000;
-    if (this.modelFetchLast && now - this.modelFetchLast.at < cacheTtlMs) {
-      return { models: this.modelFetchLast.result };
-    }
-    if (this.modelFetchInFlight) {
-      try {
-        return { models: await this.modelFetchInFlight };
-      } catch (error) {
-        return { models: [], error: error instanceof Error ? error.message : String(error) };
-      }
-    }
-
-    const inFlight = this.doFetchModels(token);
-    this.modelFetchInFlight = inFlight;
-    try {
-      const result = await inFlight;
-      // Don't poison the cache with cancelled-empty results — the next caller
-      // should re-probe instead of seeing a stale empty list.
-      if (!token.isCancellationRequested) {
-        this.modelFetchLast = { at: Date.now(), result };
-        this.lastSuccessfulFetchAt = Date.now();
-        this.lastConnectionError = undefined;
-        this._onDidChangeStatusSnapshot.fire();
-      }
-      return { models: result };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.lastConnectionError = message;
-      this._onDidChangeStatusSnapshot.fire();
-      return { models: [], error: message };
-    } finally {
-      if (this.modelFetchInFlight === inFlight) {
-        this.modelFetchInFlight = undefined;
-      }
-    }
-  }
-
-  private async doFetchModels(
-    token: vscode.CancellationToken
-  ): Promise<vscode.LanguageModelChatInformation[]> {
-    this.outputChannel.appendLine('Fetching models from inference server...');
-    let response;
-    try {
-      response = await this.client.fetchModels(token);
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      this.outputChannel.appendLine(`ERROR: Failed to fetch models: ${errorMessage}`);
-      throw error;
-    }
-
-    if (token.isCancellationRequested) {
-      return [];
-    }
-
-    const uniqueModels = dedupeModels(response.data);
-    if (uniqueModels.length !== response.data.length) {
-      this.outputChannel.appendLine(
-        `Server returned ${response.data.length} models, ${uniqueModels.length} unique after dedupe`
-      );
-    }
-
-    // Rebuild the per-id context map from the latest fetch. If the server
-    // removed a model, drop its entry so stale data can't leak into future
-    // chat requests.
-    this.contextByModelId.clear();
-
-    const models = uniqueModels.map((model) => {
-      const contextOverride = resolveContextWindowOverride(
-        model.id,
-        this.config.modelContextWindows
-      );
-      const { info, totalContext, hasServerReportedContext } = buildModelInfo({
-        model,
-        defaultMaxTokens: this.config.defaultMaxTokens,
-        defaultMaxOutputTokens: this.config.defaultMaxOutputTokens,
-        capabilities: {
-          imageInput: this.config.enableImageInput,
-          toolCalling: this.config.enableToolCalling,
-        },
-        contextOverride,
-      });
-      this.contextByModelId.set(model.id, totalContext);
-
-      if (contextOverride !== undefined) {
-        this.outputChannel.appendLine(
-          `  Model ${model.id}: context ${totalContext} tokens from 'modelContextWindows' setting (exposed as input=${info.maxInputTokens}, output=${info.maxOutputTokens})`
-        );
-      } else if (hasServerReportedContext) {
-        this.outputChannel.appendLine(
-          `  Model ${model.id}: server-reported context ${totalContext} tokens (exposed as input=${info.maxInputTokens}, output=${info.maxOutputTokens})`
-        );
-      } else {
-        this.outputChannel.appendLine(
-          `  Model ${model.id}: no server-reported context; using defaultMaxTokens=${totalContext}. If this is wrong, set 'github.copilot.llm-gateway.modelContextWindows'.`
-        );
-      }
-
-      return info;
-    });
-
-    this.outputChannel.appendLine(
-      `Found ${models.length} models: ${models.map((m) => m.id).join(', ')}`
-    );
-    return models;
-  }
+  // ---------- chat ----------
 
   /**
    * Provide language model chat response - streams responses from inference server
@@ -618,196 +316,12 @@ export class GatewayProvider
     progress: vscode.Progress<vscode.LanguageModelResponsePart>,
     token: vscode.CancellationToken
   ): Promise<void> {
-    this.outputChannel.appendLine(`Sending chat request to model: ${model.id}`);
-    this.outputChannel.appendLine(
-      `Tool mode: ${describeToolMode(options.toolMode)}, Tools: ${options.tools?.length ?? 0}`
-    );
-    this.outputChannel.appendLine(`Message count: ${messages.length}`);
-
-    const modelName = friendlyModelName(model.id);
-    this._onDidChangeRequestState.fire({ kind: 'start', modelId: model.id, modelName });
-
-    const openAIMessages = this.convertAllMessages(messages);
-    this.outputChannel.appendLine(`Converted to ${openAIMessages.length} OpenAI messages`);
-    this.logMessageStructure(openAIMessages);
-
-    const configuredMaxOutput =
-      model.maxOutputTokens || TOKEN_CONSTANTS.DEFAULT_OUTPUT_TOKENS;
-
-    // Filter the tool catalog up-front so the token budget reflects what we
-    // actually send on the wire. Otherwise the unfiltered Copilot tool catalog
-    // (~93 tools, ~24K chars) would reserve context that gets thrown away by
-    // buildToolsConfig() later — collapsing the user's prompt when tool
-    // calling is disabled.
-    const { tools: filteredTools, schemas: toolSchemas } = this.buildToolsConfig(options);
-    const toolsSerializedLength = filteredTools ? JSON.stringify(filteredTools).length : 0;
-
-    // Once anything has been streamed to the chat view we can no longer
-    // transparently re-issue the request without duplicating output, so track
-    // whether the wrapped progress ever fired.
-    let partsReported = false;
-    const trackingProgress: vscode.Progress<vscode.LanguageModelResponsePart> = {
-      report: (part) => {
-        partsReported = true;
-        progress.report(part);
-      },
-    };
-
-    let capturedUsage: TokenUsage | undefined;
-
-    // The whole budget → request → stream pipeline, resolved against the
-    // model's current context size, so a corrected context can re-run it.
-    const attempt = async (): Promise<void> => {
-      const modelMaxContext = this.resolveModelMaxContext(model);
-      const maxInputTokens = calculateMaxInputTokens({
-        modelMaxContext,
-        configuredMaxOutput,
-        toolsSerializedLength,
-      });
-
-      const truncatedMessages = truncateMessagesToFit(openAIMessages, maxInputTokens, (msg) =>
-        this.outputChannel.appendLine(msg)
-      );
-      if (truncatedMessages.length < openAIMessages.length) {
-        this.outputChannel.appendLine(
-          `WARNING: Truncated conversation from ${openAIMessages.length} to ${truncatedMessages.length} messages to fit context limit`
-        );
-      }
-
-      const inputText = buildInputText(truncatedMessages);
-      const toolsOverhead = Math.ceil(toolsSerializedLength / TOKEN_CONSTANTS.CHARS_PER_TOKEN);
-      const estimatedInputTokens = await this.provideTokenCount(model, inputText, token);
-      const safeMaxOutputTokens = calculateSafeMaxOutputTokens({
-        estimatedInputTokens,
-        toolsOverhead,
-        modelMaxContext,
-        configuredMaxOutput,
-      });
-
-      this.outputChannel.appendLine(
-        `Token estimate: input=${estimatedInputTokens}, tools=${toolsOverhead}, model_context=${modelMaxContext}, chosen_max_tokens=${safeMaxOutputTokens}`
-      );
-
-      const hasTools = filteredTools !== undefined && filteredTools.length > 0;
-      const temperature = hasTools ? this.config.agentTemperature : DEFAULT_TEMPERATURE;
-
-      const requestOptions = buildChatRequest({
-        model: model.id,
-        messages: truncatedMessages,
-        maxTokens: safeMaxOutputTokens,
-        temperature,
-        tools: filteredTools,
-        toolChoice: hasTools ? this.mapToolChoice(options.toolMode) : undefined,
-        parallelToolCalls: hasTools ? this.config.parallelToolCalling : undefined,
-        extraOptions: {
-          ...this.config.extraModelOptions,
-          ...resolvePerModelOptions(model.id, this.config.perModelOptions),
-          ...options.modelOptions,
-        },
-      });
-
-      if (hasTools) {
-        this.outputChannel.appendLine(
-          `Sending ${filteredTools.length} tools to model (parallel: ${this.config.parallelToolCalling})`
-        );
-      }
-
-      this.logRequest(requestOptions);
-
-      const reporter = this.createStreamReporter(trackingProgress, (usage) => {
-        capturedUsage = usage;
-      });
-      const chunks = this.client.streamChatCompletion(requestOptions, token);
-      const stats = await streamResponse({
-        chunks: chunks as AsyncIterable<StreamChunk>,
-        reporter,
-        isCancelled: () => token.isCancellationRequested,
-        resolveToolCallArgs: (toolCall) => this.resolveToolCallArgs(toolCall, toolSchemas),
-      });
-
-      this.outputChannel.appendLine(
-        `Completed chat request, received ${stats.totalContentLength} chars, ${stats.totalTextParts} text parts, ${stats.totalToolCalls} tool calls`
-      );
-
-      if (isEmptyStreamResult(stats)) {
-        const toolCount = filteredTools?.length ?? 0;
-        await this.handleEmptyResponse(model, inputText, openAIMessages.length, toolCount, token, trackingProgress);
-      }
-    };
-
-    try {
-      try {
-        await attempt();
-      } catch (error) {
-        // Context-overflow errors carry the server's real context size
-        // (issue #55: llama-server router mode reports nothing up-front, so
-        // the first request can overshoot). Learn it and, if nothing has been
-        // streamed to the chat view yet, transparently retry once with the
-        // corrected budget.
-        if (
-          !this.learnContextSizeFromError(model, error) ||
-          partsReported ||
-          token.isCancellationRequested
-        ) {
-          throw error;
-        }
-        this.outputChannel.appendLine('Retrying chat request with corrected context size...');
-        await attempt();
-      }
-      this.recordCompletedRequest(model.id, modelName, capturedUsage);
-      this._onDidChangeRequestState.fire({
-        kind: 'complete',
-        modelId: model.id,
-        modelName,
-        usage: capturedUsage,
-      });
-    } catch (error) {
-      this._onDidChangeRequestState.fire({
-        kind: 'error',
-        modelId: model.id,
-        modelName,
-        errorMessage: error instanceof Error ? error.message : String(error),
-      });
-      this.handleChatError(error);
-    }
+    return this.chatHandler.handle(model, messages, options, progress, token);
   }
 
   /**
-   * Inspect a failed chat request for a context-overflow error and record the
-   * context size the server says it actually has. Returns true when a new,
-   * smaller size was learned — i.e. retrying with a recomputed budget can
-   * succeed. Returns false when the error is unrelated, or when we were
-   * already budgeting within the reported window (estimation drift — a retry
-   * with the same numbers would fail identically).
-   */
-  private learnContextSizeFromError(
-    model: vscode.LanguageModelChatInformation,
-    error: unknown
-  ): boolean {
-    const message = error instanceof Error ? error.message : String(error);
-    const serverContext = parseContextOverflowError(message);
-    if (serverContext === undefined) {
-      return false;
-    }
-    const current = this.resolveModelMaxContext(model);
-    if (serverContext >= current) {
-      return false;
-    }
-    this.learnedContextByModelId.set(model.id, serverContext);
-    this.outputChannel.appendLine(
-      `Learned context size for ${model.id} from server error: ${serverContext} tokens (was budgeting for ${current}). ` +
-        `Add it to 'github.copilot.llm-gateway.modelContextWindows' to persist across sessions.`
-    );
-    return true;
-  }
-
-  /**
-   * Provide token count estimation (rough char/4 approximation).
-   *
-   * Non-text parts contribute too: tool calls / tool results are serialized
-   * and counted, and each image contributes a conservative fixed overhead so
-   * we don't undercount multimodal conversations (otherwise the output-token
-   * budget overshoots the real context window).
+   * Provide token count estimation (rough char/4 approximation). Non-text
+   * parts contribute too — see {@link countMessageTokens}.
    */
   async provideTokenCount(
     _model: vscode.LanguageModelChatInformation,
@@ -817,23 +331,10 @@ export class GatewayProvider
     if (typeof text === 'string') {
       return estimateTextTokens(text);
     }
-    let tokens = 0;
-    for (const part of text.content) {
-      if (part instanceof vscode.LanguageModelTextPart) {
-        tokens += estimateTextTokens(part.value);
-      } else if (part instanceof vscode.LanguageModelToolCallPart) {
-        tokens += estimateTextTokens(part.name + JSON.stringify(part.input ?? {}));
-      } else if (part instanceof vscode.LanguageModelToolResultPart) {
-        const body = flattenToolResultContent(part.content);
-        tokens += estimateTextTokens(body);
-      } else if (part instanceof vscode.LanguageModelDataPart) {
-        // Images don't map cleanly to tokens — reserve a conservative fixed
-        // overhead so multimodal requests aren't massively undercounted.
-        tokens += 800;
-      }
-    }
-    return tokens;
+    return countMessageTokens(text);
   }
+
+  // ---------- status ----------
 
   /**
    * Capture a successful request in the running session totals and the
@@ -876,9 +377,9 @@ export class GatewayProvider
    * forward whenever the dialog re-renders.
    */
   public getStatusSnapshot(): StatusSnapshot {
-    const cachedModels = this.modelFetchLast?.result ?? [];
+    const cachedModels = this.catalog.getCachedModels();
     const models: ModelSummary[] = cachedModels.map((m) => {
-      const totalContext = this.contextByModelId.get(m.id);
+      const totalContext = this.catalog.getContextForModel(m.id);
       return {
         id: m.id,
         name: m.name,
@@ -888,10 +389,12 @@ export class GatewayProvider
       };
     });
 
+    const lastConnectionError = this.catalog.getLastConnectionError();
+    const lastSuccessfulFetchAt = this.catalog.getLastSuccessfulFetchAt();
     let connection: { state: ConnectionState; errorMessage?: string };
-    if (this.lastConnectionError) {
-      connection = { state: 'error', errorMessage: this.lastConnectionError };
-    } else if (this.lastSuccessfulFetchAt === undefined) {
+    if (lastConnectionError) {
+      connection = { state: 'error', errorMessage: lastConnectionError };
+    } else if (lastSuccessfulFetchAt === undefined) {
       connection = { state: 'unknown' };
     } else if (cachedModels.length === 0) {
       connection = { state: 'noModels' };
@@ -902,9 +405,7 @@ export class GatewayProvider
     return {
       host: extractHost(this.config.serverUrl),
       connection,
-      ...(this.lastSuccessfulFetchAt !== undefined
-        ? { lastSuccessfulFetchAt: this.lastSuccessfulFetchAt }
-        : {}),
+      ...(lastSuccessfulFetchAt !== undefined ? { lastSuccessfulFetchAt } : {}),
       models,
       sessionStats: this.sessionStats,
       ...(this.lastRequest ? { lastRequest: this.lastRequest } : {}),
@@ -930,625 +431,23 @@ export class GatewayProvider
     return this.config.inlineCompletionDebounce;
   }
 
-  /**
-   * Produce a fill-in-the-middle completion for the text around the cursor, or
-   * `undefined` when disabled, no model is available, the context is empty, or
-   * the server errored. Talks straight to `/v1/completions` — this runs
-   * alongside (not through) Copilot, which doesn't expose BYOK models to its
-   * own inline suggestions.
-   */
   public async provideInlineCompletion(
     textBefore: string,
     textAfter: string,
     token: vscode.CancellationToken
   ): Promise<string | undefined> {
-    if (!this.config.enableInlineCompletion) {
-      return undefined;
-    }
-    const model = this.resolveInlineCompletionModel();
-    if (!model) {
-      this.outputChannel.appendLine(
-        'Inline completion skipped: no model available. Set github.copilot.llm-gateway.inlineCompletionModel or refresh the model list.'
-      );
-      return undefined;
-    }
-
-    const context = extractFimContext(
-      textBefore,
-      textAfter,
-      this.config.inlineCompletionMaxPrefixChars,
-      this.config.inlineCompletionMaxSuffixChars
-    );
-    if (!shouldRequestCompletion(context)) {
-      return undefined;
-    }
-
-    const request = buildCompletionRequestBody({
-      model,
-      context,
-      maxTokens: this.config.inlineCompletionMaxTokens,
-      includeSuffix: !this.completionSuffixUnsupported,
-    });
-
-    try {
-      return await this.fetchInlineCompletionText(request, token);
-    } catch (error) {
-      if (
-        request.suffix !== undefined &&
-        error instanceof CompletionHttpError &&
-        isSuffixUnsupportedError(error.status, error.body)
-      ) {
-        this.completionSuffixUnsupported = true;
-        this.outputChannel.appendLine(
-          'Inline completion: server rejected the FIM "suffix" parameter (vLLM does not implement it). ' +
-            'Falling back to prefix-only completions — the text after the cursor will be ignored.'
-        );
-        try {
-          return await this.fetchInlineCompletionText(
-            buildCompletionRequestBody({
-              model,
-              context,
-              maxTokens: this.config.inlineCompletionMaxTokens,
-              includeSuffix: false,
-            }),
-            token
-          );
-        } catch (retryError) {
-          this.outputChannel.appendLine(
-            `Inline completion failed: ${retryError instanceof Error ? retryError.message : String(retryError)}`
-          );
-          return undefined;
-        }
-      }
-      // Completions are best-effort: a failure should silently yield no
-      // suggestion rather than surfacing a toast on every keystroke.
-      this.outputChannel.appendLine(
-        `Inline completion failed: ${error instanceof Error ? error.message : String(error)}`
-      );
-      return undefined;
-    }
-  }
-
-  /** Fire one `/v1/completions` request and normalise the result to ghost text. */
-  private async fetchInlineCompletionText(
-    request: OpenAICompletionRequest,
-    token: vscode.CancellationToken
-  ): Promise<string | undefined> {
-    const response = await this.client.fetchCompletion(
-      request,
-      token,
-      this.config.inlineCompletionTimeout
-    );
-    const text = cleanCompletionText(extractCompletionText(response));
-    return text.length > 0 ? text : undefined;
-  }
-
-  /**
-   * Pick the model id for inline completions: the explicit
-   * `inlineCompletionModel` setting if set, otherwise the first model from the
-   * most recent successful fetch. Returns undefined when neither is available.
-   */
-  private resolveInlineCompletionModel(): string | undefined {
-    const configured = this.config.inlineCompletionModel.trim();
-    if (configured.length > 0) {
-      return configured;
-    }
-    const cached = this.modelFetchLast?.result;
-    return cached && cached.length > 0 ? cached[0].id : undefined;
-  }
-
-  /**
-   * Resolve the real server-reported context size for a model. The
-   * picker-facing `maxInputTokens` equals `totalContext`, so naive
-   * `maxInputTokens + maxOutputTokens` would overshoot by `maxOutputTokens`
-   * and cause context-length errors at the server.
-   */
-  private resolveModelMaxContext(model: vscode.LanguageModelChatInformation): number {
-    let context: number;
-    const cached = this.contextByModelId.get(model.id);
-    if (cached && cached > 0) {
-      context = cached;
-    } else if (model.maxInputTokens && model.maxInputTokens > 0) {
-      // Fallback path: the model list hasn't been fetched yet in this session
-      // (e.g. VS Code routed a cached chat directly to the provider). Use the
-      // picker-facing input window, which equals totalContext after the
-      // provideLanguageModelChatInformation change.
-      context = model.maxInputTokens;
-    } else {
-      context = TOKEN_CONSTANTS.DEFAULT_CONTEXT_TOKENS;
-    }
-    // A size learned from the server's own overflow error is ground truth —
-    // it wins whenever it's smaller than what the model list claimed.
-    const learned = this.learnedContextByModelId.get(model.id);
-    if (learned !== undefined && learned < context) {
-      return learned;
-    }
-    return context;
-  }
-
-  // ---------- message classification ----------
-
-  private convertAllMessages(messages: readonly vscode.LanguageModelChatMessage[]): OpenAIMessage[] {
-    const result: OpenAIMessage[] = [];
-    const log = (msg: string): void => this.outputChannel.appendLine(msg);
-    for (const msg of messages) {
-      const normalized: NormalizedMessage = {
-        role: this.mapRole(msg.role),
-        parts: msg.content.map((part) => this.classifyPart(part)),
-      };
-      result.push(
-        ...convertMessage(normalized, { enableImageInput: this.config.enableImageInput }, log)
-      );
-    }
-    return result;
-  }
-
-  private mapRole(role: vscode.LanguageModelChatMessageRole): NormalizedRole {
-    if (role === vscode.LanguageModelChatMessageRole.Assistant) {
-      return 'assistant';
-    }
-    return 'user';
-  }
-
-  /**
-   * Translate a vscode LanguageModel*Part into the plain data shape used by
-   * messageConverter. Falls back to duck typing for older VS Code versions
-   * where the constructors may not match.
-   */
-  private classifyPart(part: unknown): NormalizedPart {
-    if (part instanceof vscode.LanguageModelTextPart) {
-      return { kind: 'text', value: part.value };
-    }
-    if (part instanceof vscode.LanguageModelToolResultPart) {
-      return {
-        kind: 'toolResult',
-        callId: part.callId,
-        content: flattenToolResultContent(part.content),
-      };
-    }
-    if (part instanceof vscode.LanguageModelToolCallPart) {
-      return {
-        kind: 'toolCall',
-        callId: part.callId,
-        name: part.name,
-        input: part.input,
-      };
-    }
-    if (part instanceof vscode.LanguageModelDataPart) {
-      return { kind: 'image', mimeType: part.mimeType, data: part.data };
-    }
-    return this.classifyPartDuckTyped(part);
-  }
-
-  private classifyPartDuckTyped(part: unknown): NormalizedPart {
-    if (typeof part !== 'object' || part === null) {
-      return { kind: 'unknown' };
-    }
-    const anyPart = part as Record<string, unknown>;
-
-    if ('callId' in anyPart && 'content' in anyPart && !('name' in anyPart)) {
-      this.outputChannel.appendLine(`  Found tool result (duck-typed): callId=${anyPart.callId}`);
-      return {
-        kind: 'toolResult',
-        callId: String(anyPart.callId),
-        content: flattenToolResultContent(anyPart.content),
-      };
-    }
-    if ('callId' in anyPart && 'name' in anyPart && 'input' in anyPart) {
-      this.outputChannel.appendLine(
-        `  Found tool call (duck-typed): callId=${anyPart.callId}, name=${anyPart.name}`
-      );
-      return {
-        kind: 'toolCall',
-        callId: String(anyPart.callId),
-        name: String(anyPart.name),
-        input: anyPart.input,
-      };
-    }
-    return { kind: 'unknown' };
-  }
-
-  // ---------- tool config + stream adapters ----------
-
-  private mapToolChoice(toolMode: vscode.LanguageModelChatToolMode | undefined): ToolChoice | undefined {
-    switch (toolMode) {
-      case vscode.LanguageModelChatToolMode.Required:
-        return 'required';
-      case vscode.LanguageModelChatToolMode.Auto:
-        return 'auto';
-      default:
-        return undefined;
-    }
-  }
-
-  private buildToolsConfig(
-    options: vscode.ProvideLanguageModelChatResponseOptions
-  ): {
-    tools: OpenAIToolDefinition[] | undefined;
-    schemas: Map<string, Record<string, unknown> | undefined>;
-  } {
-    const schemas = new Map<string, Record<string, unknown> | undefined>();
-    if (!this.config.enableToolCalling || !options.tools || options.tools.length === 0) {
-      return { tools: undefined, schemas };
-    }
-
-    const tools: OpenAIToolDefinition[] = options.tools.map((tool) => {
-      this.outputChannel.appendLine(`Tool: ${tool.name}`);
-      this.outputChannel.appendLine(
-        `  Description: ${formatToolDescription(tool.description)}`
-      );
-
-      const schema = tool.inputSchema as Record<string, unknown> | undefined;
-      schemas.set(tool.name, schema);
-
-      if (schema?.required && Array.isArray(schema.required)) {
-        this.outputChannel.appendLine(
-          `  Required properties: ${(schema.required as string[]).join(', ')}`
-        );
-      }
-
-      return {
-        type: 'function',
-        function: {
-          name: tool.name,
-          description: tool.description,
-          parameters: tool.inputSchema,
-        },
-      };
-    });
-
-    return { tools, schemas };
-  }
-
-  /**
-   * Parse and patch tool call arguments before reporting them upstream.
-   * The schemas map is per-request so concurrent `provideLanguageModelChatResponse`
-   * calls can't clobber each other's tool definitions.
-   */
-  private resolveToolCallArgs(
-    toolCall: { id: string; name: string; arguments: string },
-    toolSchemas: Map<string, Record<string, unknown> | undefined>
-  ): Record<string, unknown> {
-    this.outputChannel.appendLine(`\n=== TOOL CALL RECEIVED ===`);
-    this.outputChannel.appendLine(`  ID: ${toolCall.id}`);
-    this.outputChannel.appendLine(`  Name: ${toolCall.name}`);
-    this.outputChannel.appendLine(
-      `  Raw arguments: ${toolCall.arguments.substring(0, MAX_TOOL_ARGS_LOG_LENGTH)}${
-        toolCall.arguments.length > MAX_TOOL_ARGS_LOG_LENGTH ? '...' : ''
-      }`
-    );
-
-    const log = (msg: string): void => this.outputChannel.appendLine(msg);
-    let args = tryRepairJson(toolCall.arguments, log) as Record<string, unknown> | null;
-
-    if (args === null) {
-      this.outputChannel.appendLine(`  ERROR: Failed to parse tool call arguments`);
-      this.outputChannel.appendLine(`  Full arguments: ${toolCall.arguments}`);
-      args = {};
-    } else {
-      const argKeys = Object.keys(args);
-      this.outputChannel.appendLine(
-        `  Parsed argument keys: ${argKeys.length > 0 ? argKeys.join(', ') : '(none)'}`
-      );
-    }
-
-    const toolSchema = toolSchemas.get(toolCall.name);
-    if (toolSchema) {
-      args = fillMissingRequiredProperties(args, toolSchema, log);
-    }
-
-    this.outputChannel.appendLine(`=== END TOOL CALL ===\n`);
-    return args;
-  }
-
-  private createStreamReporter(
-    progress: vscode.Progress<vscode.LanguageModelResponsePart>,
-    onUsage?: (usage: TokenUsage) => void
-  ): StreamReporter {
-    return {
-      reportText: (text) => progress.report(new vscode.LanguageModelTextPart(text)),
-      reportThinking: (text) => progress.report(new vscode.LanguageModelThinkingPart(text)),
-      reportThinkingDone: () =>
-        progress.report(new vscode.LanguageModelThinkingPart('', '', { vscode_reasoning_done: true })),
-      reportToolCall: (id, name, args) =>
-        progress.report(new vscode.LanguageModelToolCallPart(id, name, args)),
-      reportUsage: (usage) => {
-        // VS Code 1.120 picks up token usage emitted as a LanguageModelDataPart
-        // with the literal mime type `usage` (see microsoft/vscode#315394).
-        // The shape mirrors OpenAI's `usage` object. Surfacing it here makes
-        // the chat view's context-window widget render real numbers instead
-        // of `0%` for gateway models (issue #24).
-        this.outputChannel.appendLine(
-          `Usage: prompt=${usage.prompt_tokens}, completion=${usage.completion_tokens}, total=${usage.total_tokens}`
-        );
-        onUsage?.({
-          prompt: usage.prompt_tokens,
-          completion: usage.completion_tokens,
-          total: usage.total_tokens,
-        });
-        const payload = new TextEncoder().encode(JSON.stringify(usage));
-        progress.report(new vscode.LanguageModelDataPart(payload, USAGE_DATA_PART_MIME_TYPE));
-      },
-    };
-  }
-
-  // ---------- logging helpers ----------
-
-  private logMessageStructure(openAIMessages: readonly OpenAIMessage[]): void {
-    for (let i = 0; i < openAIMessages.length; i++) {
-      const msg = openAIMessages[i];
-      const toolCallId = typeof msg.tool_call_id === 'string' ? msg.tool_call_id : 'none';
-      let hasContent: boolean;
-      if (typeof msg.content === 'string') {
-        hasContent = msg.content.length > 0;
-      } else if (Array.isArray(msg.content)) {
-        hasContent = msg.content.length > 0;
-      } else {
-        hasContent = msg.content !== null && msg.content !== undefined;
-      }
-      const hasToolCalls = Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0;
-      this.outputChannel.appendLine(
-        `  Message ${i + 1}: role=${msg.role}, hasContent=${hasContent}, hasToolCalls=${hasToolCalls}, toolCallId=${toolCallId}`
-      );
-    }
-  }
-
-  private logRequest(request: OpenAIChatCompletionRequest): void {
-    if (!this.config.verboseLogging) {
-      // By default log only the non-content envelope so user conversation
-      // data (file contents, tool args, credentials pasted into chat) is
-      // not captured in logs they may share for support.
-      const toolCount = Array.isArray(request.tools) ? request.tools.length : 0;
-      this.outputChannel.appendLine(
-        `Request: model=${request.model}, messages=${request.messages.length}, tools=${toolCount}, max_tokens=${request.max_tokens}, temperature=${request.temperature}`
-      );
-      return;
-    }
-    const debugRequest = JSON.stringify(request, null, 2);
-    this.outputChannel.appendLine(
-      debugRequest.length > DEBUG_REQUEST_MAX_LOG_LENGTH
-        ? `Request (truncated): ${debugRequest.substring(0, DEBUG_REQUEST_MAX_LOG_LENGTH)}...`
-        : `Request: ${debugRequest}`
-    );
-  }
-
-  // ---------- error / UI helpers ----------
-
-  private async handleEmptyResponse(
-    model: vscode.LanguageModelChatInformation,
-    inputText: string,
-    messageCount: number,
-    toolCount: number,
-    token: vscode.CancellationToken,
-    progress: vscode.Progress<vscode.LanguageModelResponsePart>
-  ): Promise<void> {
-    const inputTokenCount = await this.provideTokenCount(model, inputText, token);
-    const modelMaxContext = this.resolveModelMaxContext(model);
-
-    this.outputChannel.appendLine(`WARNING: Model returned empty response with no tool calls.`);
-    this.outputChannel.appendLine(`  Input tokens estimated: ${inputTokenCount}`);
-    this.outputChannel.appendLine(`  Messages in conversation: ${messageCount}`);
-    this.outputChannel.appendLine(`  Tools provided: ${toolCount}`);
-
-    const errorHint =
-      toolCount > 0
-        ? `The model returned an empty response. This typically indicates the model failed to generate valid output with tool calling enabled. Check the inference server logs for errors.`
-        : `The model returned an empty response. Check the inference server logs for details.`;
-
-    this.outputChannel.appendLine(`  Issue: ${errorHint}`);
-
-    const errorMessage =
-      `I was unable to generate a response. ${errorHint}\n\n` +
-      `Diagnostic info:\n- Model: ${model.id}\n- Tools provided: ${toolCount}\n` +
-      `- Estimated input tokens: ${inputTokenCount}\n- Context limit: ${modelMaxContext}\n\n` +
-      `Check the "GitHub Copilot LLM Gateway" output panel for detailed logs.`;
-
-    progress.report(new vscode.LanguageModelTextPart(errorMessage));
-  }
-
-  private handleChatError(error: unknown): never {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    const errorStack = error instanceof Error ? error.stack : '';
-
-    this.outputChannel.appendLine(`ERROR: Chat request failed: ${errorMessage}`);
-    if (errorStack) {
-      this.outputChannel.appendLine(`Stack trace: ${errorStack}`);
-    }
-
-    // Be conservative — only treat the error as a tool-calling format error
-    // when the message contains a known tool-parser signal. The previous
-    // heuristic also matched on `unexpected tokens`, which appears in many
-    // unrelated errors and was triggering the "may not support tool calling"
-    // prompt incorrectly.
-    const isToolError =
-      errorMessage.includes('HarmonyError') ||
-      /tool[_ -]?call.*parse/i.test(errorMessage);
-
-    const overflowContext = parseContextOverflowError(errorMessage);
-    if (overflowContext !== undefined) {
-      // Reaching here means the learn-and-retry path couldn't recover
-      // (output already streamed, or we were already budgeting within the
-      // reported window and the char/4 estimate drifted). Give the user an
-      // actionable fix instead of the raw server body.
-      this.promptOpenSettings(
-        `GitHub Copilot LLM Gateway: Request exceeded the model's context window (server reports ${overflowContext} tokens). ` +
-          `Retry the request — the gateway now budgets for this limit. If it recurs, set 'modelContextWindows' for this model to a value below ${overflowContext}.`
-      );
-    } else if (isToolError) {
-      this.outputChannel.appendLine('HINT: This appears to be a tool calling format error.');
-      this.outputChannel.appendLine('The model may not support function calling properly.');
-      this.outputChannel.appendLine(
-        'Try: 1) Using a different model, 2) Disabling tool calling in settings, or 3) Checking inference server logs'
-      );
-      this.promptToolCallingError();
-    } else {
-      vscode.window.showErrorMessage(
-        `GitHub Copilot LLM Gateway: Chat request failed. ${errorMessage}`
-      );
-    }
-
-    throw error;
-  }
-
-  private promptOpenSettings(message: string): void {
-    vscode.window.showErrorMessage(message, 'Open Settings').then(
-      (selection: string | undefined) => {
-        if (selection === 'Open Settings') {
-          vscode.commands.executeCommand(
-            'workbench.action.openSettings',
-            'github.copilot.llm-gateway'
-          );
-        }
-      },
-      (err: unknown) => {
-        this.outputChannel.appendLine(
-          `Failed to show settings prompt: ${err instanceof Error ? err.message : String(err)}`
-        );
-      }
-    );
-  }
-
-  private promptToolCallingError(): void {
-    vscode.window
-      .showErrorMessage(
-        `GitHub Copilot LLM Gateway: Model failed to generate valid tool calls. This model may not support function calling. Check Output panel for details.`,
-        'Open Output',
-        'Disable Tool Calling'
-      )
-      .then(
-        (selection: string | undefined) => {
-          if (selection === 'Open Output') {
-            this.outputChannel.show();
-          } else if (selection === 'Disable Tool Calling') {
-            vscode.workspace
-              .getConfiguration('github.copilot.llm-gateway')
-              .update('enableToolCalling', false, vscode.ConfigurationTarget.Global);
-          }
-        },
-        (err: unknown) => {
-          this.outputChannel.appendLine(
-            `Failed to show tool calling error prompt: ${err instanceof Error ? err.message : String(err)}`
-          );
-        }
-      );
+    return this.inlineCompletions.provideCompletion(textBefore, textAfter, token);
   }
 
   // ---------- config ----------
 
-  private loadConfig(): GatewayConfig {
-    const config = vscode.workspace.getConfiguration('github.copilot.llm-gateway');
-
-    // `apiKey` and `customHeaders` come from the in-memory secret cache
-    // populated by `loadSecrets` / `refreshSecretCache`. The legacy
-    // plain-text settings of the same name are still read by the migration
-    // path, but are cleared once their values are safely in SecretStorage
-    // (issue #28). Until `loadSecrets` runs, the cache holds empty values —
-    // an early model fetch would just send unauthenticated requests.
-    const cfg: GatewayConfig = {
-      serverUrl: config.get<string>('serverUrl', 'http://localhost:8000'),
-      // Framework-managed API key (from VS Code's native model-picker UI) wins
-      // over the SecretStorage cache. Falls back to SecretStorage when nothing
-      // has come in via the configuration arg yet, which preserves the
-      // existing Configure Server flow for users on builds without the
-      // framework UI.
-      apiKey: resolveApiKey(this.frameworkOverride, this.secretCache.apiKey),
-      requestTimeout: config.get<number>('requestTimeout', DEFAULT_REQUEST_TIMEOUT_MS),
-      defaultMaxTokens: config.get<number>('defaultMaxTokens', TOKEN_CONSTANTS.DEFAULT_CONTEXT_TOKENS),
-      defaultMaxOutputTokens: config.get<number>(
-        'defaultMaxOutputTokens',
-        TOKEN_CONSTANTS.FALLBACK_OUTPUT_TOKENS
-      ),
-      enableImageInput: config.get<boolean>('enableImageInput', true),
-      enableToolCalling: config.get<boolean>('enableToolCalling', true),
-      parallelToolCalling: config.get<boolean>('parallelToolCalling', true),
-      agentTemperature: config.get<number>('agentTemperature', 0),
-      verboseLogging: config.get<boolean>('verboseLogging', false),
-      customHeaders: { ...this.secretCache.customHeaders },
-      extraModelOptions: config.get<Record<string, unknown>>('extraModelOptions', {}) ?? {},
-      perModelOptions: config.get<Record<string, unknown>>('perModelOptions', {}) ?? {},
-      modelContextWindows: config.get<Record<string, number>>('modelContextWindows', {}) ?? {},
-      enableInlineCompletion: config.get<boolean>('enableInlineCompletion', false),
-      inlineCompletionModel: config.get<string>('inlineCompletionModel', ''),
-      inlineCompletionMaxTokens: config.get<number>('inlineCompletionMaxTokens', 256),
-      inlineCompletionDebounce: config.get<number>('inlineCompletionDebounce', 300),
-      inlineCompletionTimeout: config.get<number>('inlineCompletionTimeout', 3000),
-      inlineCompletionMaxPrefixChars: config.get<number>('inlineCompletionMaxPrefixChars', 4000),
-      inlineCompletionMaxSuffixChars: config.get<number>('inlineCompletionMaxSuffixChars', 1000),
-    };
-
-    const MAX_INT32 = 2147483647; // Maximum value for setTimeout (signed 32-bit integer)
-    if (cfg.requestTimeout <= 0) {
-      this.outputChannel.appendLine(
-        `ERROR: requestTimeout must be > 0; using default ${DEFAULT_REQUEST_TIMEOUT_MS}`
-      );
-      cfg.requestTimeout = DEFAULT_REQUEST_TIMEOUT_MS;
-    } else if (cfg.requestTimeout > MAX_INT32) {
-      this.outputChannel.appendLine(
-        `WARNING: requestTimeout (${cfg.requestTimeout}) exceeds the maximum value of 2147483647 ms (signed 32-bit integer). Setting to ${MAX_INT32}.`
-      );
-      cfg.requestTimeout = MAX_INT32;
-    }
-
-    try {
-      new URL(cfg.serverUrl);
-      // URL became valid — reset the dedupe key so future invalid values are
-      // re-surfaced.
-      this.lastInvalidUrlNotified = undefined;
-    } catch {
-      const fallback = 'http://localhost:8000';
-      this.outputChannel.appendLine(
-        `ERROR: Invalid server URL ${JSON.stringify(cfg.serverUrl)}. Falling back to ${fallback}; fix this in settings.`
-      );
-      // Only surface the UI prompt if we haven't already warned about this
-      // exact value — otherwise the user gets a new modal for every keystroke
-      // while they're typing a URL in settings.
-      if (this.lastInvalidUrlNotified !== cfg.serverUrl) {
-        this.lastInvalidUrlNotified = cfg.serverUrl;
-        setImmediate(() => {
-          this.promptOpenSettings(
-            `GitHub Copilot LLM Gateway: Invalid Server URL ${JSON.stringify(cfg.serverUrl)}. Open Settings to fix.`
-          );
-        });
-      }
-      cfg.serverUrl = fallback;
-    }
-
-    if (cfg.defaultMaxOutputTokens >= cfg.defaultMaxTokens) {
-      const adjusted = Math.max(
-        TOKEN_CONSTANTS.MIN_OUTPUT_TOKENS,
-        cfg.defaultMaxTokens - TOKEN_CONSTANTS.ADJUST_TOKEN_BUFFER
-      );
-      this.outputChannel.appendLine(
-        `WARNING: github.copilot.llm-gateway.defaultMaxOutputTokens (${cfg.defaultMaxOutputTokens}) >= defaultMaxTokens (${cfg.defaultMaxTokens}). Adjusting to ${adjusted}.`
-      );
-      // Only pop a toast when the values the user is typing actually change,
-      // otherwise every keystroke during settings editing produces a warning.
-      const last = this.lastOutputTokenAdjustmentNotified;
-      if (last?.output !== cfg.defaultMaxOutputTokens || last?.total !== cfg.defaultMaxTokens) {
-        this.lastOutputTokenAdjustmentNotified = {
-          output: cfg.defaultMaxOutputTokens,
-          total: cfg.defaultMaxTokens,
-        };
-        vscode.window.showWarningMessage(
-          `GitHub Copilot LLM Gateway: 'defaultMaxOutputTokens' was >= 'defaultMaxTokens'. Adjusted to ${adjusted} to avoid request errors.`
-        );
-      }
-      cfg.defaultMaxOutputTokens = adjusted;
-    } else {
-      // Valid configuration — reset the dedupe key.
-      this.lastOutputTokenAdjustmentNotified = undefined;
-    }
-
-    return cfg;
-  }
-
   private reloadConfig(): void {
-    this.config = this.loadConfig();
+    this.config = this.configService.load();
     this.client.updateConfig(this.config);
     // The server (or its capabilities) may have changed — probe suffix support again.
-    this.completionSuffixUnsupported = false;
+    this.inlineCompletions.resetSuffixProbe();
     // Context sizes learned from a previous server's errors no longer apply.
-    this.learnedContextByModelId.clear();
+    this.catalog.clearLearnedContexts();
     this.outputChannel.appendLine('Configuration reloaded');
   }
 }
