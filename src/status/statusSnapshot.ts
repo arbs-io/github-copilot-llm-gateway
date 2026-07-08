@@ -4,7 +4,7 @@
  * formatting helpers can be unit-tested without the editor.
  */
 
-import { formatTokenCount } from './statusBarController';
+import { formatTokenCount } from './format';
 import { SessionStats, TokenUsage } from './sessionStats';
 
 export type ConnectionState = 'ok' | 'error' | 'noModels' | 'unknown';

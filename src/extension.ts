@@ -37,7 +37,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // quickly refresh the model list. Without this, failed model fetches were
   // invisible unless users happened to open the model picker. The visible
   // label is context-aware (host when idle, model name during streaming,
-  // model + token count after) — see status/statusBarController.ts.
+  // model + token count after) — see status/statusBarRenderer.ts.
   const statusBar = vscode.window.createStatusBarItem(
     vscode.StatusBarAlignment.Right,
     100

@@ -33,7 +33,7 @@ import {
   averageTokensPerRequest,
   formatRelativeTime,
 } from './sessionStats';
-import { formatTokenCount } from './statusBarController';
+import { formatTokenCount } from './format';
 import {
   ConnectionState,
   ModelSummary,

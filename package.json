@@ -24,7 +24,7 @@
     "esbuild-watch": "npm run esbuild-base -- --sourcemap --watch",
     "test-compile": "tsc -p ./",
     "lint": "eslint \"src/**/*.ts\"",
-    "test-build": "tsc -p tsconfig.test.json",
+    "test-build": "rm -rf out-test && tsc -p tsconfig.test.json",
     "test": "npm run test-build && node --test \"out-test/**/*.test.js\"",
     "test-coverage": "npm run test-build && node --test --experimental-test-coverage \"out-test/**/*.test.js\"",
     "deploy": "vsce publish --no-yarn",

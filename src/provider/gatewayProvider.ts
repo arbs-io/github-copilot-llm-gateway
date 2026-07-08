@@ -9,9 +9,10 @@ import {
 import { estimateTextTokens } from '../chat/tokenBudget';
 import { diagnoseModelFetchError } from '../chat/errorDiagnostics';
 import { InlineCompletionBackend } from '../completions/inlineCompletionProvider';
-import { TokenUsage, extractHost } from '../status/statusBarController';
+import { extractHost } from '../status/format';
 import {
   SessionStats,
+  TokenUsage,
   accumulateUsage,
   emptySessionStats,
   recordRequest,

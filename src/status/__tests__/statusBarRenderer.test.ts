@@ -1,12 +1,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import {
-  StatusBarState,
-  extractHost,
-  formatTokenCount,
-  renderStatusBar,
-  stripPort,
-} from '../statusBarController';
+import { StatusBarState, renderStatusBar } from '../statusBarRenderer';
+import { extractHost, formatTokenCount, stripPort } from '../format';
 
 describe('formatTokenCount', () => {
   test('shows integers below 1000 verbatim', () => {

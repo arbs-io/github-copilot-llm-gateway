@@ -1,11 +1,8 @@
 import * as vscode from 'vscode';
 import { RequestStateEvent } from '../provider/gatewayProvider';
-import {
-  StatusBarState,
-  TokenUsage,
-  extractHost,
-  renderStatusBar,
-} from './statusBarController';
+import { StatusBarState, renderStatusBar } from './statusBarRenderer';
+import { TokenUsage } from './sessionStats';
+import { extractHost } from './format';
 import { StatusSnapshot } from './statusSnapshot';
 import { renderStatusTooltipHtml } from './statusTooltip';
 
@@ -14,7 +11,7 @@ const RESPONDED_DISPLAY_MS = 10_000;
 
 /**
  * Drives the LLM Gateway status bar. Pure rendering lives in
- * `statusBarController.ts`; this class only handles the VS Code-side state
+ * `statusBarRenderer.ts`; this class only handles the VS Code-side state
  * machine: timers, in-flight counting, mapping events onto state transitions.
  */
 export class StatusBarManager implements vscode.Disposable {

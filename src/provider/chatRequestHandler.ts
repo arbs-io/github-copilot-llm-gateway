@@ -21,7 +21,7 @@ import {
   streamResponse,
 } from '../chat/responseStreamer';
 import { friendlyModelName } from '../models/modelDisplay';
-import { TokenUsage } from '../status/statusBarController';
+import { TokenUsage } from '../status/sessionStats';
 import { ModelCatalog } from './modelCatalog';
 import { convertAllMessages } from './vscodeParts';
 import { handleChatError } from './notifications';
