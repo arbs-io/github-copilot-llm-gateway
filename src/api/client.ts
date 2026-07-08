@@ -93,12 +93,16 @@ interface ParsedChunk {
   delta?: {
     content?: string;
     reasoning_content?: string;
+    // Ollama's OpenAI-compatible endpoint streams thinking as `reasoning`
+    // rather than `reasoning_content` (issue #59).
+    reasoning?: string;
     tool_calls?: ToolCallDelta[];
     function_call?: LegacyFunctionCall;
   };
   message?: {
     content?: string;
     reasoning_content?: string;
+    reasoning?: string;
     text?: string;
     tool_calls?: ToolCallDelta[];
     function_call?: LegacyFunctionCall;
@@ -486,7 +490,7 @@ export class GatewayClient {
 
     return {
       content: delta.content ?? '',
-      reasoningContent: delta.reasoning_content ?? '',
+      reasoningContent: delta.reasoning_content ?? delta.reasoning ?? '',
       finishedToolCalls,
     };
   }
@@ -511,7 +515,7 @@ export class GatewayClient {
 
     return {
       content: message.content ?? message.text ?? '',
-      reasoningContent: message.reasoning_content ?? '',
+      reasoningContent: message.reasoning_content ?? message.reasoning ?? '',
       finishedToolCalls,
     };
   }

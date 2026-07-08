@@ -2,6 +2,7 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   CompletionHttpError,
+  GatewayClient,
   normalizeBaseUrl,
   normalizeApiKey,
   buildHeaders,
@@ -182,5 +183,93 @@ describe('CompletionHttpError', () => {
     assert.equal(err.status, 400);
     assert.equal(err.body, body);
     assert.equal(err.message, 'Completion failed: 400 Bad Request');
+  });
+});
+
+describe('streamChatCompletion reasoning field handling (issue #59)', () => {
+  const config = {
+    serverUrl: 'http://localhost:11434',
+    requestTimeout: 5000,
+    defaultMaxTokens: 4096,
+    defaultMaxOutputTokens: 4096,
+    enableImageInput: false,
+    enableToolCalling: true,
+    parallelToolCalling: false,
+    agentTemperature: 0,
+    verboseLogging: false,
+    customHeaders: {},
+    extraModelOptions: {},
+    perModelOptions: {},
+    modelContextWindows: {},
+    enableInlineCompletion: false,
+    inlineCompletionModel: '',
+    inlineCompletionMaxTokens: 128,
+    inlineCompletionDebounce: 300,
+    inlineCompletionTimeout: 5000,
+    inlineCompletionMaxPrefixChars: 4000,
+    inlineCompletionMaxSuffixChars: 2000,
+  };
+
+  const token = {
+    isCancellationRequested: false,
+    onCancellationRequested: () => ({ dispose: () => undefined }),
+  } as unknown as import('vscode').CancellationToken;
+
+  function sseResponse(lines: string[]): Response {
+    const encoder = new TextEncoder();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode(lines.join('\n\n') + '\n\n'));
+        controller.close();
+      },
+    });
+    return new Response(body, {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream' },
+    });
+  }
+
+  async function collectReasoning(lines: string[]): Promise<string[]> {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => sseResponse(lines);
+    try {
+      const client = new GatewayClient(config);
+      const reasoning: string[] = [];
+      for await (const chunk of client.streamChatCompletion(
+        { model: 'qwen3:14b', messages: [] },
+        token
+      )) {
+        if (chunk.reasoning_content) { reasoning.push(chunk.reasoning_content); }
+      }
+      return reasoning;
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  }
+
+  test('surfaces Ollama-style `reasoning` deltas as reasoning_content', async () => {
+    const reasoning = await collectReasoning([
+      'data: {"choices":[{"delta":{"role":"assistant","content":"","reasoning":"Okay"}}]}',
+      'data: {"choices":[{"delta":{"content":"","reasoning":", thinking"}}]}',
+      'data: {"choices":[{"delta":{"content":"answer"},"finish_reason":"stop"}]}',
+      'data: [DONE]',
+    ]);
+    assert.deepEqual(reasoning, ['Okay', ', thinking']);
+  });
+
+  test('prefers `reasoning_content` when both fields are present', async () => {
+    const reasoning = await collectReasoning([
+      'data: {"choices":[{"delta":{"reasoning_content":"canonical","reasoning":"alias"}}]}',
+      'data: [DONE]',
+    ]);
+    assert.deepEqual(reasoning, ['canonical']);
+  });
+
+  test('surfaces `reasoning` from non-streaming message payloads', async () => {
+    const reasoning = await collectReasoning([
+      'data: {"choices":[{"message":{"content":"done","reasoning":"thought"}}]}',
+      'data: [DONE]',
+    ]);
+    assert.deepEqual(reasoning, ['thought']);
   });
 });
