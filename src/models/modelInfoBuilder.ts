@@ -5,10 +5,10 @@
  * without standing up the full provider.
  */
 
-import { OpenAIModel } from './types';
+import { OpenAIModel } from '../api/types';
 import { describeModel, friendlyModelName, inferModelFamily } from './modelDisplay';
-import { serverReportedContext } from './contextWindow';
-import { TOKEN_CONSTANTS } from './tokenBudget';
+import { serverReportedContext } from '../chat/contextWindow';
+import { TOKEN_CONSTANTS } from '../chat/tokenBudget';
 
 /**
  * Grey right-hand label rendered in the VS Code chat model picker. Matches the

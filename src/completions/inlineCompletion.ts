@@ -11,7 +11,7 @@
  * meaningful.
  */
 
-import { OpenAICompletionRequest, OpenAICompletionResponse } from './types';
+import { OpenAICompletionRequest, OpenAICompletionResponse } from '../api/types';
 
 /**
  * Default values for how much surrounding text to send. Completion latency and

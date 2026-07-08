@@ -1,14 +1,14 @@
 import * as vscode from 'vscode';
-import { GatewayProvider, RequestStateEvent } from './provider';
-import { GatewayInlineCompletionProvider } from './inlineCompletionProvider';
+import { GatewayProvider, RequestStateEvent } from './provider/gatewayProvider';
+import { GatewayInlineCompletionProvider } from './completions/inlineCompletionProvider';
 import {
   StatusBarState,
   TokenUsage,
   extractHost,
   renderStatusBar,
-} from './statusBarController';
-import { StatusSnapshot } from './statusSnapshot';
-import { renderStatusTooltipHtml } from './statusTooltip';
+} from './status/statusBarController';
+import { StatusSnapshot } from './status/statusSnapshot';
+import { renderStatusTooltipHtml } from './status/statusTooltip';
 
 const STATUS_BAR_PROBE_DELAY_MS = 1500;
 /** How long the "responded" pulse stays in the bar before reverting to idle. */

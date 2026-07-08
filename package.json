@@ -25,8 +25,8 @@
     "test-compile": "tsc -p ./",
     "lint": "eslint \"src/**/*.ts\"",
     "test-build": "tsc -p tsconfig.test.json",
-    "test": "npm run test-build && node --test \"out-test/__tests__/*.test.js\"",
-    "test-coverage": "npm run test-build && node --test --experimental-test-coverage \"out-test/__tests__/*.test.js\"",
+    "test": "npm run test-build && node --test \"out-test/**/*.test.js\"",
+    "test-coverage": "npm run test-build && node --test --experimental-test-coverage \"out-test/**/*.test.js\"",
     "deploy": "vsce publish --no-yarn",
     "package": "vsce package --no-yarn"
   },

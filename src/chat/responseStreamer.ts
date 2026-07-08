@@ -9,7 +9,7 @@
  */
 
 import { ThinkingParser, ThinkingChunk } from './thinking';
-import { OpenAIUsage } from './types';
+import { OpenAIUsage } from '../api/types';
 
 export interface StreamReporter {
   reportText(text: string): void;

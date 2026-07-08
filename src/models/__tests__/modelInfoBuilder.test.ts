@@ -5,8 +5,8 @@ import {
   PROVIDER_MULTIPLIER_NUMERIC,
   buildModelInfo,
 } from '../modelInfoBuilder';
-import { TOKEN_CONSTANTS } from '../tokenBudget';
-import { OpenAIModel } from '../types';
+import { TOKEN_CONSTANTS } from '../../chat/tokenBudget';
+import { OpenAIModel } from '../../api/types';
 
 function baseModel(overrides: Partial<OpenAIModel> = {}): OpenAIModel {
   return {

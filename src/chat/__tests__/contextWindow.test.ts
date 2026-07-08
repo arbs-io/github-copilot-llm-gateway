@@ -5,7 +5,7 @@ import {
   resolveContextWindowOverride,
   serverReportedContext,
 } from '../contextWindow';
-import { OpenAIModel } from '../types';
+import { OpenAIModel } from '../../api/types';
 
 function baseModel(overrides: Partial<OpenAIModel> = {}): OpenAIModel {
   return {

@@ -1,18 +1,18 @@
 import * as vscode from 'vscode';
-import { CompletionHttpError, GatewayClient } from './client';
+import { CompletionHttpError, GatewayClient } from '../api/client';
 import {
-  GatewayConfig,
   OpenAIChatCompletionRequest,
   OpenAICompletionRequest,
   OpenAIMessage,
-} from './types';
+} from '../api/types';
+import { GatewayConfig } from '../config/gatewayConfig';
 import {
   convertMessage,
   flattenToolResultContent,
   NormalizedMessage,
   NormalizedPart,
   NormalizedRole,
-} from './messageConverter';
+} from '../chat/messageConverter';
 import {
   TOKEN_CONSTANTS,
   buildInputText,
@@ -20,12 +20,12 @@ import {
   calculateSafeMaxOutputTokens,
   estimateTextTokens,
   truncateMessagesToFit,
-} from './tokenBudget';
-import { tryRepairJson } from './jsonRepair';
-import { fillMissingRequiredProperties } from './toolSchema';
-import { buildChatRequest, OpenAIToolDefinition, ToolChoice } from './requestBuilder';
-import { resolvePerModelOptions } from './perModelOptions';
-import { parseContextOverflowError, resolveContextWindowOverride } from './contextWindow';
+} from '../chat/tokenBudget';
+import { tryRepairJson } from '../chat/jsonRepair';
+import { fillMissingRequiredProperties } from '../chat/toolSchema';
+import { buildChatRequest, OpenAIToolDefinition, ToolChoice } from '../api/requestBuilder';
+import { resolvePerModelOptions } from '../config/perModelOptions';
+import { parseContextOverflowError, resolveContextWindowOverride } from '../chat/contextWindow';
 import {
   buildCompletionRequestBody,
   cleanCompletionText,
@@ -33,36 +33,36 @@ import {
   extractFimContext,
   isSuffixUnsupportedError,
   shouldRequestCompletion,
-} from './inlineCompletion';
-import { InlineCompletionBackend } from './inlineCompletionProvider';
+} from '../completions/inlineCompletion';
+import { InlineCompletionBackend } from '../completions/inlineCompletionProvider';
 import {
   StreamChunk,
   StreamReporter,
   isEmptyStreamResult,
   streamResponse,
-} from './responseStreamer';
-import { dedupeModels, friendlyModelName } from './modelDisplay';
-import { buildModelInfo } from './modelInfoBuilder';
-import { TokenUsage, extractHost } from './statusBarController';
+} from '../chat/responseStreamer';
+import { dedupeModels, friendlyModelName } from '../models/modelDisplay';
+import { buildModelInfo } from '../models/modelInfoBuilder';
+import { TokenUsage, extractHost } from '../status/statusBarController';
 import {
   SessionStats,
   accumulateUsage,
   emptySessionStats,
   recordRequest,
-} from './sessionStats';
+} from '../status/sessionStats';
 import {
   ConnectionState,
   ModelSummary,
   StatusSnapshot,
   formatCapabilityLabels,
   formatContextLabel,
-} from './statusSnapshot';
+} from '../status/statusSnapshot';
 import {
   FrameworkConfigOverride,
   readFrameworkConfiguration,
   resolveApiKey,
-} from './frameworkConfig';
-import { diagnoseModelFetchError } from './errorDiagnostics';
+} from '../config/frameworkConfig';
+import { diagnoseModelFetchError } from '../chat/errorDiagnostics';
 import {
   ConfigurationTarget as SecretConfigurationTarget,
   LegacyConfigAccessor,
@@ -70,7 +70,7 @@ import {
   formatMigrationToast,
   migrateLegacySecrets,
   parseCustomHeadersJson,
-} from './secretMigration';
+} from '../config/secretMigration';
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 60000;
 const DEFAULT_TEMPERATURE = 0.7;

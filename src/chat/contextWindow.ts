@@ -13,7 +13,7 @@
  *     it for subsequent requests.
  */
 
-import { OpenAIModel } from './types';
+import { OpenAIModel } from '../api/types';
 
 /** A context value is only usable if it's a positive finite number. */
 function isUsableContext(value: unknown): value is number {

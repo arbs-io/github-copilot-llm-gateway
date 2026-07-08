@@ -5,8 +5,8 @@
  * Kept as its own module so it can be unit-tested without VS Code.
  */
 
-import { OpenAIModel } from './types';
-import { serverReportedContext } from './contextWindow';
+import { OpenAIModel } from '../api/types';
+import { serverReportedContext } from '../chat/contextWindow';
 
 /**
  * Produce a display-friendly short name for a model ID.

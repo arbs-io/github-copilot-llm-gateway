@@ -5,8 +5,8 @@ import {
   OpenAICompletionResponse,
   OpenAIModelsResponse,
   OpenAIUsage,
-  GatewayConfig,
 } from './types';
+import { GatewayConfig } from '../config/gatewayConfig';
 import {
   AccumulatedToolCall,
   LegacyFunctionCall,

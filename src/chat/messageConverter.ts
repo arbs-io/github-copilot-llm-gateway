@@ -11,7 +11,7 @@
  * God-object shape that provider.ts used to have.
  */
 
-import { OpenAIMessage } from './types';
+import { OpenAIMessage } from '../api/types';
 
 export type NormalizedRole = 'user' | 'assistant' | 'system' | 'tool';
 

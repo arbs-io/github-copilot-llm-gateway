@@ -1,7 +1,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { diagnoseModelFetchError } from '../errorDiagnostics';
-import { describeFetchError } from '../client';
+import { describeFetchError } from '../../api/client';
 
 describe('diagnoseModelFetchError', () => {
   test('adds a reachability hint for ECONNREFUSED', () => {
