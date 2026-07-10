@@ -1,5 +1,8 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
+import * as os from 'node:os';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import type { CancellationToken, LanguageModelChatInformation } from 'vscode';
 import { ModelCatalog } from '../modelCatalog';
 import { GatewayClient } from '../../api/client';
@@ -63,6 +66,7 @@ interface Harness {
 function makeCatalog(options: {
   fetchModels: () => Promise<OpenAIModelsResponse>;
   config?: GatewayConfig;
+  getGlobalStoragePath?: () => string | undefined;
 }): Harness {
   const harness = { fetchCalls: 0, statusChanges: 0 } as Harness;
   const client = {
@@ -78,6 +82,7 @@ function makeCatalog(options: {
     onStatusChanged: () => {
       harness.statusChanges++;
     },
+    getGlobalStoragePath: options.getGlobalStoragePath,
   });
   return harness;
 }
@@ -167,6 +172,58 @@ describe('ModelCatalog.getOrFetchModels', () => {
     await h.catalog.getOrFetchModels(fakeToken());
     assert.equal(h.fetchCalls, 2);
     assert.equal(h.catalog.getCachedModels().length, 1);
+  });
+
+
+
+  test('discovers custom models from chatLanguageModels.json', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'llm-gateway-test-'));
+    try {
+      const globalStoragePath = path.join(tempDir, 'globalStorage', 'dummy-extension');
+      fs.mkdirSync(globalStoragePath, { recursive: true });
+
+      const chatModelsJson = [
+        {
+          name: 'My Custom Provider',
+          vendor: 'customendpoint',
+          models: [
+            { id: 'gemma-2-9b', name: 'Gemma 2 9b', maxInputTokens: 8192 },
+            { id: 'llama-3-8b', name: 'Llama 3 8b' },
+          ],
+        },
+      ];
+
+      fs.writeFileSync(
+        path.join(tempDir, 'chatLanguageModels.json'),
+        JSON.stringify(chatModelsJson),
+        'utf8'
+      );
+
+      const h = makeCatalog({
+        fetchModels: () => Promise.resolve(modelsResponse({ id: 'server-model' })),
+        getGlobalStoragePath: () => globalStoragePath,
+      });
+
+      const { models, error } = await h.catalog.getOrFetchModels(fakeToken());
+      assert.equal(error, undefined);
+      assert.deepEqual(models.map((m) => m.id), ['server-model', 'gemma-2-9b', 'llama-3-8b']);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  test('maps models containing diffusion to diff', async () => {
+    const h = makeCatalog({
+      fetchModels: () => Promise.resolve(modelsResponse({ id: 'google/diffusiongemma-26b-a4b-it' })),
+    });
+
+    const { models, error } = await h.catalog.getOrFetchModels(fakeToken());
+    assert.equal(error, undefined);
+    assert.deepEqual(models.map((m) => m.id), ['google/diffgemma-26b-a4b-it']);
+    assert.equal(models[0].name, 'diffusiongemma-26b-a4b-it');
+    assert.equal(models[0].version, 'diffusiongemma-26b-a4b-it');
+    assert.equal(h.catalog.getRealModelId('google/diffgemma-26b-a4b-it'), 'google/diffusiongemma-26b-a4b-it');
+    assert.equal(h.catalog.getRealModelId('other-model'), 'other-model');
   });
 });
 

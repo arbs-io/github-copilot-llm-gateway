@@ -151,6 +151,7 @@ export class GatewayProvider
       getConfig: () => this.config,
       log,
       onStatusChanged: () => this._onDidChangeStatusSnapshot.fire(),
+      getGlobalStoragePath: () => context.globalStorageUri.fsPath,
     });
     this.chatHandler = new ChatRequestHandler({
       client: this.client,
