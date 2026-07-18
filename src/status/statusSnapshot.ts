@@ -31,6 +31,9 @@ export interface FeatureFlags {
   readonly toolCalling: boolean;
   readonly imageInput: boolean;
   readonly parallelToolCalling: boolean;
+  readonly inlineCompletion: boolean;
+  /** Model id for inline completions; `''` means "first model from the server". */
+  readonly inlineCompletionModel: string;
   readonly agentTemperature: number;
 }
 
