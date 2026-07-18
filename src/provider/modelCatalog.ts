@@ -1,7 +1,7 @@
 import type { CancellationToken, LanguageModelChatInformation } from 'vscode';
 import { GatewayClient } from '../api/client';
-import { OllamaModelInfo } from '../api/ollamaInfo';
 import { GatewayConfig } from '../config/gatewayConfig';
+import { DiscoveredModelInfo, ModelDiscovery } from '../discovery/types';
 import { TOKEN_CONSTANTS } from '../chat/tokenBudget';
 import { parseContextOverflowError, resolveContextWindowOverride } from '../chat/contextWindow';
 import { dedupeModels } from '../models/modelDisplay';
@@ -9,6 +9,12 @@ import { buildModelInfo } from '../models/modelInfoBuilder';
 
 interface ModelCatalogDeps {
   client: GatewayClient;
+  /**
+   * Backend-native metadata probe (currently Ollama `/api/show`). Detects the
+   * backend once per config generation and answers instantly for servers it
+   * doesn't recognise.
+   */
+  discovery: ModelDiscovery;
   getConfig: () => GatewayConfig;
   log: (message: string) => void;
   /** Fired when connection state / cached data changes (status dialog refresh). */
@@ -49,12 +55,13 @@ export class ModelCatalog {
    */
   private readonly learnedContextByModelId: Map<string, number> = new Map();
   /**
-   * Ollama `/api/show` metadata per model id (context, sampler params,
-   * capabilities). Rebuilt on every model fetch; empty for non-Ollama
-   * backends. Lets the chat path auto-apply Modelfile sampler params so the
-   * user doesn't have to mirror them in `perModelOptions` client-side.
+   * Backend-discovered metadata per model id (context, sampler params,
+   * capabilities — e.g. from Ollama `/api/show`). Rebuilt on every model
+   * fetch; empty for backends without native discovery. Lets the chat path
+   * auto-apply server-side sampler params so the user doesn't have to mirror
+   * them in `perModelOptions` client-side.
    */
-  private readonly ollamaInfoByModelId: Map<string, OllamaModelInfo> = new Map();
+  private readonly discoveredByModelId: Map<string, DiscoveredModelInfo> = new Map();
   private lastSuccessfulFetchAt?: number;
   private lastConnectionError?: string;
 
@@ -70,13 +77,14 @@ export class ModelCatalog {
   }
 
   /**
-   * Numeric Modelfile sampler params discovered from Ollama `/api/show`
-   * (temperature, top_p, top_k, ...), or `undefined` for non-Ollama backends
-   * or before the first model fetch. Consumed by the chat request handler to
-   * fill sampler params the caller/settings didn't specify.
+   * Numeric sampler params discovered from the backend's native API
+   * (temperature, top_p, top_k, ...), or `undefined` when the backend has no
+   * native discovery or the first model fetch hasn't happened. Consumed by
+   * the chat request handler to fill sampler params the caller/settings
+   * didn't specify.
    */
-  public getOllamaParamsForModel(modelId: string): Readonly<Record<string, number>> | undefined {
-    return this.ollamaInfoByModelId.get(modelId)?.params;
+  public getDiscoveredParams(modelId: string): Readonly<Record<string, number>> | undefined {
+    return this.discoveredByModelId.get(modelId)?.samplerParams;
   }
 
   public getLastSuccessfulFetchAt(): number | undefined {
@@ -170,11 +178,11 @@ export class ModelCatalog {
       );
     }
 
-    // Rebuild the per-id context map from the latest fetch. If the server
-    // removed a model, drop its entry so stale data can't leak into future
-    // chat requests.
-    this.contextByModelId.clear();
-    this.ollamaInfoByModelId.clear();
+    // Build replacement per-id maps and swap them in only after the async
+    // work below finishes — clearing up front would leave a window where a
+    // concurrent chat request sees no context/params at all.
+    const nextContextByModelId = new Map<string, number>();
+    const nextDiscoveredByModelId = new Map<string, DiscoveredModelInfo>();
 
     const config = this.deps.getConfig();
     const models = await Promise.all(
@@ -184,51 +192,74 @@ export class ModelCatalog {
           config.modelContextWindows
         );
 
-        // Ollama-only: discover context, capabilities, and sampler params from
-        // the native /api/show endpoint. The OpenAI /v1/models list carries
-        // none of this, so without it context falls back to the default and
-        // the client can't see per-model capabilities or Modelfile sampling.
-        const ollama =
-          typeof this.deps.client.showModel === 'function'
-            ? await this.deps.client.showModel(model.id, token)
-            : undefined;
-        if (ollama) {
-          this.ollamaInfoByModelId.set(model.id, ollama);
+        // Backend-native discovery (currently Ollama /api/show): context,
+        // capabilities, and sampler params the OpenAI /v1/models list doesn't
+        // carry. Answers `undefined` instantly for backends it doesn't
+        // recognise — detection is a single cached short-timeout probe. A
+        // failing probe must degrade to "no metadata", never fail the list.
+        const discovered = await this.deps.discovery
+          .enrichModel(model.id, token)
+          .catch(() => undefined);
+        if (discovered) {
+          nextDiscoveredByModelId.set(model.id, discovered);
         }
-        const discoveredContext = ollama?.numCtx ?? ollama?.trainedContext;
-        const caps = ollama?.capabilities;
 
         const { info, totalContext, hasServerReportedContext } = buildModelInfo({
           model,
           defaultMaxTokens: config.defaultMaxTokens,
           defaultMaxOutputTokens: config.defaultMaxOutputTokens,
           capabilities: {
-            imageInput: config.enableImageInput && (caps ? caps.includes('vision') : true),
-            toolCalling: config.enableToolCalling && (caps ? caps.includes('tools') : true),
+            // A discovered capability verdict wins; `undefined` means the
+            // server didn't say (e.g. older Ollama), so keep the setting.
+            imageInput: config.enableImageInput && (discovered?.visionSupported ?? true),
+            toolCalling: config.enableToolCalling && (discovered?.toolsSupported ?? true),
           },
           contextOverride,
-          discoveredContext,
+          discoveredContext: discovered?.contextLength,
         });
-        this.contextByModelId.set(model.id, totalContext);
+        nextContextByModelId.set(model.id, totalContext);
 
+        const exposed = `exposed as input=${info.maxInputTokens}, output=${info.maxOutputTokens}`;
         if (contextOverride !== undefined) {
-          log(`  Model ${model.id}: context ${totalContext} tokens from 'modelContextWindows' setting`);
-        } else if (discoveredContext !== undefined) {
-          const src = ollama?.numCtx !== undefined ? 'Ollama num_ctx' : 'Ollama trained context';
-          log(`  Model ${model.id}: context ${totalContext} tokens from ${src} (/api/show)`);
+          log(
+            `  Model ${model.id}: context ${totalContext} tokens from 'modelContextWindows' setting (${exposed})`
+          );
+        } else if (discovered?.contextLength !== undefined) {
+          log(
+            `  Model ${model.id}: context ${totalContext} tokens from ${discovered.contextSource} (${exposed})`
+          );
         } else if (hasServerReportedContext) {
-          log(`  Model ${model.id}: server-reported context ${totalContext} tokens`);
+          log(
+            `  Model ${model.id}: server-reported context ${totalContext} tokens (${exposed})`
+          );
         } else {
-          log(`  Model ${model.id}: no reported context; using defaultMaxTokens=${totalContext}. Set 'github.copilot.llm-gateway.modelContextWindows' if wrong.`);
+          log(
+            `  Model ${model.id}: no server-reported context; using defaultMaxTokens=${totalContext}. If this is wrong, set 'github.copilot.llm-gateway.modelContextWindows'.`
+          );
         }
-        if (ollama) {
-          const samplerKeys = Object.keys(ollama.params).join(', ') || '(none)';
-          log(`  Model ${model.id}: capabilities [${ollama.capabilities.join(', ')}]; discovered params: ${samplerKeys}`);
+        if (discovered) {
+          const capability = (value: boolean | undefined): string =>
+            value === undefined ? 'unknown' : String(value);
+          const samplerKeys = Object.keys(discovered.samplerParams).join(', ') || '(none)';
+          log(
+            `  Model ${model.id}: discovered vision=${capability(discovered.visionSupported)}, tools=${capability(discovered.toolsSupported)}; params: ${samplerKeys}`
+          );
         }
 
         return info;
       })
     );
+
+    // Swap in the rebuilt maps. If the server removed a model, its entry is
+    // gone so stale data can't leak into future chat requests.
+    this.contextByModelId.clear();
+    this.discoveredByModelId.clear();
+    for (const [id, context] of nextContextByModelId) {
+      this.contextByModelId.set(id, context);
+    }
+    for (const [id, discovered] of nextDiscoveredByModelId) {
+      this.discoveredByModelId.set(id, discovered);
+    }
 
     log(`Found ${models.length} models: ${models.map((m) => m.id).join(', ')}`);
     return models;

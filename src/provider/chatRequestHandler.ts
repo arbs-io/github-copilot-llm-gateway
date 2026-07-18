@@ -4,6 +4,7 @@ import { OpenAIChatCompletionRequest, OpenAIMessage } from '../api/types';
 import { buildChatRequest, OpenAIToolDefinition, ToolChoice } from '../api/requestBuilder';
 import { GatewayConfig } from '../config/gatewayConfig';
 import { resolvePerModelOptions } from '../config/perModelOptions';
+import { REQUEST_SAMPLER_KEYS } from '../discovery/types';
 import {
   TOKEN_CONSTANTS,
   buildInputText,
@@ -37,22 +38,18 @@ function pickNumber(value: unknown): number | undefined {
 }
 
 /**
- * Sampler params (excluding temperature, which is handled explicitly, and
- * context/seed) worth forwarding from an Ollama model's Modelfile so the
- * server doesn't default an omitted value — notably `top_p`, which Ollama's
- * OpenAI endpoint otherwise fills with 1.0, overriding the Modelfile.
+ * Forward the backend-discovered sampler params (see REQUEST_SAMPLER_KEYS —
+ * excludes temperature, which is resolved explicitly, and context/seed) so
+ * the server doesn't default an omitted value — notably `top_p`, which
+ * Ollama's OpenAI endpoint otherwise fills with 1.0, overriding the
+ * Modelfile.
  */
-const DISCOVERED_SAMPLER_KEYS = [
-  'top_p', 'top_k', 'min_p', 'typical_p',
-  'presence_penalty', 'frequency_penalty', 'repeat_penalty',
-] as const;
-
 function discoveredSamplerOptions(
   discovered: Readonly<Record<string, number>> | undefined
 ): Record<string, number> {
   const out: Record<string, number> = {};
   if (!discovered) { return out; }
-  for (const key of DISCOVERED_SAMPLER_KEYS) {
+  for (const key of REQUEST_SAMPLER_KEYS) {
     if (typeof discovered[key] === 'number') { out[key] = discovered[key]; }
   }
   return out;
@@ -215,14 +212,14 @@ export class ChatRequestHandler {
 
       // Sampler resolution, precedence high -> low:
       //   caller modelOptions > perModelOptions > extraModelOptions >
-      //   Ollama Modelfile (discovered via /api/show) >
+      //   backend-discovered params (e.g. Ollama Modelfile via /api/show) >
       //   agentTemperature / DEFAULT_TEMPERATURE fallback.
       // agentTemperature was previously applied unconditionally because
-      // Ollama params were never discovered; it is now a genuine last-resort
+      // backend params were never discovered; it is now a genuine last-resort
       // fallback. Forwarding the discovered top_p also stops Ollama's OpenAI
       // endpoint defaulting an omitted top_p to 1.0.
       const perModel = resolvePerModelOptions(model.id, config.perModelOptions);
-      const discovered = catalog.getOllamaParamsForModel(model.id);
+      const discovered = catalog.getDiscoveredParams(model.id);
 
       const configuredTemperature =
         pickNumber(options.modelOptions?.temperature) ??

@@ -5,6 +5,7 @@ import { ModelCatalog } from '../modelCatalog';
 import { GatewayClient } from '../../api/client';
 import { GatewayConfig } from '../../config/gatewayConfig';
 import { OpenAIModelsResponse } from '../../api/types';
+import { DiscoveredModelInfo, ModelDiscovery } from '../../discovery/types';
 import { TOKEN_CONSTANTS } from '../../chat/tokenBudget';
 
 function fakeToken(cancelled = false): CancellationToken {
@@ -60,9 +61,18 @@ interface Harness {
   statusChanges: number;
 }
 
+/** Discovery stub for a backend with no native metadata API. */
+function noDiscovery(): ModelDiscovery {
+  return {
+    reset: () => undefined,
+    enrichModel: () => Promise.resolve(undefined),
+  };
+}
+
 function makeCatalog(options: {
   fetchModels: () => Promise<OpenAIModelsResponse>;
   config?: GatewayConfig;
+  discovery?: ModelDiscovery;
 }): Harness {
   const harness = { fetchCalls: 0, statusChanges: 0 } as Harness;
   const client = {
@@ -73,6 +83,7 @@ function makeCatalog(options: {
   } as unknown as GatewayClient;
   harness.catalog = new ModelCatalog({
     client,
+    discovery: options.discovery ?? noDiscovery(),
     getConfig: () => options.config ?? fakeConfig(),
     log: () => undefined,
     onStatusChanged: () => {
@@ -167,6 +178,78 @@ describe('ModelCatalog.getOrFetchModels', () => {
     await h.catalog.getOrFetchModels(fakeToken());
     assert.equal(h.fetchCalls, 2);
     assert.equal(h.catalog.getCachedModels().length, 1);
+  });
+});
+
+describe('ModelCatalog discovery integration', () => {
+  function fixedDiscovery(byId: Record<string, DiscoveredModelInfo>): ModelDiscovery {
+    return {
+      reset: () => undefined,
+      enrichModel: (modelId) => Promise.resolve(byId[modelId]),
+    };
+  }
+
+  test('discovered context wins over defaultMaxTokens and feeds the chat budget', async () => {
+    const h = makeCatalog({
+      fetchModels: () => Promise.resolve(modelsResponse({ id: 'a' })),
+      discovery: fixedDiscovery({
+        a: { contextLength: 65536, contextSource: 'Ollama num_ctx (/api/show)', samplerParams: {} },
+      }),
+    });
+    const { models } = await h.catalog.getOrFetchModels(fakeToken());
+    assert.equal(models[0].maxInputTokens, 65536);
+    assert.equal(h.catalog.getContextForModel('a'), 65536);
+  });
+
+  test('exposes discovered sampler params to the chat path', async () => {
+    const h = makeCatalog({
+      fetchModels: () => Promise.resolve(modelsResponse({ id: 'a' })),
+      discovery: fixedDiscovery({
+        a: { samplerParams: { temperature: 0.7, top_p: 0.8 } },
+      }),
+    });
+    await h.catalog.getOrFetchModels(fakeToken());
+    assert.deepEqual(h.catalog.getDiscoveredParams('a'), { temperature: 0.7, top_p: 0.8 });
+    assert.equal(h.catalog.getDiscoveredParams('unknown'), undefined);
+  });
+
+  test('discovered capability verdicts gate tool/vision support', async () => {
+    const h = makeCatalog({
+      fetchModels: () => Promise.resolve(modelsResponse({ id: 'a' })),
+      discovery: fixedDiscovery({
+        a: { samplerParams: {}, toolsSupported: false, visionSupported: false },
+      }),
+    });
+    const { models } = await h.catalog.getOrFetchModels(fakeToken());
+    assert.equal(models[0].capabilities?.toolCalling, false);
+    assert.equal(models[0].capabilities?.imageInput, false);
+  });
+
+  test('unknown capability verdicts (undefined) keep the settings-driven defaults', async () => {
+    const h = makeCatalog({
+      fetchModels: () => Promise.resolve(modelsResponse({ id: 'a' })),
+      discovery: fixedDiscovery({ a: { samplerParams: {} } }),
+    });
+    const { models } = await h.catalog.getOrFetchModels(fakeToken());
+    assert.equal(models[0].capabilities?.toolCalling, true);
+    assert.equal(models[0].capabilities?.imageInput, true);
+  });
+
+  test('a re-fetch drops discovered data for models the server removed', async () => {
+    let ids = [{ id: 'a' }, { id: 'b' }];
+    const h = makeCatalog({
+      fetchModels: () => Promise.resolve(modelsResponse(...ids)),
+      discovery: fixedDiscovery({
+        a: { samplerParams: { top_p: 0.9 } },
+        b: { samplerParams: { top_p: 0.5 } },
+      }),
+    });
+    await h.catalog.getOrFetchModels(fakeToken());
+    assert.ok(h.catalog.getDiscoveredParams('b'));
+    ids = [{ id: 'a' }];
+    h.catalog.invalidateCache();
+    await h.catalog.getOrFetchModels(fakeToken());
+    assert.equal(h.catalog.getDiscoveredParams('b'), undefined);
   });
 });
 
