@@ -29,6 +29,8 @@ function makeSnapshot(overrides: Partial<StatusSnapshot> = {}): StatusSnapshot {
       toolCalling: true,
       imageInput: true,
       parallelToolCalling: true,
+      inlineCompletion: false,
+      inlineCompletionModel: '',
       agentTemperature: 0,
     },
     now: FIXED_NOW,
@@ -96,6 +98,8 @@ describe('renderStatusTooltipHtml — sanitizer conformance', () => {
           toolCalling: true,
           imageInput: false,
           parallelToolCalling: false,
+          inlineCompletion: true,
+          inlineCompletionModel: 'starcoder2-3b',
           agentTemperature: 0.7,
         },
       })
@@ -160,7 +164,7 @@ describe('renderStatusTooltipHtml — connection row', () => {
     assert.ok(html.includes('Last refresh: 2m ago'));
   });
 
-  test('renders "Disconnected" + escaped error in a <pre> block for error state', () => {
+  test('renders "Disconnected" + escaped error as wrapping text (not <pre>)', () => {
     const html = renderStatusTooltipHtml(
       makeSnapshot({
         connection: { state: 'error', errorMessage: 'ECONNREFUSED <bad>' },
@@ -169,7 +173,21 @@ describe('renderStatusTooltipHtml — connection row', () => {
     );
     assert.ok(html.includes('$(error)'));
     assert.ok(html.includes('Disconnected'));
-    assert.ok(html.includes('<pre>ECONNREFUSED &lt;bad&gt;</pre>'));
+    // <pre> would keep long messages on one unwrapped line that overflows the
+    // popup — the error must render as normal wrapping text instead.
+    assert.ok(!html.includes('<pre>'));
+    assert.ok(html.includes('ECONNREFUSED &lt;bad&gt;'));
+    assert.ok(!html.includes('Last success:'));
+  });
+
+  test('shows how stale the cached models are when disconnected after a prior success', () => {
+    const html = renderStatusTooltipHtml(
+      makeSnapshot({
+        connection: { state: 'error', errorMessage: 'ECONNREFUSED' },
+        lastSuccessfulFetchAt: FIXED_NOW - 300_000,
+      })
+    );
+    assert.ok(html.includes('Last success: 5m ago'));
   });
 
   test('renders "Connected · empty" with warning for noModels', () => {
@@ -410,13 +428,60 @@ describe('renderStatusTooltipHtml — feature rows', () => {
           toolCalling: true,
           imageInput: false,
           parallelToolCalling: false,
+          inlineCompletion: false,
+          inlineCompletionModel: '',
           agentTemperature: 0.7,
         },
       })
     );
     assert.ok(html.includes('<span style="color:var(--vscode-charts-green);">Enabled</span>'));
     assert.ok(/<span style="color:var\(--vscode-descriptionForeground\);">Disabled<\/span>/.test(html));
-    assert.ok(html.includes('temp 0.7'));
+  });
+
+  test('renders agent temperature as its own value row, not a suffix on another feature', () => {
+    const html = renderStatusTooltipHtml(makeSnapshot());
+    assert.ok(html.includes('Agent temperature'));
+    assert.ok(html.includes('0.0'));
+    assert.ok(!html.includes('· temp'), 'temperature must not ride along on the parallel-tool-calls row');
+  });
+
+  test('shows the inline-completion model next to the label when enabled', () => {
+    const html = renderStatusTooltipHtml(
+      makeSnapshot({
+        features: {
+          toolCalling: true,
+          imageInput: true,
+          parallelToolCalling: true,
+          inlineCompletion: true,
+          inlineCompletionModel: 'starcoder2-3b',
+          agentTemperature: 0,
+        },
+      })
+    );
+    assert.ok(html.includes('Inline completion'));
+    assert.ok(html.includes('starcoder2-3b'));
+  });
+
+  test('falls back to "first server model" when inline completion is enabled with no model set', () => {
+    const html = renderStatusTooltipHtml(
+      makeSnapshot({
+        features: {
+          toolCalling: true,
+          imageInput: true,
+          parallelToolCalling: true,
+          inlineCompletion: true,
+          inlineCompletionModel: '',
+          agentTemperature: 0,
+        },
+      })
+    );
+    assert.ok(html.includes('first server model'));
+  });
+
+  test('omits the model detail when inline completion is disabled', () => {
+    const html = renderStatusTooltipHtml(makeSnapshot());
+    assert.ok(html.includes('Inline completion'));
+    assert.ok(!html.includes('first server model'));
   });
 });
 

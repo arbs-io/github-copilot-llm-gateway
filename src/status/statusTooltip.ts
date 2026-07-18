@@ -114,9 +114,12 @@ function renderHeader(snapshot: StatusSnapshot): string {
 
 function renderConnection(snapshot: StatusSnapshot): string {
   const desc = describeConnection(snapshot);
+  // Plain <div> text rather than <pre>: the hover widget wraps normal text at
+  // its max-width, while <pre> keeps long messages (URLs, stack fragments) on
+  // one unbroken line that overflows the popup.
   const errorRow =
     snapshot.connection.state === 'error' && snapshot.connection.errorMessage
-      ? `\n\n<pre>${esc(snapshot.connection.errorMessage)}</pre>`
+      ? `\n\n<div>${mutedSpan(esc(snapshot.connection.errorMessage))}</div>`
       : '';
   return [
     '\n<hr>\n',
@@ -161,7 +164,11 @@ function describeConnection(snapshot: StatusSnapshot): ConnectionDescriptor {
       return {
         icon: '$(error)',
         label: 'Disconnected',
-        sideText: '',
+        // When we still hold a stale model list, say how old it is — useful
+        // for judging whether the cached models are trustworthy.
+        sideText: snapshot.lastSuccessfulFetchAt
+          ? `Last success: ${formatRelativeTime(snapshot.lastSuccessfulFetchAt, snapshot.now)}`
+          : '',
         color: '-errorForeground',
       };
     case 'unknown':
@@ -324,14 +331,15 @@ function capabilityPill(label: string): string {
 
 function renderFeatures(snapshot: StatusSnapshot): string {
   const f = snapshot.features;
+  const inlineModel = f.inlineCompletion
+    ? f.inlineCompletionModel || 'first server model'
+    : '';
   const featureRows = [
     featureRow('Tool calling', f.toolCalling),
     featureRow('Image input', f.imageInput),
-    featureRow(
-      'Parallel tool calls',
-      f.parallelToolCalling,
-      ` · temp ${f.agentTemperature.toFixed(1)}`
-    ),
+    featureRow('Parallel tool calls', f.parallelToolCalling),
+    featureRow('Inline completion', f.inlineCompletion, inlineModel),
+    valueRow('$(dashboard)', 'Agent temperature', f.agentTemperature.toFixed(1)),
   ].join('');
   return [
     '\n<hr>\n',
@@ -340,13 +348,24 @@ function renderFeatures(snapshot: StatusSnapshot): string {
   ].join('');
 }
 
-function featureRow(label: string, enabled: boolean, suffix = ''): string {
+/**
+ * Boolean feature row: `$(check) Label … Enabled`. `detail` is extra muted
+ * context appended after the label (e.g. the inline-completion model) so the
+ * right-hand Enabled/Disabled column stays aligned across all rows.
+ */
+function featureRow(label: string, enabled: boolean, detail = ''): string {
   const icon = enabled ? '$(check)' : '$(circle-slash)';
   const statusLabel = enabled ? 'Enabled' : 'Disabled';
   const status = enabled
     ? `<span style="color:var(--vscode-charts-green);">${statusLabel}</span>`
     : mutedSpan(statusLabel);
-  return `<tr><td>${icon}&nbsp;${esc(label)}</td><td align="right">${status}${esc(suffix)}</td></tr>`;
+  const detailText = detail ? `&nbsp;${mutedSpan(esc(detail))}` : '';
+  return `<tr><td>${icon}&nbsp;${esc(label)}${detailText}</td><td align="right">${status}</td></tr>`;
+}
+
+/** Setting-value row: `$(icon) Label … value` with the value muted, not green. */
+function valueRow(icon: string, label: string, value: string): string {
+  return `<tr><td>${icon}&nbsp;${esc(label)}</td><td align="right">${mutedSpan(esc(value))}</td></tr>`;
 }
 
 function renderFooter(): string {

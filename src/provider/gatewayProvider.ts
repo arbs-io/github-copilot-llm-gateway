@@ -421,6 +421,8 @@ export class GatewayProvider
         toolCalling: this.config.enableToolCalling,
         imageInput: this.config.enableImageInput,
         parallelToolCalling: this.config.parallelToolCalling,
+        inlineCompletion: this.config.enableInlineCompletion,
+        inlineCompletionModel: this.config.inlineCompletionModel,
         agentTemperature: this.config.agentTemperature,
       },
       now: Date.now(),
