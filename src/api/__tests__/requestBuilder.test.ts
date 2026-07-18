@@ -118,4 +118,23 @@ describe('buildChatRequest', () => {
     });
     assert.equal(req.tool_choice, 'none');
   });
+
+  test('strips extraOptions keys starting with underscore', () => {
+    const req = buildChatRequest({
+      model: 'm',
+      messages: [],
+      maxTokens: 10,
+      temperature: 0.5,
+      extraOptions: {
+        top_p: 0.9,
+        _otelTraceContext: 'some-trace-id',
+        _telemetryTurn: 'some-turn-id',
+        _capturingTokenCorrelationId: 'some-correlation-id',
+      },
+    });
+    assert.equal(req.top_p, 0.9);
+    assert.equal((req as any)._otelTraceContext, undefined);
+    assert.equal((req as any)._telemetryTurn, undefined);
+    assert.equal((req as any)._capturingTokenCorrelationId, undefined);
+  });
 });
