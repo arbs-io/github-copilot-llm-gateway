@@ -35,9 +35,15 @@ export interface BuildModelInfoInput {
   readonly capabilities: ModelCapabilities;
   /**
    * User-configured context window for this model (from the
-   * `modelContextWindows` setting). Wins over server-reported values.
+   * `modelContextWindows` setting). Wins over everything else.
    */
   readonly contextOverride?: number;
+  /**
+   * Context discovered from the backend (Ollama `/api/show`: runtime
+   * `num_ctx`, else the model's trained context length). Sits below the user
+   * override but above the OpenAI `/v1/models` value, which Ollama omits.
+   */
+  readonly discoveredContext?: number;
 }
 
 /**
@@ -78,9 +84,11 @@ export function buildModelInfo({
   defaultMaxOutputTokens,
   capabilities,
   contextOverride,
+  discoveredContext,
 }: BuildModelInfoInput): BuildModelInfoResult {
   const serverContext = serverReportedContext(model);
-  const totalContext = contextOverride ?? serverContext ?? defaultMaxTokens;
+  const totalContext =
+    contextOverride ?? discoveredContext ?? serverContext ?? defaultMaxTokens;
   const maxOutputTokens = Math.min(
     defaultMaxOutputTokens,
     Math.max(

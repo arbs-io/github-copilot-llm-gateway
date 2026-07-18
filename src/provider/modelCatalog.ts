@@ -1,6 +1,7 @@
 import type { CancellationToken, LanguageModelChatInformation } from 'vscode';
 import { GatewayClient } from '../api/client';
 import { GatewayConfig } from '../config/gatewayConfig';
+import { DiscoveredModelInfo, ModelDiscovery } from '../discovery/types';
 import { TOKEN_CONSTANTS } from '../chat/tokenBudget';
 import { parseContextOverflowError, resolveContextWindowOverride } from '../chat/contextWindow';
 import { dedupeModels } from '../models/modelDisplay';
@@ -8,6 +9,12 @@ import { buildModelInfo } from '../models/modelInfoBuilder';
 
 interface ModelCatalogDeps {
   client: GatewayClient;
+  /**
+   * Backend-native metadata probe (currently Ollama `/api/show`). Detects the
+   * backend once per config generation and answers instantly for servers it
+   * doesn't recognise.
+   */
+  discovery: ModelDiscovery;
   getConfig: () => GatewayConfig;
   log: (message: string) => void;
   /** Fired when connection state / cached data changes (status dialog refresh). */
@@ -47,6 +54,14 @@ export class ModelCatalog {
    * on config reload since the server (or its presets) may have changed.
    */
   private readonly learnedContextByModelId: Map<string, number> = new Map();
+  /**
+   * Backend-discovered metadata per model id (context, sampler params,
+   * capabilities — e.g. from Ollama `/api/show`). Rebuilt on every model
+   * fetch; empty for backends without native discovery. Lets the chat path
+   * auto-apply server-side sampler params so the user doesn't have to mirror
+   * them in `perModelOptions` client-side.
+   */
+  private readonly discoveredByModelId: Map<string, DiscoveredModelInfo> = new Map();
   private lastSuccessfulFetchAt?: number;
   private lastConnectionError?: string;
 
@@ -59,6 +74,17 @@ export class ModelCatalog {
 
   public getContextForModel(modelId: string): number | undefined {
     return this.contextByModelId.get(modelId);
+  }
+
+  /**
+   * Numeric sampler params discovered from the backend's native API
+   * (temperature, top_p, top_k, ...), or `undefined` when the backend has no
+   * native discovery or the first model fetch hasn't happened. Consumed by
+   * the chat request handler to fill sampler params the caller/settings
+   * didn't specify.
+   */
+  public getDiscoveredParams(modelId: string): Readonly<Record<string, number>> | undefined {
+    return this.discoveredByModelId.get(modelId)?.samplerParams;
   }
 
   public getLastSuccessfulFetchAt(): number | undefined {
@@ -152,45 +178,88 @@ export class ModelCatalog {
       );
     }
 
-    // Rebuild the per-id context map from the latest fetch. If the server
-    // removed a model, drop its entry so stale data can't leak into future
-    // chat requests.
-    this.contextByModelId.clear();
+    // Build replacement per-id maps and swap them in only after the async
+    // work below finishes — clearing up front would leave a window where a
+    // concurrent chat request sees no context/params at all.
+    const nextContextByModelId = new Map<string, number>();
+    const nextDiscoveredByModelId = new Map<string, DiscoveredModelInfo>();
 
     const config = this.deps.getConfig();
-    const models = uniqueModels.map((model) => {
-      const contextOverride = resolveContextWindowOverride(
-        model.id,
-        config.modelContextWindows
-      );
-      const { info, totalContext, hasServerReportedContext } = buildModelInfo({
-        model,
-        defaultMaxTokens: config.defaultMaxTokens,
-        defaultMaxOutputTokens: config.defaultMaxOutputTokens,
-        capabilities: {
-          imageInput: config.enableImageInput,
-          toolCalling: config.enableToolCalling,
-        },
-        contextOverride,
-      });
-      this.contextByModelId.set(model.id, totalContext);
+    const models = await Promise.all(
+      uniqueModels.map(async (model) => {
+        const contextOverride = resolveContextWindowOverride(
+          model.id,
+          config.modelContextWindows
+        );
 
-      if (contextOverride !== undefined) {
-        log(
-          `  Model ${model.id}: context ${totalContext} tokens from 'modelContextWindows' setting (exposed as input=${info.maxInputTokens}, output=${info.maxOutputTokens})`
-        );
-      } else if (hasServerReportedContext) {
-        log(
-          `  Model ${model.id}: server-reported context ${totalContext} tokens (exposed as input=${info.maxInputTokens}, output=${info.maxOutputTokens})`
-        );
-      } else {
-        log(
-          `  Model ${model.id}: no server-reported context; using defaultMaxTokens=${totalContext}. If this is wrong, set 'github.copilot.llm-gateway.modelContextWindows'.`
-        );
-      }
+        // Backend-native discovery (currently Ollama /api/show): context,
+        // capabilities, and sampler params the OpenAI /v1/models list doesn't
+        // carry. Answers `undefined` instantly for backends it doesn't
+        // recognise — detection is a single cached short-timeout probe. A
+        // failing probe must degrade to "no metadata", never fail the list.
+        const discovered = await this.deps.discovery
+          .enrichModel(model.id, token)
+          .catch(() => undefined);
+        if (discovered) {
+          nextDiscoveredByModelId.set(model.id, discovered);
+        }
 
-      return info;
-    });
+        const { info, totalContext, hasServerReportedContext } = buildModelInfo({
+          model,
+          defaultMaxTokens: config.defaultMaxTokens,
+          defaultMaxOutputTokens: config.defaultMaxOutputTokens,
+          capabilities: {
+            // A discovered capability verdict wins; `undefined` means the
+            // server didn't say (e.g. older Ollama), so keep the setting.
+            imageInput: config.enableImageInput && (discovered?.visionSupported ?? true),
+            toolCalling: config.enableToolCalling && (discovered?.toolsSupported ?? true),
+          },
+          contextOverride,
+          discoveredContext: discovered?.contextLength,
+        });
+        nextContextByModelId.set(model.id, totalContext);
+
+        const exposed = `exposed as input=${info.maxInputTokens}, output=${info.maxOutputTokens}`;
+        if (contextOverride !== undefined) {
+          log(
+            `  Model ${model.id}: context ${totalContext} tokens from 'modelContextWindows' setting (${exposed})`
+          );
+        } else if (discovered?.contextLength !== undefined) {
+          log(
+            `  Model ${model.id}: context ${totalContext} tokens from ${discovered.contextSource} (${exposed})`
+          );
+        } else if (hasServerReportedContext) {
+          log(
+            `  Model ${model.id}: server-reported context ${totalContext} tokens (${exposed})`
+          );
+        } else {
+          log(
+            `  Model ${model.id}: no server-reported context; using defaultMaxTokens=${totalContext}. If this is wrong, set 'github.copilot.llm-gateway.modelContextWindows'.`
+          );
+        }
+        if (discovered) {
+          const capability = (value: boolean | undefined): string =>
+            value === undefined ? 'unknown' : String(value);
+          const samplerKeys = Object.keys(discovered.samplerParams).join(', ') || '(none)';
+          log(
+            `  Model ${model.id}: discovered vision=${capability(discovered.visionSupported)}, tools=${capability(discovered.toolsSupported)}; params: ${samplerKeys}`
+          );
+        }
+
+        return info;
+      })
+    );
+
+    // Swap in the rebuilt maps. If the server removed a model, its entry is
+    // gone so stale data can't leak into future chat requests.
+    this.contextByModelId.clear();
+    this.discoveredByModelId.clear();
+    for (const [id, context] of nextContextByModelId) {
+      this.contextByModelId.set(id, context);
+    }
+    for (const [id, discovered] of nextDiscoveredByModelId) {
+      this.discoveredByModelId.set(id, discovered);
+    }
 
     log(`Found ${models.length} models: ${models.map((m) => m.id).join(', ')}`);
     return models;

@@ -28,6 +28,7 @@ import { ChatRequestHandler, RequestStateEvent } from './chatRequestHandler';
 import { ConfigService } from './configService';
 import { InlineCompletionService } from './inlineCompletionService';
 import { ModelCatalog } from './modelCatalog';
+import { OllamaDiscovery } from '../discovery/ollamaDiscovery';
 import { SecretsManager } from './secretsManager';
 import { promptOpenSettings } from './notifications';
 import { countMessageTokens } from './vscodeParts';
@@ -88,6 +89,7 @@ export class GatewayProvider
   private readonly configService: ConfigService;
   private readonly secretsManager: SecretsManager;
   private readonly catalog: ModelCatalog;
+  private readonly discovery: OllamaDiscovery;
   private readonly chatHandler: ChatRequestHandler;
   private readonly inlineCompletions: InlineCompletionService;
   /**
@@ -146,8 +148,10 @@ export class GatewayProvider
     });
     this.config = this.configService.load();
     this.client = new GatewayClient(this.config, log);
+    this.discovery = new OllamaDiscovery({ client: this.client, log });
     this.catalog = new ModelCatalog({
       client: this.client,
+      discovery: this.discovery,
       getConfig: () => this.config,
       log,
       onStatusChanged: () => this._onDidChangeStatusSnapshot.fire(),
@@ -251,6 +255,9 @@ export class GatewayProvider
    */
   public invalidateModelCache(): void {
     this.catalog.invalidateCache();
+    // The user asked for a re-probe — the server behind the URL may have
+    // changed, so forget the cached backend detection too.
+    this.discovery.reset();
   }
 
   /**
@@ -447,8 +454,10 @@ export class GatewayProvider
     this.client.updateConfig(this.config);
     // The server (or its capabilities) may have changed — probe suffix support again.
     this.inlineCompletions.resetSuffixProbe();
-    // Context sizes learned from a previous server's errors no longer apply.
+    // Context sizes learned from a previous server's errors no longer apply,
+    // and neither does the cached backend detection.
     this.catalog.clearLearnedContexts();
+    this.discovery.reset();
     this.outputChannel.appendLine('Configuration reloaded');
   }
 }

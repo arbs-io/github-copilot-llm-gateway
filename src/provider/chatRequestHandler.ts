@@ -4,6 +4,7 @@ import { OpenAIChatCompletionRequest, OpenAIMessage } from '../api/types';
 import { buildChatRequest, OpenAIToolDefinition, ToolChoice } from '../api/requestBuilder';
 import { GatewayConfig } from '../config/gatewayConfig';
 import { resolvePerModelOptions } from '../config/perModelOptions';
+import { REQUEST_SAMPLER_KEYS } from '../discovery/types';
 import {
   TOKEN_CONSTANTS,
   buildInputText,
@@ -30,6 +31,29 @@ const DEFAULT_TEMPERATURE = 0.7;
 const DEBUG_REQUEST_MAX_LOG_LENGTH = 2000;
 const MAX_TOOL_ARGS_LOG_LENGTH = 1000;
 const MAX_TOOL_DESCRIPTION_LOG_LENGTH = 100;
+
+/** Return `value` when it's a finite number, else `undefined`. */
+function pickNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+/**
+ * Forward the backend-discovered sampler params (see REQUEST_SAMPLER_KEYS —
+ * excludes temperature, which is resolved explicitly, and context/seed) so
+ * the server doesn't default an omitted value — notably `top_p`, which
+ * Ollama's OpenAI endpoint otherwise fills with 1.0, overriding the
+ * Modelfile.
+ */
+function discoveredSamplerOptions(
+  discovered: Readonly<Record<string, number>> | undefined
+): Record<string, number> {
+  const out: Record<string, number> = {};
+  if (!discovered) { return out; }
+  for (const key of REQUEST_SAMPLER_KEYS) {
+    if (typeof discovered[key] === 'number') { out[key] = discovered[key]; }
+  }
+  return out;
+}
 
 /**
  * MIME type VS Code 1.120 watches for on `LanguageModelDataPart`s to extract
@@ -185,7 +209,26 @@ export class ChatRequestHandler {
       );
 
       const hasTools = filteredTools !== undefined && filteredTools.length > 0;
-      const temperature = hasTools ? config.agentTemperature : DEFAULT_TEMPERATURE;
+
+      // Sampler resolution, precedence high -> low:
+      //   caller modelOptions > perModelOptions > extraModelOptions >
+      //   backend-discovered params (e.g. Ollama Modelfile via /api/show) >
+      //   agentTemperature / DEFAULT_TEMPERATURE fallback.
+      // agentTemperature was previously applied unconditionally because
+      // backend params were never discovered; it is now a genuine last-resort
+      // fallback. Forwarding the discovered top_p also stops Ollama's OpenAI
+      // endpoint defaulting an omitted top_p to 1.0.
+      const perModel = resolvePerModelOptions(model.id, config.perModelOptions);
+      const discovered = catalog.getDiscoveredParams(model.id);
+
+      const configuredTemperature =
+        pickNumber(options.modelOptions?.temperature) ??
+        pickNumber(perModel.temperature) ??
+        pickNumber(config.extraModelOptions?.temperature);
+      const temperature =
+        configuredTemperature ??
+        pickNumber(discovered?.temperature) ??
+        (hasTools ? config.agentTemperature : DEFAULT_TEMPERATURE);
 
       const requestOptions = buildChatRequest({
         model: model.id,
@@ -196,8 +239,9 @@ export class ChatRequestHandler {
         toolChoice: hasTools ? this.mapToolChoice(options.toolMode) : undefined,
         parallelToolCalls: hasTools ? config.parallelToolCalling : undefined,
         extraOptions: {
+          ...discoveredSamplerOptions(discovered),
           ...config.extraModelOptions,
-          ...resolvePerModelOptions(model.id, config.perModelOptions),
+          ...perModel,
           ...options.modelOptions,
         },
       });

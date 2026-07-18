@@ -117,6 +117,20 @@ interface ServerErrorPayload {
 
 export type GatewayLogger = (message: string) => void;
 
+/**
+ * Timeout for the one-shot Ollama `GET /api/version` detection probe. Kept
+ * well below `requestTimeout` so a non-Ollama server that hangs on unknown
+ * paths delays model discovery by at most a few seconds, once.
+ */
+const DISCOVERY_PROBE_TIMEOUT_MS = 3000;
+
+/**
+ * Timeout for a `POST /api/show` metadata fetch. Only issued after the server
+ * is confirmed to be Ollama, where `/api/show` is a fast metadata read — but
+ * these calls gate the model list, so they must not inherit the 60s default.
+ */
+const DISCOVERY_SHOW_TIMEOUT_MS = 5000;
+
 const SSE_DATA_PREFIX = 'data: ';
 const SSE_DONE_LINE = 'data: [DONE]';
 const ERROR_PREFIX = 'Inference server reported an error mid-stream: ';
@@ -554,6 +568,61 @@ export class GatewayClient {
       );
     }
     return await response.json();
+  }
+
+  /**
+   * Probe whether the server is Ollama via its native `GET /api/version`
+   * endpoint. Uses a short timeout so a foreign server that hangs on unknown
+   * paths can't stall model discovery — this runs once per config generation
+   * (cached by `OllamaDiscovery`), not per model.
+   */
+  public async probeOllama(cancellationToken?: vscode.CancellationToken): Promise<boolean> {
+    const base = normalizeBaseUrl(this.config.serverUrl);
+    try {
+      const response = await this.fetchWithTimeout(
+        `${base}/api/version`,
+        { method: 'GET', headers: this.getHeaders() },
+        cancellationToken,
+        DISCOVERY_PROBE_TIMEOUT_MS
+      );
+      if (!response.ok) { return false; }
+      const body: unknown = await response.json();
+      return (
+        typeof body === 'object' && body !== null &&
+        typeof (body as { version?: unknown }).version === 'string'
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Fetch Ollama-specific model metadata via the native `POST /api/show`
+   * endpoint (context window, Modelfile sampler params, capabilities).
+   * Returns the raw JSON body — parsing lives in `discovery/ollamaDiscovery`
+   * — or `undefined` on any failure.
+   */
+  public async showModel(
+    modelId: string,
+    cancellationToken?: vscode.CancellationToken
+  ): Promise<unknown> {
+    const base = normalizeBaseUrl(this.config.serverUrl);
+    try {
+      const response = await this.fetchWithTimeout(
+        `${base}/api/show`,
+        {
+          method: 'POST',
+          headers: { ...this.getHeaders(), 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: modelId }),
+        },
+        cancellationToken,
+        DISCOVERY_SHOW_TIMEOUT_MS
+      );
+      if (!response.ok) { return undefined; }
+      return await response.json();
+    } catch {
+      return undefined;
+    }
   }
 
   private getHeaders(): Record<string, string> {
