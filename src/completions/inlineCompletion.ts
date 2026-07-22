@@ -66,7 +66,7 @@ export interface CompletionRequestParams {
   /**
    * When false, `suffix` is omitted even if the context has one. Fallback for
    * servers whose `/v1/completions` rejects the parameter outright (vLLM
-   * returns `400 "suffix is not currently supported"` — issue #51); the model
+   * returns `400 "suffix is not currently supported"` — issue #51, LiteLLM — issue #68); the model
    * then plain-continues the prefix instead of filling in the middle.
    */
   includeSuffix?: boolean;
@@ -97,10 +97,12 @@ export function buildCompletionRequestBody(
  * Whether a `/v1/completions` HTTP error means the server rejects the `suffix`
  * parameter itself (as opposed to a transient or unrelated 400). vLLM answers
  * `400 {"error":{"message":"suffix is not currently supported",...}}` for any
- * request carrying `suffix`, regardless of the model's FIM ability.
+ * request carrying `suffix`, regardless of the model's FIM ability. LiteLLM
+ * answers `400 "suffix: Extra inputs are not permitted"` when the underlying
+ * model doesn't accept the parameter.
  */
 export function isSuffixUnsupportedError(status: number, body: string): boolean {
-  return status === 400 && /suffix\b[\s\S]{0,80}?not[\s\S]{0,40}?support/i.test(body);
+  return status === 400 && /suffix\b[\s\S]{0,80}?not[\s\S]{0,40}?(?:support|permit)/i.test(body);
 }
 
 /**

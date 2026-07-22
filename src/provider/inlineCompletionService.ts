@@ -23,11 +23,11 @@ interface InlineCompletionServiceDeps {
  * Orchestrates fill-in-the-middle completions against `/v1/completions`.
  * This runs alongside (not through) Copilot, which doesn't expose BYOK
  * models to its own inline suggestions (issue #44). Owns the
- * suffix-unsupported fallback state (vLLM — issue #51).
+ * suffix-unsupported fallback state (vLLM — issue #51, LiteLLM — issue #68).
  */
 export class InlineCompletionService {
   /**
-   * Set once the server rejects the FIM `suffix` parameter (vLLM — issue #51).
+   * Set once the server rejects the FIM `suffix` parameter (vLLM — issue #51, LiteLLM — issue #68).
    * Subsequent completions go prefix-only instead of failing on every
    * keystroke; cleared on config reload since the server may change.
    */

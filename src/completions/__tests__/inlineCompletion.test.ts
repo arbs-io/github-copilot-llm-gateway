@@ -111,6 +111,30 @@ describe('isSuffixUnsupportedError', () => {
     );
   });
 
+  test('matches LiteLLM "Extra inputs are not permitted" error for suffix verbatim (issue #68)', () => {
+    const litellmError =
+      '{"error":{"message":"litellm.BadRequestError: OpenAIException - {\"message\":\"The model returned the following errors: suffix: Extra inputs are not permitted\"}.';
+    assert.equal(isSuffixUnsupportedError(400, litellmError), true);
+  });
+
+  test('matches wording variations that still name suffix as not permitted"', () => {
+    assert.equal(
+      isSuffixUnsupportedError(400, 'suffix is not permitted'),
+      true
+    );
+    assert.equal(
+      isSuffixUnsupportedError(400, 'the suffix parameter is not permitted'),
+      true
+    );
+  });
+
+  test('ignores "not permitted" error when it does not mention suffix', () => {
+    assert.equal(
+      isSuffixUnsupportedError(400, 'extra inputs are not permitted'),
+      false
+    );
+  });
+
   test('ignores unrelated 400s', () => {
     assert.equal(
       isSuffixUnsupportedError(400, '{"error":{"message":"model not found"}}'),
