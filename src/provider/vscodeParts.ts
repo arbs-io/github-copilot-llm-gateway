@@ -8,6 +8,7 @@ import {
 } from '../chat/messageConverter';
 import { estimateTextTokens } from '../chat/tokenBudget';
 import { OpenAIMessage } from '../api/types';
+import { truncateToolResultContent } from '../agent/toolResults';
 
 type Logger = (message: string) => void;
 
@@ -21,13 +22,14 @@ type Logger = (message: string) => void;
 export function convertAllMessages(
   messages: readonly vscode.LanguageModelChatMessage[],
   enableImageInput: boolean,
-  log: Logger
+  log: Logger,
+  maxToolResultCharacters?: number
 ): OpenAIMessage[] {
   const result: OpenAIMessage[] = [];
   for (const msg of messages) {
     const normalized: NormalizedMessage = {
       role: mapRole(msg.role),
-      parts: msg.content.map((part) => classifyPart(part, log)),
+      parts: msg.content.map((part) => classifyPart(part, log, maxToolResultCharacters)),
     };
     result.push(...convertMessage(normalized, { enableImageInput }, log));
   }
@@ -46,7 +48,11 @@ export function mapRole(role: vscode.LanguageModelChatMessageRole): NormalizedRo
  * messageConverter. Falls back to duck typing for older VS Code versions
  * where the constructors may not match.
  */
-export function classifyPart(part: unknown, log: Logger): NormalizedPart {
+export function classifyPart(
+  part: unknown,
+  log: Logger,
+  maxToolResultCharacters?: number
+): NormalizedPart {
   if (part instanceof vscode.LanguageModelTextPart) {
     return { kind: 'text', value: part.value };
   }
@@ -54,7 +60,7 @@ export function classifyPart(part: unknown, log: Logger): NormalizedPart {
     return {
       kind: 'toolResult',
       callId: part.callId,
-      content: flattenToolResultContent(part.content),
+      content: flattenAndBoundToolResult(part.content, maxToolResultCharacters, log),
     };
   }
   if (part instanceof vscode.LanguageModelToolCallPart) {
@@ -68,10 +74,14 @@ export function classifyPart(part: unknown, log: Logger): NormalizedPart {
   if (part instanceof vscode.LanguageModelDataPart) {
     return { kind: 'image', mimeType: part.mimeType, data: part.data };
   }
-  return classifyPartDuckTyped(part, log);
+  return classifyPartDuckTyped(part, log, maxToolResultCharacters);
 }
 
-function classifyPartDuckTyped(part: unknown, log: Logger): NormalizedPart {
+function classifyPartDuckTyped(
+  part: unknown,
+  log: Logger,
+  maxToolResultCharacters?: number
+): NormalizedPart {
   if (typeof part !== 'object' || part === null) {
     return { kind: 'unknown' };
   }
@@ -82,7 +92,7 @@ function classifyPartDuckTyped(part: unknown, log: Logger): NormalizedPart {
     return {
       kind: 'toolResult',
       callId: String(anyPart.callId),
-      content: flattenToolResultContent(anyPart.content),
+      content: flattenAndBoundToolResult(anyPart.content, maxToolResultCharacters, log),
     };
   }
   if ('callId' in anyPart && 'name' in anyPart && 'input' in anyPart) {
@@ -95,6 +105,22 @@ function classifyPartDuckTyped(part: unknown, log: Logger): NormalizedPart {
     };
   }
   return { kind: 'unknown' };
+}
+
+function flattenAndBoundToolResult(
+  content: unknown,
+  maxCharacters: number | undefined,
+  log: Logger
+): string {
+  const flattened = flattenToolResultContent(content);
+  if (maxCharacters === undefined) { return flattened; }
+  const bounded = truncateToolResultContent(flattened, maxCharacters);
+  if (bounded.wasTruncated) {
+    log(
+      `  Truncated tool result from ${bounded.originalLength} to ${bounded.content.length} characters (${bounded.omittedCharacters} omitted)`
+    );
+  }
+  return bounded.content;
 }
 
 /**

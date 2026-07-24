@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   StreamChunk,
   StreamReporter,
+  ToolCallBatchError,
   isEmptyStreamResult,
   streamResponse,
 } from '../responseStreamer';
@@ -50,6 +51,16 @@ const identityArgs = (tc: { arguments: string }): Record<string, unknown> => {
 };
 
 describe('streamResponse', () => {
+  test('sanitizes model-controlled tool identifiers in rejection messages', () => {
+    const error = new ToolCallBatchError(
+      { id: 'call\r\nforged', name: 'unknown\nERROR', arguments: '{}' },
+      'not selected\r\nforged log line'
+    );
+    assert.equal(error.message.includes('\n'), false);
+    assert.match(error.message, /unknown ERROR/);
+    assert.match(error.message, /call forged/);
+  });
+
   test('reports plain text content', async () => {
     const { reporter, events } = makeReporter();
     const stats = await streamResponse({
@@ -158,6 +169,28 @@ describe('streamResponse', () => {
     assert.equal(events[0].id, 'c1');
     assert.equal(events[0].name, 'search');
     assert.deepEqual(events[0].args, { q: 'hi' });
+  });
+
+  test('prepares a full parallel batch before reporting any call', async () => {
+    const { reporter, events } = makeReporter();
+    await assert.rejects(
+      streamResponse({
+        chunks: iter([{
+          finished_tool_calls: [
+            { id: 'c1', name: 'valid', arguments: '{}' },
+            { id: 'c2', name: 'invalid', arguments: '{}' },
+          ],
+        }]),
+        reporter,
+        isCancelled: () => false,
+        resolveToolCallArgs: (call) => {
+          if (call.name === 'invalid') { throw new Error('rejected'); }
+          return {};
+        },
+      }),
+      /rejected/
+    );
+    assert.equal(events.filter((event) => event.kind === 'toolCall').length, 0);
   });
 
   test('stops early when isCancelled returns true', async () => {

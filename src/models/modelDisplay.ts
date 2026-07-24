@@ -24,7 +24,7 @@ export function friendlyModelName(id: string): string {
 }
 
 const FAMILY_KEYWORDS: Array<{ match: RegExp; family: string }> = [
-  { match: /qwen/i, family: 'qwen' },
+  { match: /(qwen|qwopus|qwythos)/i, family: 'qwen' },
   { match: /llama/i, family: 'llama' },
   { match: /mistral/i, family: 'mistral' },
   { match: /mixtral/i, family: 'mixtral' },

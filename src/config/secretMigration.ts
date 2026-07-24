@@ -1,3 +1,5 @@
+import { filterCustomHeaders } from './customHeaders';
+
 /**
  * Helpers for moving the legacy `apiKey` / `customHeaders` settings out of
  * VS Code's plain-text user/workspace configuration and into the per-extension
@@ -12,13 +14,19 @@
 /** Keys used in SecretStorage. Mirrors the legacy setting names so logs read clearly. */
 export const SECRET_KEYS = {
   apiKey: 'github.copilot.llm-gateway.apiKey',
+  apiKeyOrigin: 'github.copilot.llm-gateway.apiKeyOrigin',
   customHeaders: 'github.copilot.llm-gateway.customHeaders',
+  customHeadersOrigin: 'github.copilot.llm-gateway.customHeadersOrigin',
 } as const;
 
 /** Subset of `vscode.WorkspaceConfiguration` we use during migration. */
 export interface LegacyConfigAccessor {
   get<T>(section: string, defaultValue: T): T;
-  inspect<T>(section: string): { workspaceValue?: T; globalValue?: T } | undefined;
+  inspect<T>(section: string): {
+    workspaceFolderValue?: T;
+    workspaceValue?: T;
+    globalValue?: T;
+  } | undefined;
   /** Pass `undefined` to remove the value at the given target. */
   update(section: string, value: unknown, target: ConfigurationTarget): Thenable<void> | Promise<void>;
 }
@@ -65,21 +73,17 @@ export function parseCustomHeadersJson(
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
-  } catch (error) {
-    log(`Failed to parse customHeaders secret JSON: ${error instanceof Error ? error.message : String(error)}`);
+  } catch {
+    // JSON.parse diagnostics can echo part of the secret payload. Keep the
+    // log useful without copying credential-bearing content into Output.
+    log('Failed to parse customHeaders secret JSON; ignoring.');
     return {};
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     log('customHeaders secret was not a JSON object; ignoring.');
     return {};
   }
-  const result: Record<string, string> = {};
-  for (const [name, value] of Object.entries(parsed as Record<string, unknown>)) {
-    if (typeof value === 'string' && name.length > 0) {
-      result[name] = value;
-    }
-  }
-  return result;
+  return filterCustomHeaders(parsed as Record<string, unknown>);
 }
 
 /**
@@ -145,13 +149,16 @@ export async function migrateLegacySecrets(
 /**
  * Remove `section` from whichever configuration scopes currently hold a
  * concrete value. We touch both Workspace and Global so users don't have a
- * forgotten copy lingering in one scope after migration.
+ * forgotten copy lingering in a folder, workspace, or global scope.
  */
 async function clearLegacySetting(
   config: LegacyConfigAccessor,
   section: string
 ): Promise<void> {
   const inspection = config.inspect(section);
+  if (inspection?.workspaceFolderValue !== undefined) {
+    await config.update(section, undefined, ConfigurationTarget.WorkspaceFolder);
+  }
   if (inspection?.workspaceValue !== undefined) {
     await config.update(section, undefined, ConfigurationTarget.Workspace);
   }

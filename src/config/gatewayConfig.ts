@@ -4,16 +4,28 @@
  * framework-supplied overrides — everything downstream reads this shape
  * instead of touching `vscode.workspace.getConfiguration` directly.
  */
+export type AgentOperatingProfile = 'grounded' | 'balanced' | 'aggressive';
+
 export interface GatewayConfig {
   serverUrl: string;
   apiKey?: string;
   requestTimeout: number;
+  streamIdleTimeout: number;
   defaultMaxTokens: number;
   defaultMaxOutputTokens: number;
+  maxAgentInputTokens: number;
   enableImageInput: boolean;
   enableToolCalling: boolean;
   parallelToolCalling: boolean;
   agentTemperature: number;
+  operatingProfile: AgentOperatingProfile;
+  pinnedTools: string[];
+  verboseDiagnostics: boolean;
+  maxToolsPerRequest: number;
+  maxToolSchemaTokens: number;
+  maxToolResultCharacters: number;
+  maxConsecutiveToolCalls: number;
+  maxRepeatedToolCallCount: number;
   verboseLogging: boolean;
   customHeaders: Record<string, string>;
   extraModelOptions: Record<string, unknown>;

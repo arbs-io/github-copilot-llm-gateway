@@ -1,7 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  TOKEN_CONSTANTS,
   buildInputText,
   calculateMaxInputTokens,
   calculateSafeMaxOutputTokens,
@@ -147,18 +146,18 @@ describe('calculateSafeMaxOutputTokens', () => {
       configuredMaxOutput: 8192,
     });
     // 30000 * 1.2 = 36000, which is already > 32768 - 256 = 32512
-    // So the calculation will go negative, and we hit the MIN_OUTPUT_TOKENS floor
-    assert.equal(result, TOKEN_CONSTANTS.MIN_OUTPUT_TOKENS);
+    // So the calculation goes negative and the caller must fail before sending.
+    assert.equal(result, 0);
   });
 
-  test('never returns less than MIN_OUTPUT_TOKENS', () => {
+  test('returns zero when even the minimum safe output cannot fit', () => {
     const result = calculateSafeMaxOutputTokens({
       estimatedInputTokens: 100000,
       toolsOverhead: 5000,
       modelMaxContext: 4096,
       configuredMaxOutput: 1024,
     });
-    assert.equal(result, TOKEN_CONSTANTS.MIN_OUTPUT_TOKENS);
+    assert.equal(result, 0);
   });
 
   test('includes tools overhead in the budget', () => {

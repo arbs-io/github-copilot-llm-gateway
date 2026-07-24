@@ -172,11 +172,16 @@ Configure the extension through VS Code Settings (`Ctrl+,` / `Cmd+,`) → search
 
 ### Connection Settings
 
-| Setting             | Default                 | Description                                         |
-| ------------------- | ----------------------- | --------------------------------------------------- |
-| **Server URL**      | `http://localhost:8000` | Base URL of your OpenAI-compatible inference server |
-| **API Key**         | _(empty)_               | Authentication key if your server requires one      |
-| **Request Timeout** | `60000`                 | Request timeout in milliseconds                     |
+| Setting                 | Default                 | Description                                                        |
+| ----------------------- | ----------------------- | ------------------------------------------------------------------ |
+| **Server URL**          | `http://localhost:8000` | HTTP(S) base URL of your OpenAI-compatible inference server         |
+| **API Key**             | _(empty)_               | Authentication key if your server requires one                     |
+| **Request Timeout**     | `60000`                 | Timeout while waiting for the server to begin responding           |
+| **Stream Idle Timeout** | `120000`                | Maximum pause between streamed chunks before cancelling the request |
+
+Server URLs containing credentials, query strings, fragments, or non-HTTP(S)
+protocols are rejected. Store credentials through **Configure Server** or
+**Edit Custom Headers**, never in the URL.
 
 ### Model Settings
 
@@ -184,6 +189,7 @@ Configure the extension through VS Code Settings (`Ctrl+,` / `Cmd+,`) → search
 | ----------------------------- | -------- | ------------------------------------------------------------------------------------------------------------ |
 | **Default Max Tokens**        | `262144` | Fallback context window size (input tokens) used only when the inference server does not report one itself.  |
 | **Default Max Output Tokens** | `4096`   | Fallback maximum output tokens used only when the server does not report a context size.                     |
+| **Max Agent Input Tokens**    | `65536`  | Stable working-window cap for tool-enabled requests; the full model context is still advertised to Copilot. |
 | **Model Context Windows**     | `{}`     | Per-model context window override (total tokens), keyed by model id or `*` wildcard. Wins over server-reported values. |
 | **Enable Image Input**        | `true`   | Advertise image-input capability for multimodal models and forward image parts as base64 `image_url`s.       |
 
@@ -237,19 +243,27 @@ The merge order, lowest to highest priority, is: `extraModelOptions` → matchin
 
 These settings control how the extension handles agentic features like code editing and file operations.
 
-| Setting                   | Default | Description                                                                                            |
-| ------------------------- | ------- | ------------------------------------------------------------------------------------------------------ |
-| **Enable Tool Calling**   | `true`  | Allow models to use Copilot's tools (file read/write, terminal, etc.)                                  |
-| **Parallel Tool Calling** | `true`  | Allow multiple tools to be called simultaneously. Disable if your model struggles with parallel calls. |
-| **Agent Temperature**     | `0.0`   | Temperature for tool calling mode. Lower values produce more consistent tool call formatting.          |
+| Setting                            | Default      | Description                                                                                              |
+| ---------------------------------- | ------------ | -------------------------------------------------------------------------------------------------------- |
+| **Enable Tool Calling**            | `true`       | Allow models to use Copilot's tools (file read/write, terminal, etc.)                                    |
+| **Parallel Tool Calling**          | `true`       | Allow multiple tools to be called simultaneously. Disable if your model struggles with parallel calls.  |
+| **Agent Temperature**              | `0.0`        | Temperature for tool calling mode. Lower values produce more consistent tool-call formatting.            |
+| **Operating Profile**              | `grounded`   | Select grounded, balanced, or aggressive agent behavior.                                                 |
+| **Pinned Tools**                   | `["memory"]` | Tool names retained when a large catalog must be trimmed.                                                |
+| **Max Tools Per Request**          | `32`         | Maximum number of tool definitions sent in one request.                                                  |
+| **Max Tool Schema Tokens**         | `8192`       | Token budget for all tool definitions in one request.                                                    |
+| **Max Tool Result Characters**     | `4000`       | Per-result character budget when tool output is returned to the model.                                   |
+| **Max Consecutive Tool Calls**     | `16`         | Approximate no-progress turn limit before policy escalation.                                             |
+| **Max Repeated Tool Call Count**   | `4`          | Identical call repetition limit before the gateway blocks a loop.                                        |
 
 > **Tip**: If your model outputs tool descriptions as text instead of actually calling tools, try setting **Agent Temperature** to `0.0` and disabling **Parallel Tool Calling**.
 
 ### Diagnostic Settings
 
-| Setting              | Default | Description                                                                                                                                        |
-| -------------------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Verbose Logging**  | `false` | When enabled, the full request body (including messages and tool args) is written to the output channel. Keep disabled unless debugging an issue. |
+| Setting                 | Default | Description                                                                                                                                       |
+| ----------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Verbose Diagnostics** | `false` | Emit bounded structured request diagnostics without conversation or tool-argument content.                                                        |
+| **Verbose Logging**     | `false` | Write the full request body, including messages and tool arguments. Keep disabled unless debugging; logs can contain sensitive editor content.    |
 
 ### Inline Completions (Experimental)
 
@@ -415,6 +429,16 @@ Access from the Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`):
 | **GitHub Copilot LLM Gateway: Refresh Models**         | Re-probe the inference server and refresh the picker                |
 | **GitHub Copilot LLM Gateway: Edit Custom Headers**    | Add, edit, or remove custom HTTP headers (stored in secret storage) |
 | **GitHub Copilot LLM Gateway: Show Output Log**        | Open the extension's output channel                                 |
+
+## Local Release Verification
+
+Run `npm run check` before committing. It type-checks, lints without warnings,
+runs the existing test suite, builds the extension, and verifies that the VSIX
+file list contains only the bundled `out/extension.js` executable plus
+manifest/documentation/assets. `npm run release:local` additionally audits
+production dependencies and creates the VSIX. After installing it, run
+`npm run verify-install` to confirm the installed extension version matches
+`package.json`.
 
 ## Privacy & Network Requests
 

@@ -70,4 +70,13 @@ describe('resolveApiKey', () => {
   test('framework override of empty string still wins over a non-empty cache', () => {
     assert.equal(resolveApiKey({ apiKey: '' }, 'leftover-secret'), '');
   });
+
+  test('withholds a framework-managed credential from workspace server overrides', () => {
+    assert.equal(resolveApiKey({ apiKey: 'framework-placeholder' }, '', true), '');
+    assert.equal(resolveApiKey({ apiKey: '' }, 'cached-placeholder', true), '');
+  });
+
+  test('uses the origin-filtered SecretStorage cache when no framework key is set', () => {
+    assert.equal(resolveApiKey({}, 'origin-bound-placeholder', true), 'origin-bound-placeholder');
+  });
 });

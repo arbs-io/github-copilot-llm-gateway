@@ -4,6 +4,7 @@ import {
   PROVIDER_DETAIL_LABEL,
   PROVIDER_MULTIPLIER_NUMERIC,
   buildModelInfo,
+  resolveToolCallingCapability,
 } from '../modelInfoBuilder';
 import { TOKEN_CONSTANTS } from '../../chat/tokenBudget';
 import { OpenAIModel } from '../../api/types';
@@ -251,5 +252,60 @@ describe('buildModelInfo capabilities pass-through', () => {
       capabilities: {},
     });
     assert.deepEqual(info.capabilities, {});
+  });
+});
+
+describe('resolveToolCallingCapability', () => {
+  test('keeps qwythos creative tool-capable when the gateway enables tools', () => {
+    assert.equal(
+      resolveToolCallingCapability(baseModel({ id: 'local/qwythos-creative' }), true),
+      true
+    );
+  });
+
+  test('keeps other model families tool-capable without explicit metadata', () => {
+    for (const id of [
+      'local/qwen3.5-27b-scout',
+      'local/qwopus-coder',
+      'local/llama-3.3-70b',
+      'local/gemma-26b',
+      'local/custom-creative-model',
+    ]) {
+      assert.equal(resolveToolCallingCapability(baseModel({ id }), true), true, id);
+    }
+  });
+
+  test('explicit server metadata can opt a creative alias in', () => {
+    assert.equal(
+      resolveToolCallingCapability(
+        baseModel({
+          id: 'local/qwythos-creative',
+          capabilities: { tool_calling: true },
+        }),
+        true
+      ),
+      true
+    );
+  });
+
+  test('discovered metadata wins over raw metadata', () => {
+    assert.equal(
+      resolveToolCallingCapability(
+        baseModel({ capabilities: { tool_calling: true } }),
+        true,
+        false
+      ),
+      false
+    );
+  });
+
+  test('global tool calling disable wins over explicit metadata', () => {
+    assert.equal(
+      resolveToolCallingCapability(
+        baseModel({ capabilities: { tool_calling: true } }),
+        false
+      ),
+      false
+    );
   });
 });

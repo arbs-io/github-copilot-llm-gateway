@@ -45,15 +45,23 @@ export function readFrameworkConfiguration(
 
 /**
  * Choose which API key to send with requests. The framework override wins when
- * set (including an explicit empty string — the user clearing the value in the
- * native UI shouldn't be silently overridden by a stale SecretStorage entry).
- * Otherwise the SecretStorage cache is used.
+ * set, except that a non-empty global framework key is withheld when a
+ * workspace/folder controls the server URL. An explicit empty string still
+ * wins so clearing the native UI cannot silently restore a stale credential.
+ * Otherwise the already origin-filtered SecretStorage cache is used.
  */
 export function resolveApiKey(
   override: FrameworkConfigOverride,
-  secretCacheApiKey: string
+  secretCacheApiKey: string,
+  hasWorkspaceServerOverride = false
 ): string {
   if (override.apiKey !== undefined) {
+    // VS Code owns storage for this value but exposes no server-origin
+    // metadata. A workspace can control serverUrl, so never forward a
+    // framework-global credential to a workspace/folder override.
+    if (hasWorkspaceServerOverride && override.apiKey.length > 0) {
+      return '';
+    }
     return override.apiKey;
   }
   return secretCacheApiKey;

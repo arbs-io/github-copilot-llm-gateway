@@ -7,10 +7,17 @@ import {
   migrateLegacySecrets,
   parseCustomHeadersJson,
 } from '../config/secretMigration';
+import { isSecretOriginAllowed } from '../config/secretOrigin';
+import { validateServerUrl } from '../config/serverUrl';
 
 export interface SecretCache {
   apiKey: string;
   customHeaders: Record<string, string>;
+}
+
+interface StoredSecretCache extends SecretCache {
+  apiKeyOrigin?: string;
+  customHeadersOrigin?: string;
 }
 
 interface SecretsManagerDeps {
@@ -29,7 +36,7 @@ interface SecretsManagerDeps {
  * settings into SecretStorage (issue #28).
  */
 export class SecretsManager {
-  private cache: SecretCache = { apiKey: '', customHeaders: {} };
+  private cache: StoredSecretCache = { apiKey: '', customHeaders: {} };
 
   constructor(
     private readonly secrets: vscode.SecretStorage,
@@ -37,12 +44,32 @@ export class SecretsManager {
   ) {}
 
   public getCache(): SecretCache {
-    return this.cache;
+    const binding = this.currentServerBinding();
+    return {
+      apiKey:
+        this.cache.apiKey &&
+        isSecretOriginAllowed(
+          this.cache.apiKeyOrigin,
+          binding.origin,
+          binding.hasWorkspaceOverride
+        )
+          ? this.cache.apiKey
+          : '',
+      customHeaders:
+        Object.keys(this.cache.customHeaders).length > 0 &&
+        isSecretOriginAllowed(
+          this.cache.customHeadersOrigin,
+          binding.origin,
+          binding.hasWorkspaceOverride
+        )
+          ? { ...this.cache.customHeaders }
+          : {},
+    };
   }
 
   /** Snapshot of the cached custom headers — used by the Edit flow. */
   public getCustomHeadersSnapshot(): Record<string, string> {
-    return { ...this.cache.customHeaders };
+    return this.getCache().customHeaders;
   }
 
   /**
@@ -62,6 +89,7 @@ export class SecretsManager {
       if (toast) {
         vscode.window.showInformationMessage(toast);
       }
+      await this.bindMigratedSecrets(result);
     } catch (error) {
       this.deps.log(
         `Failed to migrate legacy secrets: ${error instanceof Error ? error.message : String(error)}`
@@ -78,8 +106,10 @@ export class SecretsManager {
     const trimmed = apiKey.trim();
     if (trimmed.length === 0) {
       await this.secrets.delete(SECRET_KEYS.apiKey);
+      await this.secrets.delete(SECRET_KEYS.apiKeyOrigin);
     } else {
       await this.secrets.store(SECRET_KEYS.apiKey, trimmed);
+      await this.secrets.store(SECRET_KEYS.apiKeyOrigin, this.currentServerBinding().origin);
     }
     // `onDidChange` will repopulate the cache, but we also refresh
     // synchronously so callers can immediately use the new value.
@@ -94,8 +124,13 @@ export class SecretsManager {
   public async setCustomHeaders(headers: Record<string, string>): Promise<void> {
     if (Object.keys(headers).length === 0) {
       await this.secrets.delete(SECRET_KEYS.customHeaders);
+      await this.secrets.delete(SECRET_KEYS.customHeadersOrigin);
     } else {
       await this.secrets.store(SECRET_KEYS.customHeaders, JSON.stringify(headers));
+      await this.secrets.store(
+        SECRET_KEYS.customHeadersOrigin,
+        this.currentServerBinding().origin
+      );
     }
     await this.refreshCache();
   }
@@ -107,17 +142,21 @@ export class SecretsManager {
    */
   public async refreshCache(): Promise<void> {
     const apiKey = await this.secrets.get(SECRET_KEYS.apiKey);
+    const apiKeyOrigin = await this.secrets.get(SECRET_KEYS.apiKeyOrigin);
     const headersJson = await this.secrets.get(SECRET_KEYS.customHeaders);
+    const customHeadersOrigin = await this.secrets.get(SECRET_KEYS.customHeadersOrigin);
     this.cache = {
       apiKey: apiKey ?? '',
+      apiKeyOrigin,
       customHeaders: parseCustomHeadersJson(headersJson, this.deps.log),
+      customHeadersOrigin,
     };
     this.deps.onDidUpdate();
   }
 
   /** True when the changed secret key belongs to this extension. */
   public ownsSecretKey(key: string): boolean {
-    return key === SECRET_KEYS.apiKey || key === SECRET_KEYS.customHeaders;
+    return Object.values(SECRET_KEYS).includes(key as (typeof SECRET_KEYS)[keyof typeof SECRET_KEYS]);
   }
 
   /**
@@ -136,6 +175,7 @@ export class SecretsManager {
         this.deps.log
       );
       if (result.apiKeyMigrated || result.customHeadersMigrated) {
+        await this.bindMigratedSecrets(result);
         await this.refreshCache();
       }
     } catch (error) {
@@ -143,6 +183,35 @@ export class SecretsManager {
         `Failed to re-migrate legacy secret setting: ${error instanceof Error ? error.message : String(error)}`
       );
     }
+  }
+
+  private async bindMigratedSecrets(result: {
+    apiKeyMigrated: boolean;
+    customHeadersMigrated: boolean;
+  }): Promise<void> {
+    const origin = this.currentServerBinding().origin;
+    if (result.apiKeyMigrated) {
+      await this.secrets.store(SECRET_KEYS.apiKeyOrigin, origin);
+    }
+    if (result.customHeadersMigrated) {
+      await this.secrets.store(SECRET_KEYS.customHeadersOrigin, origin);
+    }
+  }
+
+  private currentServerBinding(): {
+    origin: string;
+    hasWorkspaceOverride: boolean;
+  } {
+    const config = vscode.workspace.getConfiguration('github.copilot.llm-gateway');
+    const rawUrl = config.get<string>('serverUrl', 'http://localhost:8000');
+    const validated = validateServerUrl(rawUrl);
+    const inspection = config.inspect<string>('serverUrl');
+    return {
+      origin: validated.ok ? validated.value : 'http://localhost:8000',
+      hasWorkspaceOverride:
+        inspection?.workspaceFolderValue !== undefined ||
+        inspection?.workspaceValue !== undefined,
+    };
   }
 
   /**
@@ -158,15 +227,18 @@ export class SecretsManager {
         const inspection = config.inspect<T>(section);
         if (!inspection) { return undefined; }
         return {
+          workspaceFolderValue: inspection.workspaceFolderValue,
           workspaceValue: inspection.workspaceValue,
           globalValue: inspection.globalValue,
         };
       },
       update: async (section: string, value: unknown, target: SecretConfigurationTarget) => {
-        const vsTarget =
-          target === SecretConfigurationTarget.Workspace
-            ? vscode.ConfigurationTarget.Workspace
-            : vscode.ConfigurationTarget.Global;
+        let vsTarget = vscode.ConfigurationTarget.Global;
+        if (target === SecretConfigurationTarget.Workspace) {
+          vsTarget = vscode.ConfigurationTarget.Workspace;
+        } else if (target === SecretConfigurationTarget.WorkspaceFolder) {
+          vsTarget = vscode.ConfigurationTarget.WorkspaceFolder;
+        }
         await config.update(section, value, vsTarget);
       },
     };

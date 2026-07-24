@@ -71,6 +71,33 @@ export interface BuildModelInfoResult {
 }
 
 /**
+ * Resolve tool capability with explicit metadata taking precedence. When the
+ * backend does not publish a verdict, preserve the gateway-wide setting:
+ * model aliases are not reliable capability signals.
+ */
+export function resolveToolCallingCapability(
+  model: OpenAIModel,
+  globallyEnabled: boolean,
+  discovered?: boolean
+): boolean {
+  if (!globallyEnabled) {
+    return false;
+  }
+
+  const explicit =
+    discovered ??
+    model.capabilities?.tool_calling ??
+    model.capabilities?.tools ??
+    model.tool_calling ??
+    model.supports_tools;
+  if (typeof explicit === 'boolean') {
+    return explicit;
+  }
+
+  return true;
+}
+
+/**
  * Translate a raw `/v1/models` entry into the picker-facing model info plus
  * the resolved total context.
  *

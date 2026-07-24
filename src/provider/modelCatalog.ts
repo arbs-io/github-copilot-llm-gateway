@@ -5,7 +5,7 @@ import { DiscoveredModelInfo, ModelDiscovery } from '../discovery/types';
 import { TOKEN_CONSTANTS } from '../chat/tokenBudget';
 import { parseContextOverflowError, resolveContextWindowOverride } from '../chat/contextWindow';
 import { dedupeModels } from '../models/modelDisplay';
-import { buildModelInfo } from '../models/modelInfoBuilder';
+import { buildModelInfo, resolveToolCallingCapability } from '../models/modelInfoBuilder';
 
 interface ModelCatalogDeps {
   client: GatewayClient;
@@ -212,7 +212,11 @@ export class ModelCatalog {
             // A discovered capability verdict wins; `undefined` means the
             // server didn't say (e.g. older Ollama), so keep the setting.
             imageInput: config.enableImageInput && (discovered?.visionSupported ?? true),
-            toolCalling: config.enableToolCalling && (discovered?.toolsSupported ?? true),
+            toolCalling: resolveToolCallingCapability(
+              model,
+              config.enableToolCalling,
+              discovered?.toolsSupported
+            ),
           },
           contextOverride,
           discoveredContext: discovered?.contextLength,

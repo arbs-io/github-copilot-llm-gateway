@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { ToolCallAccumulator } from '../toolCallAccumulator';
+import { ToolCallAccumulator, ToolCallLimitError } from '../toolCallAccumulator';
 
 describe('ToolCallAccumulator', () => {
   test('merges streamed deltas by index', () => {
@@ -84,5 +84,58 @@ describe('ToolCallAccumulator', () => {
     ]);
     assert.equal(finished.length, 1);
     assert.equal(finished[0].id, 'call_req_id_0');
+  });
+
+  test('accumulateComplete keeps message tool calls pending until explicitly drained', () => {
+    const acc = new ToolCallAccumulator('req_pending');
+    acc.accumulateComplete([
+      { index: 0, id: 'c1', function: { name: 'search', arguments: '{"q":"hi"}' } },
+    ]);
+
+    assert.deepEqual(acc.drain(true), [{
+      id: 'c1',
+      name: 'search',
+      arguments: '{"q":"hi"}',
+    }]);
+    assert.deepEqual(acc.drain(true), []);
+  });
+
+  test('rejects oversized per-call and aggregate arguments with typed failures', () => {
+    const perCall = new ToolCallAccumulator('req_limit', {
+      maxToolCalls: 4,
+      maxArgumentsPerCall: 5,
+      maxTotalArguments: 10,
+    });
+    perCall.applyDelta({ index: 0, function: { arguments: '12345' } });
+    assert.throws(
+      () => perCall.applyDelta({ index: 0, function: { arguments: '6' } }),
+      (error: unknown) =>
+        error instanceof ToolCallLimitError && error.kind === 'call-arguments'
+    );
+
+    const aggregate = new ToolCallAccumulator('req_total', {
+      maxToolCalls: 4,
+      maxArgumentsPerCall: 10,
+      maxTotalArguments: 5,
+    });
+    aggregate.applyDelta({ index: 0, function: { arguments: '123' } });
+    assert.throws(
+      () => aggregate.applyDelta({ index: 1, function: { arguments: '456' } }),
+      (error: unknown) =>
+        error instanceof ToolCallLimitError && error.kind === 'total-arguments'
+    );
+  });
+
+  test('caps the total number of distinct tool calls', () => {
+    const acc = new ToolCallAccumulator('req_calls', {
+      maxToolCalls: 1,
+      maxArgumentsPerCall: 10,
+      maxTotalArguments: 10,
+    });
+    acc.applyDelta({ index: 0, function: { name: 'first' } });
+    assert.throws(
+      () => acc.applyDelta({ index: 1, function: { name: 'second' } }),
+      (error: unknown) => error instanceof ToolCallLimitError && error.kind === 'calls'
+    );
   });
 });

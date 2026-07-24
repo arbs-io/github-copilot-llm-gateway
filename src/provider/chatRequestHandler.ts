@@ -11,13 +11,13 @@ import {
   calculateMaxInputTokens,
   calculateSafeMaxOutputTokens,
   estimateTextTokens,
-  truncateMessagesToFit,
 } from '../chat/tokenBudget';
-import { tryRepairJson } from '../chat/jsonRepair';
-import { fillMissingRequiredProperties } from '../chat/toolSchema';
+import { compactConversationHistory } from '../chat/compaction';
+import { prepareToolCallBatch, PreparedToolCallBatch, ToolCallArguments } from '../chat/toolArguments';
 import {
   StreamChunk,
   StreamReporter,
+  ToolCallBatchError,
   isEmptyStreamResult,
   streamResponse,
 } from '../chat/responseStreamer';
@@ -26,11 +26,36 @@ import { TokenUsage } from '../status/sessionStats';
 import { ModelCatalog } from './modelCatalog';
 import { convertAllMessages } from './vscodeParts';
 import { handleChatError } from './notifications';
+import {
+  buildForcedSummaryInstruction,
+  buildReplanInstruction,
+  DEFAULT_PROGRESS_POLICY,
+  evaluateCandidateToolBatchProgress,
+  evaluateTranscriptProgress,
+} from '../agent/progress';
+import {
+  limitToolsBySchemaTokenBudget,
+  selectToolsForRequest,
+} from '../agent/toolSelection';
+import {
+  CompactionPolicy,
+  ProgressEvaluation,
+  ProgressPolicy,
+  ToolFamily,
+} from '../agent/types';
 
 const DEFAULT_TEMPERATURE = 0.7;
 const DEBUG_REQUEST_MAX_LOG_LENGTH = 2000;
-const MAX_TOOL_ARGS_LOG_LENGTH = 1000;
-const MAX_TOOL_DESCRIPTION_LOG_LENGTH = 100;
+const MAX_CHAT_ATTEMPTS = 4;
+const TOOL_FREE_RECOVERY_INSTRUCTION =
+  'Do not call tools. Return a concise, grounded summary or explanation based only on the conversation, and clearly state any missing information.';
+const COMPACTION_POLICY: CompactionPolicy = {
+  taskAnchorCharacters: 1200,
+  archivedSummaryCharacters: 2000,
+  groundedAssistantCharacters: 200,
+  toolResultSummaryCharacters: 400,
+  reserveTokensForSyntheticMessages: 256,
+};
 
 /** Return `value` when it's a finite number, else `undefined`. */
 function pickNumber(value: unknown): number | undefined {
@@ -53,6 +78,127 @@ function discoveredSamplerOptions(
     if (typeof discovered[key] === 'number') { out[key] = discovered[key]; }
   }
   return out;
+}
+
+export function buildProgressPolicy(
+  config: Pick<
+    GatewayConfig,
+    'maxConsecutiveToolCalls' | 'maxRepeatedToolCallCount' | 'maxToolResultCharacters'
+  >
+): ProgressPolicy {
+  const maximumTurns = Math.max(1, Math.floor(config.maxConsecutiveToolCalls));
+  const thresholds = (family: ToolFamily) => ({
+    ...DEFAULT_PROGRESS_POLICY.toolFamilyProgress[family],
+    noProgressTurnsBeforeNarrow: Math.max(1, Math.ceil(maximumTurns * 0.25)),
+    noProgressTurnsBeforeReplan: Math.max(1, Math.ceil(maximumTurns * 0.5)),
+    noProgressTurnsBeforeSummary: Math.max(1, Math.ceil(maximumTurns * 0.75)),
+    noProgressTurnsBeforeBlock: maximumTurns,
+  });
+
+  return {
+    exactRepeatedToolCallLimit: Math.max(
+      1,
+      Math.floor(config.maxRepeatedToolCallCount)
+    ),
+    groundedAssistantCharacters: DEFAULT_PROGRESS_POLICY.groundedAssistantCharacters,
+    toolResultSummaryCharacters: Math.min(
+      config.maxToolResultCharacters,
+      DEFAULT_PROGRESS_POLICY.toolResultSummaryCharacters
+    ),
+    toolFamilyProgress: {
+      memory: thresholds('memory'),
+      completion: thresholds('completion'),
+      editing: thresholds('editing'),
+      discovery: thresholds('discovery'),
+      execution: thresholds('execution'),
+      network: thresholds('network'),
+      other: thresholds('other'),
+    },
+  };
+}
+
+export function shouldExposeTools(
+  configEnabled: boolean,
+  modelToolCalling: boolean | number | undefined
+): boolean {
+  return configEnabled && Boolean(modelToolCalling);
+}
+
+export function assertUsableRequestPlan(params: {
+  originalMessageCount: number;
+  requestMessageCount: number;
+  preservedActiveToolChain: boolean;
+  safeMaxOutputTokens: number;
+  modelMaxContext: number;
+}): void {
+  if (
+    (params.originalMessageCount > 0 && params.requestMessageCount === 0) ||
+    !params.preservedActiveToolChain ||
+    params.safeMaxOutputTokens < TOKEN_CONSTANTS.MIN_OUTPUT_TOKENS
+  ) {
+    throw new Error(
+      `The request cannot fit safely in ${params.modelMaxContext} context tokens after reserving ` +
+      `the prompt and tool schemas. Reduce the conversation or tool budget, or increase the model context window.`
+    );
+  }
+}
+
+export function calculateWorkingInputTokens(
+  maxInputTokens: number,
+  maxAgentInputTokens: number,
+  hasTools: boolean
+): number {
+  const limit = hasTools
+    ? Math.min(maxInputTokens, maxAgentInputTokens)
+    : maxInputTokens;
+  return Math.max(0, Math.floor(limit));
+}
+
+export type RequestRecoveryStage = 'original' | 'serialized-tools' | 'tool-free-summary';
+export type RecoverableFailure =
+  | 'empty-response'
+  | 'strict-tool-batch'
+  | 'tool-format';
+
+export function nextRecoveryStage(
+  current: RequestRecoveryStage,
+  selectedToolCount: number
+): RequestRecoveryStage | undefined {
+  if (current === 'original') {
+    return selectedToolCount > 0 ? 'serialized-tools' : 'tool-free-summary';
+  }
+  if (current === 'serialized-tools') {
+    return 'tool-free-summary';
+  }
+  return undefined;
+}
+
+export function classifyRecoverableFailure(error: unknown): RecoverableFailure | undefined {
+  if (error instanceof ToolCallBatchError) {
+    return 'strict-tool-batch';
+  }
+
+  const name = error instanceof Error ? error.name : '';
+  const message = error instanceof Error ? error.message : String(error);
+  if (
+    name === 'GatewayPartialStreamError' ||
+    name === 'AbortError' ||
+    /\b(?:cancelled|canceled|abort(?:ed)?)\b/i.test(message) ||
+    /\b(?:401|403)\b|\b(?:unauthori[sz]ed|forbidden|authentication)\b/i.test(message) ||
+    /\b(?:fetch failed|econnrefused|enotfound|etimedout|network|socket|tls)\b/i.test(message)
+  ) {
+    return undefined;
+  }
+
+  const knownToolFormatSignal =
+    /\bHarmonyError\b/i.test(message) ||
+    /\b(?:PEG|grammar)\b.{0,120}\b(?:reject|parse|parser|constraint|invalid|fail|error|tool|function|output)\b/i.test(message) ||
+    /\b(?:reject|parse|parser|invalid|malformed|fail|error)\b.{0,120}\b(?:PEG|grammar)\b/i.test(message) ||
+    /\b(?:tool|function)[_ -]?(?:call|calling|format)\b.{0,120}\b(?:parse|parser|format|grammar|invalid|malformed|reject|fail|error)\b/i.test(message) ||
+    /\b(?:parse|parser|format|grammar|invalid|malformed|reject|fail|error)\b.{0,120}\b(?:tool|function)[_ -]?(?:call|calling|format)\b/i.test(message) ||
+    /\b(?:tool|function)[_ -]?(?:arguments?|parameters?)\b.{0,120}\b(?:parse|parser|invalid|malformed|reject|fail|error)\b/i.test(message) ||
+    /\b(?:parse|parser|invalid|malformed|reject|fail|error)\b.{0,120}\b(?:tool|function)[_ -]?(?:arguments?|parameters?)\b/i.test(message);
+  return knownToolFormatSignal ? 'tool-format' : undefined;
 }
 
 /**
@@ -83,18 +229,6 @@ export type RequestStateEvent =
     };
 
 /**
- * Format a tool's description for the output channel: trim, truncate at
- * MAX_TOOL_DESCRIPTION_LOG_LENGTH characters, and only append `...` when an
- * actual truncation happened. Returns `'(none)'` when the tool didn't supply
- * a description at all.
- */
-function formatToolDescription(description: string | undefined): string {
-  if (!description) { return '(none)'; }
-  if (description.length <= MAX_TOOL_DESCRIPTION_LOG_LENGTH) { return description; }
-  return `${description.substring(0, MAX_TOOL_DESCRIPTION_LOG_LENGTH)}...`;
-}
-
-/**
  * Map a `LanguageModelChatToolMode` enum value to a human-readable label for
  * the output channel. The enum is numeric at runtime, so the raw `${toolMode}`
  * was rendering as `0` / `1` and looked like a stray index.
@@ -119,11 +253,26 @@ interface ChatRequestHandlerDeps {
   showOutput: () => void;
 }
 
+interface ToolPlan {
+  tools: OpenAIToolDefinition[] | undefined;
+  schemas: Map<string, Record<string, unknown> | undefined>;
+  selectedCount: number;
+  droppedCount: number;
+  schemaTokens: number;
+}
+
+interface AttemptResult {
+  empty: boolean;
+  inputText: string;
+  toolCount: number;
+}
+
 /**
  * Executes one chat request end-to-end: convert VS Code messages to the
  * OpenAI wire format, budget the context window, build and stream the
  * request, and transparently retry once when the server's context-overflow
- * error teaches us the model's real window (issue #55).
+ * error teaches us the model's real window (issue #55). Before any output is
+ * exposed, known tool-format failures also use a bounded two-stage recovery.
  *
  * Stateless between requests — all cross-request knowledge (learned context
  * sizes, cached model data) lives in the {@link ModelCatalog}.
@@ -149,20 +298,30 @@ export class ChatRequestHandler {
     this.deps.onRequestState({ kind: 'start', modelId: model.id, modelName });
 
     const config = this.deps.getConfig();
-    const openAIMessages = convertAllMessages(messages, config.enableImageInput, log);
+    const openAIMessages = convertAllMessages(
+      messages,
+      config.enableImageInput,
+      log,
+      config.maxToolResultCharacters
+    );
     log(`Converted to ${openAIMessages.length} OpenAI messages`);
     this.logMessageStructure(openAIMessages);
 
     const configuredMaxOutput =
       model.maxOutputTokens || TOKEN_CONSTANTS.DEFAULT_OUTPUT_TOKENS;
-
-    // Filter the tool catalog up-front so the token budget reflects what we
-    // actually send on the wire. Otherwise the unfiltered Copilot tool catalog
-    // (~93 tools, ~24K chars) would reserve context that gets thrown away by
-    // buildToolsConfig() later — collapsing the user's prompt when tool
-    // calling is disabled.
-    const { tools: filteredTools, schemas: toolSchemas } = this.buildToolsConfig(config, options);
-    const toolsSerializedLength = filteredTools ? JSON.stringify(filteredTools).length : 0;
+    const progressPolicy = buildProgressPolicy(config);
+    const transcriptProgress = evaluateTranscriptProgress(openAIMessages, progressPolicy);
+    const planningMessages = this.injectProgressInstruction(
+      openAIMessages,
+      transcriptProgress
+    );
+    const toolPlan = this.buildToolsConfig(
+      config,
+      model,
+      options,
+      openAIMessages,
+      transcriptProgress
+    );
 
     // Once anything has been streamed to the chat view we can no longer
     // transparently re-issue the request without duplicating output, so track
@@ -176,39 +335,83 @@ export class ChatRequestHandler {
     };
 
     let capturedUsage: TokenUsage | undefined;
+    let candidateHistory = [...openAIMessages];
 
     // The whole budget → request → stream pipeline, resolved against the
     // model's current context size, so a corrected context can re-run it.
-    const attempt = async (): Promise<void> => {
+    const attempt = async (stage: RequestRecoveryStage): Promise<AttemptResult> => {
+      const useTools = stage !== 'tool-free-summary';
+      const attemptToolPlan = useTools
+        ? toolPlan
+        : this.emptyToolPlan(options.tools?.length ?? 0);
+      const hasTools =
+        attemptToolPlan.tools !== undefined && attemptToolPlan.tools.length > 0;
+      const attemptMessages =
+        stage === 'tool-free-summary'
+          ? [
+              { role: 'system', content: TOOL_FREE_RECOVERY_INSTRUCTION } as OpenAIMessage,
+              ...planningMessages,
+            ]
+          : planningMessages;
+      const toolsSerializedLength = attemptToolPlan.tools
+        ? JSON.stringify(attemptToolPlan.tools).length
+        : 0;
       const modelMaxContext = catalog.resolveModelMaxContext(model);
       const maxInputTokens = calculateMaxInputTokens({
         modelMaxContext,
         configuredMaxOutput,
         toolsSerializedLength,
       });
-
-      const truncatedMessages = truncateMessagesToFit(openAIMessages, maxInputTokens, log);
-      if (truncatedMessages.length < openAIMessages.length) {
-        log(
-          `WARNING: Truncated conversation from ${openAIMessages.length} to ${truncatedMessages.length} messages to fit context limit`
-        );
-      }
-
-      const inputText = buildInputText(truncatedMessages);
+      const workingInputTokens = calculateWorkingInputTokens(
+        maxInputTokens,
+        config.maxAgentInputTokens,
+        hasTools
+      );
+      const compaction = compactConversationHistory({
+        messages: attemptMessages,
+        maxInputTokens: workingInputTokens,
+        policy: COMPACTION_POLICY,
+      });
+      const requestMessages = compaction.messages;
+      const inputText = buildInputText(requestMessages);
       const toolsOverhead = Math.ceil(toolsSerializedLength / TOKEN_CONSTANTS.CHARS_PER_TOKEN);
-      const estimatedInputTokens = estimateTextTokens(inputText);
+      const estimatedInputTokens = compaction.estimatedInputTokens;
       const safeMaxOutputTokens = calculateSafeMaxOutputTokens({
         estimatedInputTokens,
         toolsOverhead,
         modelMaxContext,
         configuredMaxOutput,
       });
+      assertUsableRequestPlan({
+        originalMessageCount: attemptMessages.length,
+        requestMessageCount: requestMessages.length,
+        preservedActiveToolChain: compaction.preservedActiveToolChain,
+        safeMaxOutputTokens,
+        modelMaxContext,
+      });
 
       log(
         `Token estimate: input=${estimatedInputTokens}, tools=${toolsOverhead}, model_context=${modelMaxContext}, chosen_max_tokens=${safeMaxOutputTokens}`
       );
 
-      const hasTools = filteredTools !== undefined && filteredTools.length > 0;
+      this.logStructuredDiagnostics(config, {
+        event: 'request-plan',
+        attemptStage: stage,
+        selectedToolCount: attemptToolPlan.selectedCount,
+        droppedToolCount: attemptToolPlan.droppedCount,
+        selectedToolSchemaTokens: attemptToolPlan.schemaTokens,
+        toolSchemaTokenBudget: config.maxToolSchemaTokens,
+        originalMessageCount: attemptMessages.length,
+        requestMessageCount: requestMessages.length,
+        droppedMessageCount: compaction.droppedMessageCount,
+        compacted: compaction.wasCompacted,
+        taskAnchorApplied: compaction.taskAnchorApplied,
+        archivedSummaryApplied: compaction.archivedSummaryApplied,
+        preservedActiveToolChain: compaction.preservedActiveToolChain,
+        progressStage: transcriptProgress.stage,
+        progressScore: transcriptProgress.score,
+        progressReasons: transcriptProgress.reasons.slice(0, 3),
+      });
 
       // Sampler resolution, precedence high -> low:
       //   caller modelOptions > perModelOptions > extraModelOptions >
@@ -232,12 +435,20 @@ export class ChatRequestHandler {
 
       const requestOptions = buildChatRequest({
         model: model.id,
-        messages: truncatedMessages,
+        messages: requestMessages,
         maxTokens: safeMaxOutputTokens,
         temperature,
-        tools: filteredTools,
-        toolChoice: hasTools ? this.mapToolChoice(options.toolMode) : undefined,
-        parallelToolCalls: hasTools ? config.parallelToolCalling : undefined,
+        tools: attemptToolPlan.tools,
+        toolChoice: hasTools
+          ? stage === 'serialized-tools'
+            ? 'auto'
+            : this.mapToolChoice(options.toolMode)
+          : undefined,
+        parallelToolCalls: hasTools
+          ? stage === 'serialized-tools'
+            ? false
+            : config.parallelToolCalling
+          : undefined,
         extraOptions: {
           ...discoveredSamplerOptions(discovered),
           ...config.extraModelOptions,
@@ -247,8 +458,10 @@ export class ChatRequestHandler {
       });
 
       if (hasTools) {
+        const parallelToolCalls =
+          stage === 'serialized-tools' ? false : config.parallelToolCalling;
         log(
-          `Sending ${filteredTools.length} tools to model (parallel: ${config.parallelToolCalling})`
+          `Sending ${attemptToolPlan.selectedCount} tools to model (parallel: ${parallelToolCalls})`
         );
       }
 
@@ -262,37 +475,107 @@ export class ChatRequestHandler {
         chunks: chunks as AsyncIterable<StreamChunk>,
         reporter,
         isCancelled: () => token.isCancellationRequested,
-        resolveToolCallArgs: (toolCall) => this.resolveToolCallArgs(toolCall, toolSchemas),
+        prepareToolCallBatch: (toolCalls) => {
+          const prepared = this.prepareCandidateToolBatch(
+            toolCalls,
+            attemptToolPlan.schemas,
+            candidateHistory,
+            progressPolicy,
+            config
+          );
+          if (prepared.calls) {
+            candidateHistory = [
+              ...candidateHistory,
+              this.asAssistantToolCallMessage(toolCalls),
+            ];
+          }
+          return prepared;
+        },
       });
 
       log(
         `Completed chat request, received ${stats.totalContentLength} chars, ${stats.totalTextParts} text parts, ${stats.totalToolCalls} tool calls`
       );
 
-      if (isEmptyStreamResult(stats)) {
-        const toolCount = filteredTools?.length ?? 0;
-        this.handleEmptyResponse(model, inputText, openAIMessages.length, toolCount, trackingProgress);
-      }
+      return {
+        empty: isEmptyStreamResult(stats),
+        inputText,
+        toolCount: attemptToolPlan.selectedCount,
+      };
     };
 
     try {
-      try {
-        await attempt();
-      } catch (error) {
-        // Context-overflow errors carry the server's real context size
-        // (issue #55: llama-server router mode reports nothing up-front, so
-        // the first request can overshoot). Learn it and, if nothing has been
-        // streamed to the chat view yet, transparently retry once with the
-        // corrected budget.
-        if (
-          !catalog.learnContextSizeFromError(model, error) ||
-          partsReported ||
-          token.isCancellationRequested
-        ) {
+      let stage: RequestRecoveryStage = 'original';
+      let contextRetryUsed = false;
+      let attempts = 0;
+      let complete = false;
+
+      while (!complete && attempts < MAX_CHAT_ATTEMPTS) {
+        attempts++;
+        try {
+          const result = await attempt(stage);
+          if (!result.empty || token.isCancellationRequested) {
+            complete = true;
+            continue;
+          }
+
+          const nextStage: RequestRecoveryStage | undefined =
+            partsReported ? undefined : nextRecoveryStage(stage, toolPlan.selectedCount);
+          if (nextStage && attempts < MAX_CHAT_ATTEMPTS) {
+            this.logRecovery(config, 'empty-response', stage, nextStage, attempts);
+            stage = nextStage;
+            continue;
+          }
+
+          this.handleEmptyResponse(
+            model,
+            result.inputText,
+            openAIMessages.length,
+            result.toolCount,
+            trackingProgress
+          );
+          complete = true;
+        } catch (error) {
+          // Context-overflow errors carry the server's real context size
+          // (issue #55: llama-server router mode reports nothing up-front).
+          // Preserve the learned limit even when visible output prevents a
+          // retry, but retry at most once across the recovery sequence.
+          const learnedContext =
+            !contextRetryUsed && catalog.learnContextSizeFromError(model, error);
+          if (
+            learnedContext &&
+            !partsReported &&
+            !token.isCancellationRequested &&
+            attempts < MAX_CHAT_ATTEMPTS
+          ) {
+            contextRetryUsed = true;
+            log('Retrying chat request with corrected context size...');
+            this.logStructuredDiagnostics(config, {
+              event: 'request-retry',
+              retryStage: 'context-overflow',
+              attemptStage: stage,
+              attemptCount: attempts,
+              visibleOutputReported: false,
+            });
+            continue;
+          }
+
+          const failure = classifyRecoverableFailure(error);
+          const nextStage: RequestRecoveryStage | undefined =
+            failure && !partsReported && !token.isCancellationRequested
+              ? nextRecoveryStage(stage, toolPlan.selectedCount)
+              : undefined;
+          if (failure && nextStage && attempts < MAX_CHAT_ATTEMPTS) {
+            this.logRecovery(config, failure, stage, nextStage, attempts);
+            stage = nextStage;
+            continue;
+          }
           throw error;
         }
-        log('Retrying chat request with corrected context size...');
-        await attempt();
+      }
+
+      if (!complete) {
+        throw new Error('Chat recovery attempt limit was exhausted.');
       }
       this.deps.onCompleted(model.id, modelName, capturedUsage);
       this.deps.onRequestState({
@@ -325,83 +608,160 @@ export class ChatRequestHandler {
     }
   }
 
+  private emptyToolPlan(droppedCount: number): ToolPlan {
+    return {
+      tools: undefined,
+      schemas: new Map(),
+      selectedCount: 0,
+      droppedCount,
+      schemaTokens: 0,
+    };
+  }
+
   private buildToolsConfig(
     config: GatewayConfig,
-    options: vscode.ProvideLanguageModelChatResponseOptions
-  ): {
-    tools: OpenAIToolDefinition[] | undefined;
-    schemas: Map<string, Record<string, unknown> | undefined>;
-  } {
+    model: vscode.LanguageModelChatInformation,
+    options: vscode.ProvideLanguageModelChatResponseOptions,
+    messages: readonly OpenAIMessage[],
+    progress: ProgressEvaluation
+  ): ToolPlan {
     const schemas = new Map<string, Record<string, unknown> | undefined>();
-    if (!config.enableToolCalling || !options.tools || options.tools.length === 0) {
-      return { tools: undefined, schemas };
+    const exposeTools = shouldExposeTools(
+      config.enableToolCalling,
+      model.capabilities?.toolCalling
+    );
+    if (
+      !exposeTools ||
+      progress.forceSummary ||
+      !options.tools ||
+      options.tools.length === 0
+    ) {
+      return {
+        tools: undefined,
+        schemas,
+        selectedCount: 0,
+        droppedCount: options.tools?.length ?? 0,
+        schemaTokens: 0,
+      };
     }
 
-    const tools: OpenAIToolDefinition[] = options.tools.map((tool) => {
-      this.deps.log(`Tool: ${tool.name}`);
-      this.deps.log(`  Description: ${formatToolDescription(tool.description)}`);
-
-      const schema = tool.inputSchema as Record<string, unknown> | undefined;
-      schemas.set(tool.name, schema);
-
-      if (schema?.required && Array.isArray(schema.required)) {
-        this.deps.log(
-          `  Required properties: ${(schema.required as string[]).join(', ')}`
-        );
-      }
-
-      return {
+    const selected = selectToolsForRequest({
+      tools: options.tools,
+      maxTools: config.maxToolsPerRequest,
+      messages,
+      pinnedToolNames: config.pinnedTools,
+      progress,
+    });
+    const toDefinition = (
+      tool: (NonNullable<typeof options.tools>)[number]
+    ): OpenAIToolDefinition => ({
         type: 'function',
         function: {
           name: tool.name,
           description: tool.description,
           parameters: tool.inputSchema,
         },
-      };
+      });
+    const schemaBudget = limitToolsBySchemaTokenBudget(
+      selected.items,
+      config.maxToolSchemaTokens,
+      toDefinition
+    );
+    const tools = schemaBudget.items.map((tool) => {
+      schemas.set(
+        tool.name,
+        tool.inputSchema as Record<string, unknown> | undefined
+      );
+      return toDefinition(tool);
     });
 
-    return { tools, schemas };
+    return {
+      tools: tools.length > 0 ? tools : undefined,
+      schemas,
+      selectedCount: tools.length,
+      droppedCount: options.tools.length - tools.length,
+      schemaTokens: tools.length > 0 ? schemaBudget.serializedTokens : 0,
+    };
   }
 
-  /**
-   * Parse and patch tool call arguments before reporting them upstream.
-   * The schemas map is per-request so concurrent chat requests can't clobber
-   * each other's tool definitions.
-   */
-  private resolveToolCallArgs(
-    toolCall: { id: string; name: string; arguments: string },
-    toolSchemas: Map<string, Record<string, unknown> | undefined>
-  ): Record<string, unknown> {
-    const { log } = this.deps;
-    log(`\n=== TOOL CALL RECEIVED ===`);
-    log(`  ID: ${toolCall.id}`);
-    log(`  Name: ${toolCall.name}`);
-    log(
-      `  Raw arguments: ${toolCall.arguments.substring(0, MAX_TOOL_ARGS_LOG_LENGTH)}${
-        toolCall.arguments.length > MAX_TOOL_ARGS_LOG_LENGTH ? '...' : ''
-      }`
-    );
+  private injectProgressInstruction(
+    messages: readonly OpenAIMessage[],
+    progress: ProgressEvaluation
+  ): OpenAIMessage[] {
+    if (progress.forceSummary) {
+      return [
+        ...messages,
+        { role: 'system', content: buildForcedSummaryInstruction(progress) },
+      ];
+    }
+    if (progress.injectReplan) {
+      return [
+        ...messages,
+        { role: 'system', content: buildReplanInstruction(progress) },
+      ];
+    }
+    return [...messages];
+  }
 
-    let args = tryRepairJson(toolCall.arguments, log) as Record<string, unknown> | null;
-
-    if (args === null) {
-      log(`  ERROR: Failed to parse tool call arguments`);
-      log(`  Full arguments: ${toolCall.arguments}`);
-      args = {};
-    } else {
-      const argKeys = Object.keys(args);
-      log(
-        `  Parsed argument keys: ${argKeys.length > 0 ? argKeys.join(', ') : '(none)'}`
+  private prepareCandidateToolBatch(
+    toolCalls: readonly ToolCallArguments[],
+    schemas: ReadonlyMap<string, Record<string, unknown> | undefined>,
+    messages: readonly OpenAIMessage[],
+    policy: ProgressPolicy,
+    config: GatewayConfig
+  ): PreparedToolCallBatch {
+    const prepared = prepareToolCallBatch(toolCalls, schemas);
+    if (prepared.error) {
+      this.deps.log(
+        `Rejected tool batch: ${prepared.error.reason}. No tool calls were reported.`
       );
+      return prepared;
     }
 
-    const toolSchema = toolSchemas.get(toolCall.name);
-    if (toolSchema) {
-      args = fillMissingRequiredProperties(args, toolSchema, log);
+    const candidateProgress = evaluateCandidateToolBatchProgress(
+      messages,
+      policy,
+      toolCalls
+    );
+    this.logStructuredDiagnostics(config, {
+      event: 'tool-batch',
+      toolCallCount: toolCalls.length,
+      progressStage: candidateProgress.stage,
+      progressScore: candidateProgress.score,
+      repeatedToolCallCount: candidateProgress.repeatedToolCallCount,
+      noProgressToolCallTurns: candidateProgress.noProgressToolCallTurns,
+      progressReasons: candidateProgress.reasons.slice(0, 3),
+    });
+    if (candidateProgress.shouldBlock) {
+      return {
+        error: {
+          toolCall: toolCalls[0],
+          reason:
+            candidateProgress.reasons[0] ??
+            'the candidate tool batch exceeded the no-progress policy',
+        },
+      };
     }
 
-    log(`=== END TOOL CALL ===\n`);
-    return args;
+    this.deps.log(`Validated tool batch with ${prepared.calls.length} call(s).`);
+    return prepared;
+  }
+
+  private asAssistantToolCallMessage(
+    toolCalls: readonly ToolCallArguments[]
+  ): OpenAIMessage {
+    return {
+      role: 'assistant',
+      content: null,
+      tool_calls: toolCalls.map((toolCall) => ({
+        id: toolCall.id,
+        type: 'function',
+        function: {
+          name: toolCall.name,
+          arguments: toolCall.arguments,
+        },
+      })),
+    };
   }
 
   private createStreamReporter(
@@ -436,6 +796,43 @@ export class ChatRequestHandler {
   }
 
   // ---------- logging / error helpers ----------
+
+  private logStructuredDiagnostics(
+    config: GatewayConfig,
+    metrics: Record<string, unknown>
+  ): void {
+    if (!config.verboseDiagnostics) { return; }
+    const reasons = Array.isArray(metrics.progressReasons)
+      ? metrics.progressReasons
+          .filter((reason): reason is string => typeof reason === 'string')
+          .slice(0, 3)
+          .map((reason) => reason.slice(0, 160))
+      : undefined;
+    this.deps.log(
+      `Request diagnostics: ${JSON.stringify({
+        ...metrics,
+        ...(reasons ? { progressReasons: reasons } : {}),
+      })}`
+    );
+  }
+
+  private logRecovery(
+    config: GatewayConfig,
+    failure: RecoverableFailure,
+    from: RequestRecoveryStage,
+    to: RequestRecoveryStage,
+    attemptCount: number
+  ): void {
+    this.deps.log(`Retrying chat request with recovery stage: ${to}.`);
+    this.logStructuredDiagnostics(config, {
+      event: 'request-retry',
+      retryTrigger: failure,
+      previousStage: from,
+      retryStage: to,
+      attemptCount,
+      visibleOutputReported: false,
+    });
+  }
 
   private logMessageStructure(openAIMessages: readonly OpenAIMessage[]): void {
     for (let i = 0; i < openAIMessages.length; i++) {

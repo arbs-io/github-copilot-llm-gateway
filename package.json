@@ -2,7 +2,7 @@
   "name": "github-copilot-llm-gateway",
   "displayName": "GitHub Copilot LLM Gateway",
   "description": "Connect GitHub Copilot to open-source models via vLLM or any OpenAI-compatible server",
-  "version": "1.6.0",
+  "version": "1.7.1",
   "publisher": "AndrewButson",
   "icon": "assets/copilot-llm-gateway.png",
   "private": true,
@@ -22,11 +22,16 @@
     "esbuild-base": "esbuild ./src/extension.ts --bundle --outfile=out/extension.js --external:vscode --format=cjs --platform=node --target=es2020",
     "esbuild": "npm run esbuild-base -- --sourcemap",
     "esbuild-watch": "npm run esbuild-base -- --sourcemap --watch",
-    "test-compile": "tsc -p ./",
-    "lint": "eslint \"src/**/*.ts\"",
-    "test-build": "rm -rf out-test && tsc -p tsconfig.test.json",
+    "test-compile": "tsc -p ./ --noEmit",
+    "lint": "eslint \"src/**/*.ts\" --max-warnings=0",
+    "test-build": "node ./scripts/clean-test-output.cjs && tsc -p tsconfig.test.json",
     "test": "npm run test-build && node --test \"out-test/**/*.test.js\"",
     "test-coverage": "npm run test-build && node --test --experimental-test-coverage \"out-test/**/*.test.js\"",
+    "verify-package": "node ./scripts/verify-package.cjs",
+    "verify-install": "node ./scripts/verify-install.cjs",
+    "check": "npm run test-compile && npm run lint && npm test && npm run esbuild && npm run verify-package",
+    "audit:prod": "npm audit --omit=dev",
+    "release:local": "npm run check && npm run audit:prod && npm run package",
     "deploy": "vsce publish --no-yarn",
     "package": "vsce package --no-yarn"
   },
@@ -114,35 +119,49 @@
           "description": "Request timeout in milliseconds",
           "order": 3
         },
+        "github.copilot.llm-gateway.streamIdleTimeout": {
+          "type": "number",
+          "default": 120000,
+          "minimum": 1000,
+          "description": "Maximum time in milliseconds to wait between streamed response chunks before cancelling a stalled request.",
+          "order": 4
+        },
         "github.copilot.llm-gateway.defaultMaxTokens": {
           "type": "number",
           "default": 262144,
           "description": "Fallback context window size (input tokens) when the server does not report it",
-          "order": 4
+          "order": 5
         },
         "github.copilot.llm-gateway.defaultMaxOutputTokens": {
           "type": "number",
           "default": 4096,
           "description": "Fallback maximum output tokens when the server does not report context size",
-          "order": 5
+          "order": 6
+        },
+        "github.copilot.llm-gateway.maxAgentInputTokens": {
+          "type": "number",
+          "default": 65536,
+          "minimum": 256,
+          "description": "Hard input-token cap for tool-enabled requests. The full model context remains advertised to Copilot while the gateway keeps agent prompts within a stable working window.",
+          "order": 7
         },
         "github.copilot.llm-gateway.enableImageInput": {
           "type": "boolean",
           "default": true,
           "description": "Enable image input capability for models that support multimodal requests",
-          "order": 6
+          "order": 8
         },
         "github.copilot.llm-gateway.enableToolCalling": {
           "type": "boolean",
           "default": true,
           "description": "Enable tool calling capability for models",
-          "order": 7
+          "order": 9
         },
         "github.copilot.llm-gateway.parallelToolCalling": {
           "type": "boolean",
           "default": true,
           "description": "Allow model to call multiple tools in parallel (disable if model has issues with parallel calls)",
-          "order": 8
+          "order": 10
         },
         "github.copilot.llm-gateway.agentTemperature": {
           "type": "number",
@@ -150,13 +169,76 @@
           "minimum": 0.0,
           "maximum": 2.0,
           "description": "Fallback temperature for agent/tool calling mode (lower = more consistent tool call formatting). Set to 0.0 for best results with fine-tuned models. A temperature discovered from the backend's own model config (e.g. an Ollama Modelfile via /api/show) takes precedence; use perModelOptions to force a specific value.",
-          "order": 9
+          "order": 11
+        },
+        "github.copilot.llm-gateway.operatingProfile": {
+          "type": "string",
+          "enum": [
+            "grounded",
+            "balanced",
+            "aggressive"
+          ],
+          "default": "grounded",
+          "description": "Agent stability profile. Grounded prioritizes bounded, evidence-driven work; balanced permits broader exploration; aggressive maximizes autonomy.",
+          "order": 12
+        },
+        "github.copilot.llm-gateway.pinnedTools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "memory"
+          ],
+          "description": "Tool names retained whenever the gateway trims a large tool catalog.",
+          "order": 13
+        },
+        "github.copilot.llm-gateway.maxToolsPerRequest": {
+          "type": "number",
+          "default": 32,
+          "minimum": 1,
+          "description": "Maximum number of tool definitions exposed to the model in one request.",
+          "order": 14
+        },
+        "github.copilot.llm-gateway.maxToolSchemaTokens": {
+          "type": "number",
+          "default": 8192,
+          "minimum": 64,
+          "description": "Maximum estimated tokens occupied by tool definitions in one request.",
+          "order": 15
+        },
+        "github.copilot.llm-gateway.maxToolResultCharacters": {
+          "type": "number",
+          "default": 4000,
+          "minimum": 256,
+          "description": "Maximum characters retained from each tool result when rebuilding model context.",
+          "order": 16
+        },
+        "github.copilot.llm-gateway.maxConsecutiveToolCalls": {
+          "type": "number",
+          "default": 16,
+          "minimum": 1,
+          "description": "Approximate limit for consecutive no-progress tool turns before policy escalation.",
+          "order": 17
+        },
+        "github.copilot.llm-gateway.maxRepeatedToolCallCount": {
+          "type": "number",
+          "default": 4,
+          "minimum": 1,
+          "description": "Maximum identical tool-call repetitions before the gateway blocks the loop.",
+          "order": 18
+        },
+        "github.copilot.llm-gateway.verboseDiagnostics": {
+          "type": "boolean",
+          "default": false,
+          "description": "Emit bounded structured request diagnostics. Unlike verbose logging, diagnostics omit conversation and tool-argument content.",
+          "order": 19
         },
         "github.copilot.llm-gateway.verboseLogging": {
           "type": "boolean",
           "default": false,
           "description": "When enabled, the full chat request body (including messages and tool args) is written to the output channel. Keep disabled unless you are reproducing an issue — captured logs may contain conversation content from the user's current editor.",
-          "order": 10
+          "order": 20
         },
         "github.copilot.llm-gateway.customHeaders": {
           "type": "object",
@@ -166,14 +248,14 @@
           },
           "description": "Deprecated. Use the 'Edit Custom Headers' command to store headers in VS Code's secret storage. Any value entered here is migrated and cleared on extension activation.",
           "deprecationMessage": "Custom headers (which may carry credentials such as 'Authorization') are now stored in VS Code's secret storage. Use the 'GitHub Copilot LLM Gateway: Edit Custom Headers' command.",
-          "order": 11
+          "order": 21
         },
         "github.copilot.llm-gateway.extraModelOptions": {
           "type": "object",
           "default": {},
           "additionalProperties": true,
           "description": "Extra parameters merged into the chat-completions request body (e.g. top_k, repetition_penalty, seed). Per-request modelOptions from the caller take precedence. Edit in settings.json for non-string values.",
-          "order": 12
+          "order": 22
         },
         "github.copilot.llm-gateway.perModelOptions": {
           "type": "object",
@@ -183,7 +265,7 @@
             "additionalProperties": true
           },
           "description": "Per-model chat-completion parameters, keyed by model id. Merged on top of 'extraModelOptions' for matching models; per-request modelOptions from the caller still take precedence. Keys match the model id exactly, or use a '*' wildcard for a whole family (case-insensitive, e.g. 'qwen*'). Exact-id entries win over wildcard entries. Example: { \"qwen*\": { \"temperature\": 0.7, \"top_p\": 0.8 }, \"deepseek-r1\": { \"temperature\": 0.6 } }. Edit in settings.json.",
-          "order": 13
+          "order": 23
         },
         "github.copilot.llm-gateway.modelContextWindows": {
           "type": "object",
@@ -192,54 +274,54 @@
             "type": "number"
           },
           "markdownDescription": "Per-model context window override (total tokens), keyed by model id. Wins over what the server reports. Use when the server reports no context size — or the wrong one (e.g. llama-server router mode advertises nothing until a model is loaded). Keys match the model id exactly, or use a `*` wildcard (case-insensitive); exact-id entries win. Example: `{ \"qwen2.5-coder-32b\": 32768, \"llama*\": 123904 }`. Edit in settings.json.",
-          "order": 21
+          "order": 24
         },
         "github.copilot.llm-gateway.enableInlineCompletion": {
           "type": "boolean",
           "default": false,
           "markdownDescription": "Experimental. Provide inline (ghost-text) code completions from your inference server, running **alongside** GitHub Copilot (not through it — VS Code does not expose bring-your-own-key models to its own inline suggestions). Requires a model/server that supports fill-in-the-middle via the `/v1/completions` `suffix` parameter (vLLM, llama.cpp, LM Studio, …). Leave disabled if you already use Copilot completions, to avoid two suggestions competing.",
-          "order": 14
+          "order": 25
         },
         "github.copilot.llm-gateway.inlineCompletionModel": {
           "type": "string",
           "default": "",
           "description": "Model id to use for inline completions. Leave blank to use the first model reported by the server. Tip: point this at a small fill-in-the-middle / base model (e.g. a *-base or code FIM model) rather than a chat model for faster, cleaner completions.",
-          "order": 15
+          "order": 26
         },
         "github.copilot.llm-gateway.inlineCompletionMaxTokens": {
           "type": "number",
           "default": 256,
           "minimum": 1,
           "description": "Maximum tokens generated per inline completion. Lower values are faster and cheaper.",
-          "order": 16
+          "order": 27
         },
         "github.copilot.llm-gateway.inlineCompletionDebounce": {
           "type": "number",
           "default": 300,
           "minimum": 0,
           "description": "Milliseconds to wait after the last keystroke before requesting an inline completion. Higher values reduce load on the inference server while typing.",
-          "order": 17
+          "order": 28
         },
         "github.copilot.llm-gateway.inlineCompletionTimeout": {
           "type": "number",
           "default": 3000,
           "minimum": 1,
           "description": "Per-request timeout (milliseconds) for inline completions. Kept short so a slow server doesn't block ghost-text suggestions.",
-          "order": 18
+          "order": 29
         },
         "github.copilot.llm-gateway.inlineCompletionMaxPrefixChars": {
           "type": "number",
           "default": 4000,
           "minimum": 1,
           "description": "Maximum characters of context before the cursor to send for inline completions. Lower values reduce latency but provide less context.",
-          "order": 19
+          "order": 30
         },
         "github.copilot.llm-gateway.inlineCompletionMaxSuffixChars": {
           "type": "number",
           "default": 1000,
           "minimum": 1,
           "description": "Maximum characters of context after the cursor to send for inline completions. Lower values reduce latency but provide less context.",
-          "order": 20
+          "order": 31
         }
       }
     }
