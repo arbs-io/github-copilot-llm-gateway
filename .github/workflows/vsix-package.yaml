@@ -12,8 +12,11 @@ on:
       # silently skipping the publish step.
       - '[0-9]+.[0-9]+.[0-9]+'
 
+permissions:
+  contents: read
+
 jobs:
-  build:
+  quality:
     strategy:
       matrix:
         os: [macos-latest, ubuntu-latest, windows-latest]
@@ -26,11 +29,33 @@ jobs:
         with:
           node-version: "22"
       - name: Install Extension Dependencies
-        run: npm ci
-      - name: Build Extension
-        run: npm run esbuild
-      - name: Publish Extension
-        if: success() && startsWith(github.ref, 'refs/tags/') && matrix.os == 'ubuntu-latest'
-        run: npm run deploy
+        run: npm ci --ignore-scripts
+      - name: Run Complete Quality Gate
+        run: npm run check
+      - name: Audit Production Dependencies
+        run: npm run audit:prod
+
+  publish:
+    needs: quality
+    if: success() && startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Extension
+        uses: actions/checkout@v4
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install Extension Dependencies
+        run: npm ci --ignore-scripts
+      - name: Run Complete Quality Gate
+        run: npm run check
+      - name: Audit Production Dependencies
+        run: npm run audit:prod
+      # Keep strict package-boundary verification adjacent to publication even
+      # though `npm run check` already includes it. This makes the publishing
+      # gate explicit and prevents a future workflow edit from bypassing it.
+      - name: Verify and Publish Extension
+        run: npm run verify-package && npm run vscode:prepublish && npm run deploy
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}

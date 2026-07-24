@@ -143,7 +143,7 @@ export function calculateSafeMaxOutputTokens(params: SafeOutputTokensParams): nu
     Math.floor(params.modelMaxContext - conservativeInputEstimate - TOKEN_CONSTANTS.CONTEXT_BUFFER_TOKENS)
   );
 
-  return Math.max(TOKEN_CONSTANTS.MIN_OUTPUT_TOKENS, safeMaxOutputTokens);
+  return Math.max(0, safeMaxOutputTokens);
 }
 
 export interface MaxInputTokensParams {

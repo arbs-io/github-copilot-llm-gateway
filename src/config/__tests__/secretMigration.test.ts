@@ -12,8 +12,13 @@ import {
 
 /** Plain-object stand-in for vscode.WorkspaceConfiguration. */
 class FakeConfig implements LegacyConfigAccessor {
+  private folder: Record<string, unknown> = {};
   private workspace: Record<string, unknown> = {};
   private global: Record<string, unknown> = {};
+
+  setFolder(section: string, value: unknown): void {
+    this.folder[section] = value;
+  }
 
   setWorkspace(section: string, value: unknown): void {
     this.workspace[section] = value;
@@ -24,6 +29,9 @@ class FakeConfig implements LegacyConfigAccessor {
   }
 
   get<T>(section: string, defaultValue: T): T {
+    if (Object.prototype.hasOwnProperty.call(this.folder, section)) {
+      return this.folder[section] as T;
+    }
     if (Object.prototype.hasOwnProperty.call(this.workspace, section)) {
       return this.workspace[section] as T;
     }
@@ -33,8 +41,15 @@ class FakeConfig implements LegacyConfigAccessor {
     return defaultValue;
   }
 
-  inspect<T>(section: string): { workspaceValue?: T; globalValue?: T } | undefined {
+  inspect<T>(section: string): {
+    workspaceFolderValue?: T;
+    workspaceValue?: T;
+    globalValue?: T;
+  } | undefined {
     return {
+      workspaceFolderValue: Object.prototype.hasOwnProperty.call(this.folder, section)
+        ? (this.folder[section] as T)
+        : undefined,
       workspaceValue: Object.prototype.hasOwnProperty.call(this.workspace, section)
         ? (this.workspace[section] as T)
         : undefined,
@@ -45,7 +60,12 @@ class FakeConfig implements LegacyConfigAccessor {
   }
 
   async update(section: string, value: unknown, target: ConfigurationTarget): Promise<void> {
-    const bag = target === ConfigurationTarget.Workspace ? this.workspace : this.global;
+    const bag =
+      target === ConfigurationTarget.WorkspaceFolder
+        ? this.folder
+        : target === ConfigurationTarget.Workspace
+          ? this.workspace
+          : this.global;
     if (value === undefined) {
       delete bag[section];
     } else {
@@ -54,6 +74,10 @@ class FakeConfig implements LegacyConfigAccessor {
   }
 
   /** Inspect the underlying state from a test (escape hatch). */
+  rawFolder(section: string): unknown {
+    return this.folder[section];
+  }
+
   rawWorkspace(section: string): unknown {
     return this.workspace[section];
   }
@@ -103,6 +127,24 @@ describe('parseCustomHeadersJson', () => {
   test('drops entries with empty names', () => {
     const result = parseCustomHeadersJson('{"":"x","B":"y"}');
     assert.deepEqual(result, { B: 'y' });
+  });
+
+  test('drops invalid, injected, and transport-controlled headers', () => {
+    const result = parseCustomHeadersJson(JSON.stringify({
+      Safe: 'yes',
+      'Bad Header': 'no',
+      Injected: 'value\r\nHost: attacker.example',
+      Host: 'attacker.example',
+      'Content-Length': '1',
+      constructor: 'pollute',
+      prototype: 'pollute',
+    }));
+    const withProto = JSON.parse(
+      '{"Safe":"yes","__proto__":"pollute"}'
+    ) as Record<string, unknown>;
+    assert.deepEqual(result, { Safe: 'yes' });
+    assert.deepEqual(parseCustomHeadersJson(JSON.stringify(withProto)), { Safe: 'yes' });
+    assert.equal(({} as { pollute?: string }).pollute, undefined);
   });
 
   test('returns empty object for malformed JSON without throwing', () => {
@@ -170,6 +212,21 @@ describe('migrateLegacySecrets', () => {
     assert.equal(config.rawGlobal('apiKey'), undefined);
     // Workspace value is what `get` returns when set, so that's the one that got captured.
     assert.equal(secrets.raw(SECRET_KEYS.apiKey), 'workspace-key');
+  });
+
+  test('uses and clears a folder-scoped legacy secret before wider scopes', async () => {
+    const config = new FakeConfig();
+    config.setFolder('apiKey', 'folder-key');
+    config.setWorkspace('apiKey', 'workspace-key');
+    config.setGlobal('apiKey', 'global-key');
+    const secrets = new FakeSecrets();
+
+    await migrateLegacySecrets(config, secrets);
+
+    assert.equal(secrets.raw(SECRET_KEYS.apiKey), 'folder-key');
+    assert.equal(config.rawFolder('apiKey'), undefined);
+    assert.equal(config.rawWorkspace('apiKey'), undefined);
+    assert.equal(config.rawGlobal('apiKey'), undefined);
   });
 
   test('does not overwrite an existing secret', async () => {

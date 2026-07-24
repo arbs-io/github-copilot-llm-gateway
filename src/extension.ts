@@ -2,9 +2,8 @@ import * as vscode from 'vscode';
 import { GatewayProvider } from './provider/gatewayProvider';
 import { GatewayInlineCompletionProvider } from './completions/inlineCompletionProvider';
 import { StatusBarManager } from './status/statusBarManager';
+import { HealthMonitor } from './status/healthMonitor';
 import { registerCommands } from './commands';
-
-const STATUS_BAR_PROBE_DELAY_MS = 1500;
 
 /**
  * Extension activation. Async so we can pull the API key + custom headers
@@ -80,32 +79,47 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
    * status bar. Uses the provider's cached fetch so it doesn't double-hit the
    * server when VS Code is already asking for models.
    */
-  const refreshStatusBar = async (): Promise<void> => {
+  const probeStatusBar = async (signal?: AbortSignal): Promise<boolean> => {
     const cts = new vscode.CancellationTokenSource();
+    const cancel = (): void => cts.cancel();
+    if (signal?.aborted) {
+      cts.dispose();
+      return false;
+    }
+    signal?.addEventListener('abort', cancel, { once: true });
     try {
       const models = await provider.provideLanguageModelChatInformation(
         { silent: true },
         cts.token
       );
+      if (signal?.aborted) { return false; }
       if (models.length > 0) {
         statusManager.setIdle(models.map((m) => m.id));
       } else {
         statusManager.setNoModels();
       }
+      return true;
     } catch (error) {
+      if (signal?.aborted) { return false; }
       statusManager.setError(error instanceof Error ? error.message : String(error));
+      return false;
     } finally {
+      signal?.removeEventListener('abort', cancel);
       cts.dispose();
     }
   };
 
-  // Initial silent probe shortly after activation, once VS Code has settled.
-  // The timer is registered as a disposable so it can't fire into a
-  // disposed provider if the extension is deactivated in the interim.
-  const initialProbeTimer = setTimeout(() => {
-    void refreshStatusBar();
-  }, STATUS_BAR_PROBE_DELAY_MS);
-  context.subscriptions.push({ dispose: () => clearTimeout(initialProbeTimer) });
+  // Manual refreshes reuse the same silent probe but are not part of the
+  // monitor's failure history.
+  const refreshStatusBar = async (): Promise<void> => {
+    await probeStatusBar();
+  };
+
+  // Start after the same 1.5s activation delay as the original one-shot
+  // probe. Healthy gateways are sampled once a minute; failures back off from
+  // 30s to five minutes. The monitor owns cancellation and never overlaps a
+  // slow probe with the next scheduled run.
+  context.subscriptions.push(new HealthMonitor({ probe: probeStatusBar }));
 
   registerCommands(context, provider, statusManager, refreshStatusBar);
 }

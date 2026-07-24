@@ -14,12 +14,22 @@ function baseConfig(overrides: Partial<GatewayConfig> = {}): GatewayConfig {
     serverUrl: 'http://localhost:8000',
     apiKey: '',
     requestTimeout: 60000,
+    streamIdleTimeout: 120000,
     defaultMaxTokens: 128000,
     defaultMaxOutputTokens: 4096,
+    maxAgentInputTokens: 65536,
     enableImageInput: true,
     enableToolCalling: true,
     parallelToolCalling: true,
     agentTemperature: 0,
+    operatingProfile: 'grounded',
+    pinnedTools: ['memory'],
+    verboseDiagnostics: false,
+    maxToolsPerRequest: 32,
+    maxToolSchemaTokens: 8192,
+    maxToolResultCharacters: 4000,
+    maxConsecutiveToolCalls: 16,
+    maxRepeatedToolCallCount: 4,
     verboseLogging: false,
     customHeaders: {},
     extraModelOptions: {},
@@ -66,7 +76,53 @@ describe('validateGatewayConfig', () => {
   test('falls back to localhost on an unparseable server URL', () => {
     const { config, issues } = validateGatewayConfig(baseConfig({ serverUrl: 'not a url' }));
     assert.equal(config.serverUrl, FALLBACK_SERVER_URL);
-    assert.deepEqual(issues, [{ kind: 'invalidServerUrl', url: 'not a url' }]);
+    assert.deepEqual(issues, [{ kind: 'invalidServerUrl' }]);
+  });
+
+  test('falls back when a server URL has an unsafe secret-bearing origin', () => {
+    for (const serverUrl of [
+      'file:///tmp/gateway',
+      'https://user:secret@gateway.example',
+      'https://gateway.example?token=secret',
+      'https://gateway.example#fragment',
+    ]) {
+      const { config, issues } = validateGatewayConfig(baseConfig({ serverUrl }));
+      assert.equal(config.serverUrl, FALLBACK_SERVER_URL);
+      assert.deepEqual(issues, [{ kind: 'invalidServerUrl' }]);
+    }
+  });
+
+  test('validates hardening integer settings and operating profile', () => {
+    const { config, issues } = validateGatewayConfig(
+      baseConfig({
+        streamIdleTimeout: 999,
+        maxAgentInputTokens: 0,
+        maxToolsPerRequest: 1.5,
+        operatingProfile: 'invalid' as GatewayConfig['operatingProfile'],
+      })
+    );
+
+    assert.equal(config.streamIdleTimeout, 120000);
+    assert.equal(config.maxAgentInputTokens, 65536);
+    assert.equal(config.maxToolsPerRequest, 32);
+    assert.equal(config.operatingProfile, 'grounded');
+    assert.deepEqual(
+      issues.map((issue) => issue.kind),
+      [
+        'invalidIntegerSetting',
+        'invalidIntegerSetting',
+        'invalidIntegerSetting',
+        'invalidOperatingProfile',
+      ]
+    );
+  });
+
+  test('sanitizes and de-duplicates pinned tool names', () => {
+    const { config, issues } = validateGatewayConfig(
+      baseConfig({ pinnedTools: [' memory ', '', 'memory', 'read_file'] })
+    );
+    assert.deepEqual(config.pinnedTools, ['memory', 'read_file']);
+    assert.deepEqual(issues, [{ kind: 'invalidPinnedTools' }]);
   });
 
   test('adjusts defaultMaxOutputTokens when it meets or exceeds defaultMaxTokens', () => {

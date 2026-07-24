@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { GatewayProvider } from '../provider/gatewayProvider';
 import { editCustomHeadersFlow } from './customHeaders';
+import { validateServerUrl } from '../config/serverUrl';
 
 /**
  * "Configure Server" flow — triggered by the "Add Models..." dropdown via the
@@ -22,15 +23,13 @@ export async function configureServerFlow(
     placeHolder: 'http://localhost:8000',
     ignoreFocusOut: true,
     validateInput: (value) => {
-      try {
-        new URL(value);
-        return undefined;
-      } catch {
-        return 'Please enter a valid URL';
-      }
+      const result = validateServerUrl(value);
+      return result.ok ? undefined : result.error;
     },
   });
   if (url === undefined) { return; } // cancelled
+  const normalizedUrl = validateServerUrl(url);
+  if (!normalizedUrl.ok) { return; }
 
   const apiKey = await vscode.window.showInputBox({
     title: 'LLM Gateway — API Key',
@@ -48,7 +47,7 @@ export async function configureServerFlow(
   const target = await pickConfigurationTarget(config);
   if (target === undefined) { return; } // cancelled
 
-  await config.update('serverUrl', url, target);
+  await config.update('serverUrl', normalizedUrl.value, target);
   await provider.setApiKey(apiKey);
 
   // The config-change listener handles reloadConfig + model refresh

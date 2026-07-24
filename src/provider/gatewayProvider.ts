@@ -141,7 +141,11 @@ export class GatewayProvider
     });
     this.configService = new ConfigService({
       getApiKey: () =>
-        resolveApiKey(this.frameworkOverride, this.secretsManager.getCache().apiKey),
+        resolveApiKey(
+          this.frameworkOverride,
+          this.secretsManager.getCache().apiKey,
+          this.hasWorkspaceServerOverride()
+        ),
       getCustomHeaders: () => this.secretsManager.getCache().customHeaders,
       log,
       promptOpenSettings: (message) => promptOpenSettings(message, log),
@@ -212,6 +216,16 @@ export class GatewayProvider
           );
         });
       })
+    );
+  }
+
+  private hasWorkspaceServerOverride(): boolean {
+    const inspection = vscode.workspace
+      .getConfiguration('github.copilot.llm-gateway')
+      .inspect<string>('serverUrl');
+    return (
+      inspection?.workspaceFolderValue !== undefined ||
+      inspection?.workspaceValue !== undefined
     );
   }
 

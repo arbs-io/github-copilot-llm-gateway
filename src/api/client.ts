@@ -13,6 +13,8 @@ import {
   ToolCallAccumulator,
   ToolCallDelta,
 } from './toolCallAccumulator';
+import { IncrementalStreamParser, StreamRecord } from './streamParser';
+import { filterCustomHeaders } from '../config/customHeaders';
 
 /**
  * Trim trailing slashes and a trailing `/v1` (or `/openai/v1`) segment so the
@@ -53,10 +55,8 @@ export function buildHeaders(
     headers['Authorization'] = `Bearer ${key}`;
   }
   if (customHeaders) {
-    for (const [name, value] of Object.entries(customHeaders)) {
-      if (typeof value === 'string' && name.length > 0) {
-        headers[name] = value;
-      }
+    for (const [name, value] of Object.entries(filterCustomHeaders(customHeaders))) {
+      headers[name] = value;
     }
   }
   return headers;
@@ -117,6 +117,16 @@ interface ServerErrorPayload {
 
 export type GatewayLogger = (message: string) => void;
 
+interface StreamState {
+  terminal: boolean;
+}
+
+interface ParsedChoiceOutput {
+  content: string;
+  reasoningContent: string;
+  finishedToolCalls: AccumulatedToolCall[];
+}
+
 /**
  * Timeout for the one-shot Ollama `GET /api/version` detection probe. Kept
  * well below `requestTimeout` so a non-Ollama server that hangs on unknown
@@ -131,9 +141,29 @@ const DISCOVERY_PROBE_TIMEOUT_MS = 3000;
  */
 const DISCOVERY_SHOW_TIMEOUT_MS = 5000;
 
-const SSE_DATA_PREFIX = 'data: ';
-const SSE_DONE_LINE = 'data: [DONE]';
 const ERROR_PREFIX = 'Inference server reported an error mid-stream: ';
+const MAX_ERROR_BODY_BYTES = 65_536;
+const MAX_ERROR_DETAIL_CHARACTERS = 1_000;
+const MAX_JSON_RESPONSE_BYTES = 16_777_216;
+
+export class ResponseBodyLimitError extends Error {
+  public readonly code = 'RESPONSE_BODY_LIMIT_EXCEEDED';
+
+  constructor(public readonly limit: number) {
+    super(`The inference server response exceeded the body limit of ${limit} bytes.`);
+    this.name = 'ResponseBodyLimitError';
+  }
+}
+
+export class GatewayPartialStreamError extends Error {
+  constructor(message: string, cause?: unknown) {
+    super(message);
+    this.name = 'GatewayPartialStreamError';
+    if (cause !== undefined) {
+      (this as Error & { cause?: unknown }).cause = cause;
+    }
+  }
+}
 
 /**
  * Lifecycle handles for the AbortController + the two timers used by a
@@ -158,7 +188,7 @@ interface StreamTimers {
 async function assertChatStreamResponseOk(response: Response): Promise<void> {
   if (response.ok && response.body) { return; }
   if (!response.ok) {
-    const errorText = await response.text();
+    const errorText = await readSafeErrorBody(response);
     throw new Error(`Chat completion failed: ${response.status} ${response.statusText} - ${errorText}`);
   }
   throw new Error('Response body is null');
@@ -173,13 +203,13 @@ async function assertChatStreamResponseOk(response: Response): Promise<void> {
  */
 export function describeFetchError(error: unknown): string {
   if (!(error instanceof Error)) {
-    return String(error);
+    return sanitizeErrorDetail(String(error));
   }
   const cause = (error as { cause?: unknown }).cause;
   if (cause instanceof Error && cause.message && !error.message.includes(cause.message)) {
-    return `${error.message}: ${cause.message}`;
+    return sanitizeErrorDetail(`${error.message}: ${cause.message}`);
   }
-  return error.message;
+  return sanitizeErrorDetail(error.message);
 }
 
 /**
@@ -249,25 +279,29 @@ export class GatewayClient {
     isLast: boolean,
     cancellationToken?: vscode.CancellationToken
   ): Promise<OpenAIModelsResponse | undefined> {
-    const response = await this.fetchWithTimeout(url, {
-      method: 'GET',
-      headers: this.getHeaders(),
-    }, cancellationToken);
+    return this.fetchWithTimeout(
+      url,
+      {
+        method: 'GET',
+        headers: this.getHeaders(),
+      },
+      async (response) => {
+        if (response.ok) {
+          return readJsonResponse<OpenAIModelsResponse>(response);
+        }
+        if (response.status === 404 && !isLast) {
+          await response.body?.cancel().catch(() => undefined);
+          this.log(`Models endpoint not found at ${url}, trying fallback...`);
+          return undefined;
+        }
 
-    if (response.ok) {
-      return await response.json();
-    }
-
-    if (response.status === 404 && !isLast) {
-      this.log(`Models endpoint not found at ${url}, trying fallback...`);
-      return undefined;
-    }
-
-    const bodyText = await response.text().catch(() => '');
-    const truncated = bodyText.length > 200 ? bodyText.slice(0, 200) + '...' : bodyText;
-    const suffix = truncated ? ' — ' + truncated : '';
-    throw new Error(
-      `Failed to fetch models from ${url}: ${response.status} ${response.statusText}${suffix}`
+        const detail = await readSafeErrorBody(response);
+        const suffix = detail ? ` — ${detail}` : '';
+        throw new Error(
+          `Failed to fetch models from ${url}: ${response.status} ${response.statusText}${suffix}`
+        );
+      },
+      cancellationToken
     );
   }
 
@@ -286,6 +320,8 @@ export class GatewayClient {
     const url = `${normalizeBaseUrl(this.config.serverUrl)}/v1/chat/completions`;
     const accumulator = new ToolCallAccumulator();
     const timers = this.createStreamTimers(cancellationToken);
+    const state: StreamState = { terminal: false };
+    let emittedVisibleOutput = false;
 
     try {
       const response = await fetch(url, {
@@ -310,13 +346,44 @@ export class GatewayClient {
 
       await assertChatStreamResponseOk(response);
 
-      yield* this.readChatStreamChunks(response.body!, accumulator, cancellationToken, timers.resetInactivity);
+      for await (const chunk of this.readChatStreamChunks(
+        response.body!,
+        accumulator,
+        state,
+        cancellationToken,
+        timers.resetInactivity
+      )) {
+        emittedVisibleOutput ||= hasVisibleOutput(chunk);
+        yield chunk;
+      }
 
-      const remaining = accumulator.drain(true);
-      if (remaining.length > 0) {
-        yield { content: '', reasoning_content: '', tool_calls: [], finished_tool_calls: remaining };
+      if (cancellationToken.isCancellationRequested) {
+        return;
+      }
+
+      if (!state.terminal) {
+        if (emittedVisibleOutput) {
+          throw new GatewayPartialStreamError(
+            'The inference server closed the stream without a terminal finish signal. Partial output was preserved.'
+          );
+        }
+        throw new Error(
+          'The inference server closed the stream without a terminal finish signal. Pending output was discarded.'
+        );
       }
     } catch (error) {
+      if (cancellationToken.isCancellationRequested) {
+        return;
+      }
+      if (error instanceof GatewayPartialStreamError) {
+        throw error;
+      }
+      if (emittedVisibleOutput) {
+        throw new GatewayPartialStreamError(
+          'The connection dropped before the model finished streaming. Partial output was preserved.',
+          error
+        );
+      }
       if (error instanceof Error) {
         throw new Error(`Chat completion request failed: ${describeFetchError(error)}`);
       }
@@ -335,32 +402,14 @@ export class GatewayClient {
   private async *readChatStreamChunks(
     body: ReadableStream<Uint8Array>,
     accumulator: ToolCallAccumulator,
+    state: StreamState,
     cancellationToken: vscode.CancellationToken,
     resetInactivity: () => void
   ): AsyncGenerator<GatewayStreamChunk, void, unknown> {
-    const reader = body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-
-    while (true) {
-      if (cancellationToken.isCancellationRequested) {
-        reader.cancel();
-        return;
-      }
-
-      const { done, value } = await reader.read();
-      if (done) { return; }
-
-      resetInactivity();
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() ?? '';
-
-      for (const line of lines) {
-        const result = this.processSSELine(line, accumulator);
-        if (result) { yield result; }
-      }
+    const records = parseResponseBody(body, cancellationToken, resetInactivity);
+    for await (const record of records) {
+      const result = this.processStreamRecord(record, accumulator, state);
+      if (result) { yield result; }
     }
   }
 
@@ -374,10 +423,17 @@ export class GatewayClient {
     const controller = new AbortController();
     const cancelSub = cancellationToken.onCancellationRequested(() => controller.abort());
     const headerTimeoutId = setTimeout(() => controller.abort(), this.config.requestTimeout);
+    const configuredStreamTimeout = this.config.streamIdleTimeout;
+    const streamIdleTimeout =
+      typeof configuredStreamTimeout === 'number' &&
+      Number.isFinite(configuredStreamTimeout) &&
+      configuredStreamTimeout > 0
+        ? configuredStreamTimeout
+        : this.config.requestTimeout;
     let inactivityTimeoutId: ReturnType<typeof setTimeout> | undefined;
     const resetInactivity = (): void => {
       if (inactivityTimeoutId) { clearTimeout(inactivityTimeoutId); }
-      inactivityTimeoutId = setTimeout(() => controller.abort(), this.config.requestTimeout);
+      inactivityTimeoutId = setTimeout(() => controller.abort(), streamIdleTimeout);
     };
     return {
       controller,
@@ -395,37 +451,62 @@ export class GatewayClient {
   }
 
   /**
-   * Process one SSE line. Returns a chunk to yield, or null if there's
-   * nothing to emit. Throws if the server sent an inline error payload —
-   * the caller can then surface a real error instead of an empty stream.
+   * Process one framed SSE/NDJSON record. Pending tool calls are released only
+   * after a protocol terminal signal so a clean-but-truncated EOF cannot
+   * execute incomplete model output.
    */
-  private processSSELine(line: string, accumulator: ToolCallAccumulator): GatewayStreamChunk | null {
-    const trimmed = line.trim();
-    if (trimmed === '' || trimmed === SSE_DONE_LINE) { return null; }
-    if (trimmed.startsWith('event:')) { return null; }
-    if (!trimmed.startsWith(SSE_DATA_PREFIX)) { return null; }
-
-    const data = trimmed.slice(SSE_DATA_PREFIX.length);
+  private processStreamRecord(
+    record: StreamRecord,
+    accumulator: ToolCallAccumulator,
+    state: StreamState
+  ): GatewayStreamChunk | null {
+    if (record.done) {
+      state.terminal = true;
+      return toolCallOnlyChunk(accumulator.drain(true));
+    }
+    if (record.data.length === 0) {
+      return null;
+    }
 
     let parsed: unknown;
     try {
-      parsed = JSON.parse(data);
+      parsed = JSON.parse(record.data);
     } catch {
-      this.log(`Failed to parse SSE chunk: ${data}`);
-      return null;
+      throw new Error('The inference server returned a malformed streamed JSON payload.');
     }
-    if (!parsed || typeof parsed !== 'object') { return null; }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('The inference server returned an unsupported streamed payload.');
+    }
 
     const obj = parsed as Record<string, unknown>;
 
-    // Inline error payload: `{ "error": { "message": "..." } }`. Distinguished
-    // from a normal chunk (which has `choices`).
-    if ('error' in obj && !('choices' in obj)) {
-      const message = extractServerErrorMessage(obj as unknown as ServerErrorPayload);
+    // Inline error payload: `{ "error": { "message": "..." } }`. HTTP status
+    // remains 200 on several OpenAI-compatible gateways, so the payload is
+    // authoritative even if a proxy also left a `choices` field attached.
+    if ('error' in obj) {
+      const message = sanitizeErrorDetail(
+        extractServerErrorMessage(obj as unknown as ServerErrorPayload)
+      );
       throw new Error(`${ERROR_PREFIX}${message}`);
     }
 
-    return this.dispatchParsedChunk(obj, accumulator);
+    state.terminal ||= hasTerminalSignal(obj);
+    const chunk = this.dispatchParsedChunk(obj, accumulator);
+    if (!state.terminal) {
+      return chunk;
+    }
+
+    const remaining = accumulator.drain(true);
+    if (remaining.length === 0) {
+      return chunk;
+    }
+    if (!chunk) {
+      return toolCallOnlyChunk(remaining);
+    }
+    return {
+      ...chunk,
+      finished_tool_calls: [...chunk.finished_tool_calls, ...remaining],
+    };
   }
 
   private dispatchParsedChunk(
@@ -433,60 +514,71 @@ export class GatewayClient {
     accumulator: ToolCallAccumulator
   ): GatewayStreamChunk | null {
     const usage = extractUsage(obj.usage);
-    const choices = Array.isArray(obj.choices) ? obj.choices : undefined;
-    const choice = choices?.[0] as Record<string, unknown> | undefined;
+    if (Array.isArray(obj.choices)) {
+      return this.dispatchOpenAIChoices(obj, obj.choices, accumulator, usage);
+    }
 
-    // OpenAI's stream-with-include_usage convention puts the totals on a
-    // trailing chunk with an empty `choices` array — surface it as a
-    // usage-only stream chunk so the provider can forward it to the chat
-    // context-window widget (issue #24).
-    if (!choice) {
-      if (!usage) { return null; }
+    if (isRecord(obj.message)) {
+      return this.dispatchOllamaMessage(obj, obj.message, accumulator, usage);
+    }
+
+    if (typeof obj.response === 'string') {
       return {
-        content: '',
-        reasoning_content: '',
+        content: obj.response,
+        reasoning_content: firstString(obj.reasoning_content, obj.reasoning),
         tool_calls: [],
         finished_tool_calls: [],
-        usage,
-      };
-    }
-
-    const chunk: ParsedChunk = {
-      delta: choice.delta as ParsedChunk['delta'],
-      message: choice.message as ParsedChunk['message'],
-      finishReason: choice.finish_reason as string | undefined,
-      id: typeof obj.id === 'string' ? obj.id : undefined,
-    };
-
-    if (chunk.delta) {
-      const { content, reasoningContent, finishedToolCalls } = this.applyDeltaChoice(chunk, accumulator);
-      return {
-        content,
-        reasoning_content: reasoningContent,
-        tool_calls: [],
-        finished_tool_calls: finishedToolCalls,
-        ...(usage ? { usage } : {}),
-      };
-    }
-    if (chunk.message) {
-      const { content, reasoningContent, finishedToolCalls } = this.applyMessageChoice(chunk, accumulator);
-      return {
-        content,
-        reasoning_content: reasoningContent,
-        tool_calls: [],
-        finished_tool_calls: finishedToolCalls,
         ...(usage ? { usage } : {}),
       };
     }
     return null;
   }
 
+  private dispatchOpenAIChoices(
+    payload: Record<string, unknown>,
+    choices: unknown[],
+    accumulator: ToolCallAccumulator,
+    usage: OpenAIUsage | undefined
+  ): GatewayStreamChunk | null {
+    const choice = choices[0];
+
+    // OpenAI's stream-with-include_usage convention puts the totals on a
+    // trailing chunk with an empty `choices` array — surface it as a
+    // usage-only stream chunk so the provider can forward it to the chat
+    // context-window widget (issue #24).
+    if (!isRecord(choice)) {
+      return usage ? toGatewayChunk(emptyChoiceOutput(), usage) : null;
+    }
+
+    const parsed = toParsedChoice(payload, choice);
+    if (parsed.delta) {
+      return toGatewayChunk(this.applyDeltaChoice(parsed, accumulator), usage);
+    }
+    if (parsed.message) {
+      return toGatewayChunk(this.applyMessageChoice(parsed, accumulator), usage);
+    }
+    return null;
+  }
+
+  private dispatchOllamaMessage(
+    payload: Record<string, unknown>,
+    message: Record<string, unknown>,
+    accumulator: ToolCallAccumulator,
+    usage: OpenAIUsage | undefined
+  ): GatewayStreamChunk {
+    const parsed: ParsedChunk = {
+      message: message as ParsedChunk['message'],
+      finishReason: readTopLevelFinishReason(payload),
+      id: typeof payload.id === 'string' ? payload.id : undefined,
+    };
+    return toGatewayChunk(this.applyMessageChoice(parsed, accumulator), usage);
+  }
+
   private applyDeltaChoice(
     parsed: ParsedChunk,
     accumulator: ToolCallAccumulator
-  ): { content: string; reasoningContent: string; finishedToolCalls: AccumulatedToolCall[] } {
+  ): ParsedChoiceOutput {
     const delta = parsed.delta!;
-    const finishedToolCalls: AccumulatedToolCall[] = [];
 
     if (Array.isArray(delta.tool_calls)) {
       for (const tc of delta.tool_calls) {
@@ -498,39 +590,33 @@ export class GatewayClient {
       accumulator.applyLegacy(delta.function_call, parsed.id ?? '');
     }
 
-    if (parsed.finishReason === 'tool_calls' || parsed.finishReason === 'function_call') {
-      finishedToolCalls.push(...accumulator.drain());
-    }
-
     return {
       content: delta.content ?? '',
       reasoningContent: delta.reasoning_content ?? delta.reasoning ?? '',
-      finishedToolCalls,
+      finishedToolCalls: [],
     };
   }
 
   private applyMessageChoice(
     parsed: ParsedChunk,
     accumulator: ToolCallAccumulator
-  ): { content: string; reasoningContent: string; finishedToolCalls: AccumulatedToolCall[] } {
+  ): ParsedChoiceOutput {
     const message = parsed.message!;
-    const finishedToolCalls: AccumulatedToolCall[] = [];
 
     if (Array.isArray(message.tool_calls)) {
-      finishedToolCalls.push(...accumulator.applyComplete(message.tool_calls));
+      accumulator.accumulateComplete(message.tool_calls);
     }
 
     if (message.function_call) {
-      const completed = accumulator.applyComplete([
+      accumulator.accumulateComplete([
         { index: 0, id: parsed.id, function: message.function_call },
       ]);
-      finishedToolCalls.push(...completed);
     }
 
     return {
       content: message.content ?? message.text ?? '',
       reasoningContent: message.reasoning_content ?? message.reasoning ?? '',
-      finishedToolCalls,
+      finishedToolCalls: [],
     };
   }
 
@@ -546,28 +632,28 @@ export class GatewayClient {
     timeoutMs: number
   ): Promise<OpenAICompletionResponse> {
     const url = `${normalizeBaseUrl(this.config.serverUrl)}/v1/completions`;
-    const response = await this.fetchWithTimeout(
+    return this.fetchWithTimeout(
       url,
       {
         method: 'POST',
         headers: { ...this.getHeaders(), 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...request, stream: false }),
       },
+      async (response) => {
+        if (!response.ok) {
+          const body = await readSafeErrorBody(response);
+          const suffix = body ? ` — ${body}` : '';
+          throw new CompletionHttpError(
+            `Completion failed: ${response.status} ${response.statusText}${suffix}`,
+            response.status,
+            body
+          );
+        }
+        return readJsonResponse<OpenAICompletionResponse>(response);
+      },
       cancellationToken,
       timeoutMs
     );
-
-    if (!response.ok) {
-      const bodyText = await response.text().catch(() => '');
-      const truncated = bodyText.length > 200 ? bodyText.slice(0, 200) + '...' : bodyText;
-      const suffix = truncated ? ' — ' + truncated : '';
-      throw new CompletionHttpError(
-        `Completion failed: ${response.status} ${response.statusText}${suffix}`,
-        response.status,
-        bodyText
-      );
-    }
-    return await response.json();
   }
 
   /**
@@ -579,17 +665,22 @@ export class GatewayClient {
   public async probeOllama(cancellationToken?: vscode.CancellationToken): Promise<boolean> {
     const base = normalizeBaseUrl(this.config.serverUrl);
     try {
-      const response = await this.fetchWithTimeout(
+      return await this.fetchWithTimeout(
         `${base}/api/version`,
         { method: 'GET', headers: this.getHeaders() },
+        async (response) => {
+          if (!response.ok) {
+            await response.body?.cancel().catch(() => undefined);
+            return false;
+          }
+          const body = await readJsonResponse<unknown>(response);
+          return (
+            typeof body === 'object' && body !== null &&
+            typeof (body as { version?: unknown }).version === 'string'
+          );
+        },
         cancellationToken,
         DISCOVERY_PROBE_TIMEOUT_MS
-      );
-      if (!response.ok) { return false; }
-      const body: unknown = await response.json();
-      return (
-        typeof body === 'object' && body !== null &&
-        typeof (body as { version?: unknown }).version === 'string'
       );
     } catch {
       return false;
@@ -608,18 +699,23 @@ export class GatewayClient {
   ): Promise<unknown> {
     const base = normalizeBaseUrl(this.config.serverUrl);
     try {
-      const response = await this.fetchWithTimeout(
+      return await this.fetchWithTimeout(
         `${base}/api/show`,
         {
           method: 'POST',
           headers: { ...this.getHeaders(), 'Content-Type': 'application/json' },
           body: JSON.stringify({ model: modelId }),
         },
+        async (response) => {
+          if (!response.ok) {
+            await response.body?.cancel().catch(() => undefined);
+            return undefined;
+          }
+          return readJsonResponse<unknown>(response);
+        },
         cancellationToken,
         DISCOVERY_SHOW_TIMEOUT_MS
       );
-      if (!response.ok) { return undefined; }
-      return await response.json();
     } catch {
       return undefined;
     }
@@ -636,12 +732,13 @@ export class GatewayClient {
    * like the model list and inline completions. Streaming requests manage
    * their own timers in `streamChatCompletion`.
    */
-  private async fetchWithTimeout(
+  private async fetchWithTimeout<T>(
     url: string,
     options: RequestInit,
+    consume: (response: Response) => Promise<T>,
     cancellationToken?: vscode.CancellationToken,
     timeoutMs?: number
-  ): Promise<Response> {
+  ): Promise<T> {
     const controller = new AbortController();
     const timeoutId = setTimeout(
       () => controller.abort(),
@@ -650,15 +747,116 @@ export class GatewayClient {
     const cancelSub = cancellationToken?.onCancellationRequested(() => controller.abort());
 
     try {
-      return await fetch(url, {
+      const response = await fetch(url, {
         ...options,
         signal: controller.signal,
       });
+      return await consume(response);
     } finally {
       clearTimeout(timeoutId);
       cancelSub?.dispose();
     }
   }
+}
+
+async function readJsonResponse<T>(response: Response): Promise<T> {
+  const { text } = await readBoundedResponseText(response, MAX_JSON_RESPONSE_BYTES, false);
+  return JSON.parse(text) as T;
+}
+
+async function readSafeErrorBody(response: Response): Promise<string> {
+  try {
+    const { text, truncated } = await readBoundedResponseText(
+      response,
+      MAX_ERROR_BODY_BYTES,
+      true
+    );
+    const detail = sanitizeErrorDetail(text);
+    if (!truncated) { return detail; }
+    const separator = detail ? ' ' : '';
+    return `${detail}${separator}[truncated]`;
+  } catch {
+    return '';
+  }
+}
+
+async function readBoundedResponseText(
+  response: Response,
+  maxBytes: number,
+  truncateOnLimit: boolean
+): Promise<{ text: string; truncated: boolean }> {
+  if (!response.body) { return { text: '', truncated: false }; }
+  const declaredLength = Number(response.headers.get('content-length'));
+  if (
+    Number.isFinite(declaredLength) &&
+    declaredLength > maxBytes &&
+    !truncateOnLimit
+  ) {
+    await response.body.cancel().catch(() => undefined);
+    throw new ResponseBodyLimitError(maxBytes);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const pieces: string[] = [];
+  let bytesRead = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        pieces.push(decoder.decode());
+        return { text: pieces.join(''), truncated: false };
+      }
+
+      const remaining = maxBytes - bytesRead;
+      if (value.byteLength > remaining) {
+        if (remaining > 0) {
+          pieces.push(decoder.decode(value.subarray(0, remaining), { stream: true }));
+        }
+        pieces.push(decoder.decode());
+        await reader.cancel().catch(() => undefined);
+        if (!truncateOnLimit) {
+          throw new ResponseBodyLimitError(maxBytes);
+        }
+        return { text: pieces.join(''), truncated: true };
+      }
+      bytesRead += value.byteLength;
+      pieces.push(decoder.decode(value, { stream: true }));
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+function sanitizeErrorDetail(value: string): string {
+  const redacted = redactNamedSecrets(
+    value
+    .replace(
+      /\b(https?:\/\/)[^/\s:@]+:[^/\s@]+@/gi,
+      '$1[redacted]@'
+    )
+    .replace(
+      /(authorization\s*[:=]\s*(?:bearer\s+)?)[^\s,;"'}]+/gi,
+      '$1[redacted]'
+    )
+  )
+    .replace(/[\u0000-\u001F\u007F-\u009F]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return redacted.length > MAX_ERROR_DETAIL_CHARACTERS
+    ? `${redacted.slice(0, MAX_ERROR_DETAIL_CHARACTERS)}…`
+    : redacted;
+}
+
+function redactNamedSecrets(value: string): string {
+  const names = ['api[_ -]?key', 'access[_ -]?token', 'token', 'secret', 'password'];
+  return names.reduce((redacted, name) => {
+    const pattern = new RegExp(
+      `(["']?${name}["']?\\s*[:=]\\s*["']?)[^"',}\\s]+`,
+      'gi'
+    );
+    return redacted.replace(pattern, '$1[redacted]');
+  }, value);
 }
 
 /**
@@ -706,4 +904,143 @@ function extractServerErrorMessage(payload: ServerErrorPayload): string {
     return err.message;
   }
   return JSON.stringify(err);
+}
+
+function hasVisibleOutput(chunk: GatewayStreamChunk): boolean {
+  return (
+    chunk.content.length > 0 ||
+    chunk.reasoning_content.length > 0 ||
+    chunk.finished_tool_calls.length > 0
+  );
+}
+
+function toolCallOnlyChunk(
+  toolCalls: AccumulatedToolCall[]
+): GatewayStreamChunk | null {
+  if (toolCalls.length === 0) {
+    return null;
+  }
+  return {
+    content: '',
+    reasoning_content: '',
+    tool_calls: [],
+    finished_tool_calls: toolCalls,
+  };
+}
+
+async function* parseResponseBody(
+  body: ReadableStream<Uint8Array>,
+  cancellationToken: vscode.CancellationToken,
+  resetInactivity: () => void
+): AsyncGenerator<StreamRecord, void, unknown> {
+  const decoder = new TextDecoder();
+  const parser = new IncrementalStreamParser();
+  const values = readResponseBody(body, cancellationToken, resetInactivity);
+
+  for await (const value of values) {
+    yield* parser.push(decoder.decode(value, { stream: true }));
+  }
+  if (cancellationToken.isCancellationRequested) { return; }
+  yield* parser.push(decoder.decode());
+  yield* parser.flush();
+}
+
+async function* readResponseBody(
+  body: ReadableStream<Uint8Array>,
+  cancellationToken: vscode.CancellationToken,
+  resetInactivity: () => void
+): AsyncGenerator<Uint8Array, void, unknown> {
+  const reader = body.getReader();
+  let reachedEnd = false;
+  try {
+    while (!cancellationToken.isCancellationRequested) {
+      const { done, value } = await reader.read();
+      if (done) {
+        reachedEnd = true;
+        return;
+      }
+      resetInactivity();
+      yield value;
+    }
+    await reader.cancel();
+  } finally {
+    await cancelUnfinishedReader(reader, reachedEnd);
+    reader.releaseLock();
+  }
+}
+
+async function cancelUnfinishedReader(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  reachedEnd: boolean
+): Promise<void> {
+  if (reachedEnd) { return; }
+  try {
+    await reader.cancel();
+  } catch {
+    // The stream may already be aborted or errored.
+  }
+}
+
+function toParsedChoice(
+  payload: Record<string, unknown>,
+  choice: Record<string, unknown>
+): ParsedChunk {
+  return {
+    delta: choice.delta as ParsedChunk['delta'],
+    message: choice.message as ParsedChunk['message'],
+    finishReason: choice.finish_reason as string | undefined,
+    id: typeof payload.id === 'string' ? payload.id : undefined,
+  };
+}
+
+function emptyChoiceOutput(): ParsedChoiceOutput {
+  return { content: '', reasoningContent: '', finishedToolCalls: [] };
+}
+
+function toGatewayChunk(
+  output: ParsedChoiceOutput,
+  usage: OpenAIUsage | undefined
+): GatewayStreamChunk {
+  return {
+    content: output.content,
+    reasoning_content: output.reasoningContent,
+    tool_calls: [],
+    finished_tool_calls: output.finishedToolCalls,
+    ...(usage ? { usage } : {}),
+  };
+}
+
+function firstString(primary: unknown, fallback: unknown): string {
+  if (typeof primary === 'string') { return primary; }
+  return typeof fallback === 'string' ? fallback : '';
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function hasTerminalSignal(payload: Record<string, unknown>): boolean {
+  if (payload.done === true || typeof payload.done_reason === 'string') {
+    return true;
+  }
+
+  if (!Array.isArray(payload.choices)) {
+    return false;
+  }
+  return payload.choices.some((choice) => {
+    if (!choice || typeof choice !== 'object' || Array.isArray(choice)) {
+      return false;
+    }
+    const finishReason = (choice as Record<string, unknown>).finish_reason;
+    return typeof finishReason === 'string' && finishReason.length > 0;
+  });
+}
+
+function readTopLevelFinishReason(
+  payload: Record<string, unknown>
+): string | undefined {
+  if (typeof payload.done_reason === 'string') {
+    return payload.done_reason;
+  }
+  return payload.done === true ? 'stop' : undefined;
 }

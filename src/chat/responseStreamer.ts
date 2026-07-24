@@ -10,6 +10,11 @@
 
 import { ThinkingParser, ThinkingChunk } from './thinking';
 import { OpenAIUsage } from '../api/types';
+import {
+  PreparedToolCall,
+  PreparedToolCallBatch,
+  ToolCallArguments,
+} from './toolArguments';
 
 export interface StreamReporter {
   reportText(text: string): void;
@@ -54,11 +59,37 @@ export interface StreamResponseParams {
   /** Called before reading each chunk; return true to stop early. */
   isCancelled: () => boolean;
   /**
-   * Called with each finished tool call. The callback is responsible for
-   * JSON-repairing the arguments and filling any missing required properties
-   * from the tool's schema.
+   * Preferred execution boundary. It must validate the complete parallel batch
+   * and return either every prepared call or one error. No call is reported
+   * until the whole batch succeeds.
    */
-  resolveToolCallArgs: (toolCall: { id: string; name: string; arguments: string }) => Record<string, unknown>;
+  prepareToolCallBatch?: (toolCalls: readonly ToolCallArguments[]) => PreparedToolCallBatch;
+  /**
+   * Compatibility adapter for callers that prepare one call at a time. The
+   * streamer still resolves every item before reporting the first one.
+   */
+  resolveToolCallArgs?: (toolCall: ToolCallArguments) => Record<string, unknown>;
+}
+
+export class ToolCallBatchError extends Error {
+  constructor(
+    public readonly toolCall: ToolCallArguments,
+    public readonly reason: string
+  ) {
+    super(
+      `Rejected tool call ${safeDiagnostic(toolCall.name, '(unnamed)')} ` +
+      `(${safeDiagnostic(toolCall.id, 'no id')}): ${safeDiagnostic(reason, 'validation failed')}`
+    );
+    this.name = 'ToolCallBatchError';
+  }
+}
+
+function safeDiagnostic(value: string, fallback: string): string {
+  const normalized = value
+    .replace(/[\u0000-\u001F\u007F-\u009F]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return normalized ? normalized.slice(0, 200) : fallback;
 }
 
 const FORCE_CLOSED_THINKING_FALLBACK =
@@ -108,7 +139,7 @@ function processStreamChunk(
   reporter: StreamReporter,
   stats: StreamStats,
   inReasoningField: boolean,
-  resolveToolCallArgs: StreamResponseParams['resolveToolCallArgs']
+  prepareBatch: (toolCalls: readonly ToolCallArguments[]) => PreparedToolCall[]
 ): boolean {
   if (chunk.reasoning_content) {
     stats.hadThinking = true;
@@ -128,10 +159,12 @@ function processStreamChunk(
   }
 
   if (chunk.finished_tool_calls?.length) {
-    for (const toolCall of chunk.finished_tool_calls) {
+    // Prepare first, report second: a malformed/unknown call anywhere in a
+    // parallel batch prevents every call in that batch from executing.
+    const preparedCalls = prepareBatch(chunk.finished_tool_calls);
+    for (const toolCall of preparedCalls) {
       stats.totalToolCalls++;
-      const args = resolveToolCallArgs(toolCall);
-      reporter.reportToolCall(toolCall.id, toolCall.name, args);
+      reporter.reportToolCall(toolCall.id, toolCall.name, toolCall.arguments);
     }
   }
 
@@ -152,7 +185,8 @@ function processStreamChunk(
  * use to decide whether the response was empty and needs an error fallback.
  */
 export async function streamResponse(params: StreamResponseParams): Promise<StreamStats> {
-  const { chunks, reporter, isCancelled, resolveToolCallArgs } = params;
+  const { chunks, reporter, isCancelled } = params;
+  const prepareBatch = buildBatchPreparer(params);
 
   const stats: StreamStats = {
     totalContentLength: 0,
@@ -171,7 +205,7 @@ export async function streamResponse(params: StreamResponseParams): Promise<Stre
       break;
     }
     inReasoningField = processStreamChunk(
-      chunk, parser, reporter, stats, inReasoningField, resolveToolCallArgs
+      chunk, parser, reporter, stats, inReasoningField, prepareBatch
     );
   }
 
@@ -193,6 +227,32 @@ export async function streamResponse(params: StreamResponseParams): Promise<Stre
   }
 
   return stats;
+}
+
+function buildBatchPreparer(
+  params: StreamResponseParams
+): (toolCalls: readonly ToolCallArguments[]) => PreparedToolCall[] {
+  if (params.prepareToolCallBatch) {
+    return (toolCalls) => {
+      const prepared = params.prepareToolCallBatch!(toolCalls);
+      if (prepared.error) {
+        throw new ToolCallBatchError(prepared.error.toolCall, prepared.error.reason);
+      }
+      return prepared.calls;
+    };
+  }
+  if (params.resolveToolCallArgs) {
+    return (toolCalls) =>
+      toolCalls.map((toolCall) => ({
+        id: toolCall.id,
+        name: toolCall.name,
+        arguments: params.resolveToolCallArgs!(toolCall),
+      }));
+  }
+  return (toolCalls) => {
+    const first = toolCalls[0] ?? { id: '', name: '', arguments: '' };
+    throw new ToolCallBatchError(first, 'no tool-call argument preparer was configured');
+  };
 }
 
 /**

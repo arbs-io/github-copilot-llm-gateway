@@ -9,10 +9,13 @@ eslint.config.mjs
 tsconfig.json
 tsconfig.test.json
 out-test/**
+out/**
+!out/extension.js
 node_modules/**
 *.vsix
 .devcontainer/**
 .github/**
+scripts/**
 .claude/**
 **/.DS_Store
 PROJECT_SUMMARY.md

@@ -13,6 +13,16 @@ export interface OpenAIModel {
   context_length?: number;
   /** llama.cpp */
   context_window?: number;
+  /** Optional capability metadata exposed by some OpenAI-compatible gateways. */
+  capabilities?: {
+    tool_calling?: boolean;
+    tools?: boolean;
+    vision?: boolean;
+    [key: string]: unknown;
+  };
+  /** Flat capability aliases used by a few gateways. */
+  tool_calling?: boolean;
+  supports_tools?: boolean;
   /**
    * llama.cpp nests model metadata here. `n_ctx` is the actual serving
    * context (`-c`); `n_ctx_train` the model's training context. In

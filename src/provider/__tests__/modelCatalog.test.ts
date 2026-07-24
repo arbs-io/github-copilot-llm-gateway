@@ -20,12 +20,22 @@ function fakeConfig(overrides: Partial<GatewayConfig> = {}): GatewayConfig {
     serverUrl: 'http://localhost:8000',
     apiKey: '',
     requestTimeout: 60000,
+    streamIdleTimeout: 120000,
     defaultMaxTokens: 128000,
     defaultMaxOutputTokens: 4096,
+    maxAgentInputTokens: 65536,
     enableImageInput: true,
     enableToolCalling: true,
     parallelToolCalling: true,
     agentTemperature: 0,
+    operatingProfile: 'grounded',
+    pinnedTools: ['memory'],
+    verboseDiagnostics: false,
+    maxToolsPerRequest: 32,
+    maxToolSchemaTokens: 8192,
+    maxToolResultCharacters: 4000,
+    maxConsecutiveToolCalls: 16,
+    maxRepeatedToolCallCount: 4,
     verboseLogging: false,
     customHeaders: {},
     extraModelOptions: {},
@@ -233,6 +243,16 @@ describe('ModelCatalog discovery integration', () => {
     const { models } = await h.catalog.getOrFetchModels(fakeToken());
     assert.equal(models[0].capabilities?.toolCalling, true);
     assert.equal(models[0].capabilities?.imageInput, true);
+  });
+
+  test('registers local/qwythos-creative with tool calling when metadata is absent', async () => {
+    const h = makeCatalog({
+      fetchModels: () =>
+        Promise.resolve(modelsResponse({ id: 'local/qwythos-creative' })),
+    });
+    const { models } = await h.catalog.getOrFetchModels(fakeToken());
+    assert.equal(models[0].id, 'local/qwythos-creative');
+    assert.equal(models[0].capabilities?.toolCalling, true);
   });
 
   test('a re-fetch drops discovered data for models the server removed', async () => {

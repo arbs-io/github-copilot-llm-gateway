@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { GatewayProvider } from '../provider/gatewayProvider';
+import { validateCustomHeader } from '../config/customHeaders';
 
 interface HeaderQuickPickItem extends vscode.QuickPickItem {
   action: 'add' | 'edit' | 'clear' | 'done';
@@ -91,9 +92,7 @@ async function addHeader(
     prompt: 'e.g. Authorization, Anthropic-Version, HTTP-Referer',
     ignoreFocusOut: true,
     validateInput: (value) => {
-      if (value.trim().length === 0) { return 'Header name cannot be empty'; }
-      if (/[^\w-]/.test(value)) { return 'Header names typically only contain letters, digits, and dashes'; }
-      return undefined;
+      return validateCustomHeader(value.trim(), '');
     },
   });
   if (!name) { return; }
@@ -102,6 +101,7 @@ async function addHeader(
     prompt: 'Saved to VS Code\'s secret storage',
     password: true,
     ignoreFocusOut: true,
+    validateInput: (candidate) => validateCustomHeader(name.trim(), candidate),
   });
   if (value === undefined) { return; }
   await provider.setCustomHeaders({ ...current, [name.trim()]: value });
@@ -137,6 +137,7 @@ async function editOrDeleteHeader(
     prompt: 'Saved to VS Code\'s secret storage',
     password: true,
     ignoreFocusOut: true,
+    validateInput: (candidate) => validateCustomHeader(name, candidate),
   });
   if (value === undefined) { return; }
   await provider.setCustomHeaders({ ...current, [name]: value });
