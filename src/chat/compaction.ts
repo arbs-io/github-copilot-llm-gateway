@@ -11,6 +11,29 @@ interface ConversationUnit {
   selectable: boolean;
 }
 
+interface UnitSelection {
+  selected: Set<number>;
+  usedTokens: number;
+}
+
+interface SyntheticHistory {
+  messages: OpenAIMessage[];
+  notes: string[];
+}
+
+interface CompactionResultInput {
+  messages: OpenAIMessage[];
+  estimatedInputTokens: number;
+  totalEstimatedTokens: number;
+  selectedOriginalCount: number;
+  originalCount: number;
+  syntheticMessages: OpenAIMessage[];
+  summaryNotes: string[];
+  compacted: boolean;
+  latestGroundedKept: boolean;
+  activeChainKept: boolean;
+}
+
 export interface CompactConversationInput {
   messages: readonly OpenAIMessage[];
   maxInputTokens: number;
@@ -33,7 +56,14 @@ export function compactConversationHistory(
   // The fast path is safe only when the original transcript has no orphaned
   // tool-result messages.
   if (totalEstimatedTokens <= available && units.every((unit) => unit.selectable)) {
-    return result(messages, totalEstimatedTokens, totalEstimatedTokens, messages.length, [], [], {
+    return createCompactionResult({
+      messages,
+      estimatedInputTokens: totalEstimatedTokens,
+      totalEstimatedTokens,
+      selectedOriginalCount: messages.length,
+      originalCount: messages.length,
+      syntheticMessages: [],
+      summaryNotes: [],
       compacted: false,
       latestGroundedKept: findLatestGroundedUnit(units) !== undefined,
       activeChainKept: true,
@@ -44,125 +74,162 @@ export function compactConversationHistory(
   const groundedUnit = findLatestGroundedUnit(units);
   const systemUnit = findFirstRoleUnit(units, messages, 'system');
   const protectedUnits = unique([systemUnit, activeUnit, groundedUnit]);
-  const selected = new Set<number>();
-  let used = 0;
-
-  // Essential units are indivisible. If one cannot fit, it is omitted rather
-  // than leaving an assistant call or tool result orphaned.
-  for (const unitIndex of protectedUnits) {
-    const unit = units[unitIndex];
-    if (unit.selectable && used + unit.tokenCount <= available) {
-      selected.add(unitIndex);
-      used += unit.tokenCount;
-    }
-  }
-
   const reserve = Math.min(available, Math.max(0, input.policy.reserveTokensForSyntheticMessages));
-  const recentBudget = Math.max(used, available - reserve);
-  for (let index = units.length - 1; index >= 0; index--) {
-    const unit = units[index];
-    if (selected.has(index) || !unit.selectable) { continue; }
-    if (used + unit.tokenCount <= recentBudget) {
-      selected.add(index);
-      used += unit.tokenCount;
-    }
-  }
+  const selection = selectConversationUnits(units, protectedUnits, available, reserve);
 
-  const selectedIndices = [...selected]
+  const selectedIndices = [...selection.selected]
     .sort((left, right) => left - right)
     .flatMap((unitIndex) => units[unitIndex].messageIndices);
   const selectedIndexSet = new Set(selectedIndices);
   const omitted = messages.filter((_, index) => !selectedIndexSet.has(index));
-  const synthetic: OpenAIMessage[] = [];
-  const notes: string[] = [];
-  let remaining = Math.max(0, available - used);
-
-  const firstUserIndex = messages.findIndex((message) => message.role === 'user');
-  if (firstUserIndex >= 0 && !selectedIndexSet.has(firstUserIndex)) {
-    const anchor = fitSyntheticMessage(
-      'user',
-      'Task anchor: ',
-      extractText(messages[firstUserIndex].content),
-      input.policy.taskAnchorCharacters,
-      remaining
-    );
-    if (anchor) {
-      synthetic.push(anchor);
-      remaining -= estimateMessageTokens(anchor);
-      notes.push('Preserved the first user objective as a synthetic task anchor.');
-    }
-  }
-
-  if (omitted.length > 0) {
-    const archiveBody = buildArchiveBody(
-      omitted,
-      buildToolNamesByCallId(messages),
-      input.policy.toolResultSummaryCharacters
-    );
-    const archive = fitSyntheticMessage(
-      'user',
-      'Archived history:\n',
-      archiveBody,
-      input.policy.archivedSummaryCharacters,
-      remaining
-    );
-    if (archive) {
-      synthetic.push(archive);
-      remaining -= estimateMessageTokens(archive);
-      notes.push(`Archived ${omitted.length} older message(s) into a deterministic summary.`);
-    }
-  }
+  const synthetic = buildSyntheticHistory(
+    messages,
+    selectedIndexSet,
+    omitted,
+    input.policy,
+    Math.max(0, available - selection.usedTokens)
+  );
 
   const selectedMessages = selectedIndices.map((index) => messages[index]);
   const firstSelectedIsSystem = selectedMessages[0]?.role === 'system';
   const finalMessages = firstSelectedIsSystem
-    ? [selectedMessages[0], ...synthetic, ...selectedMessages.slice(1)]
-    : [...synthetic, ...selectedMessages];
+    ? [selectedMessages[0], ...synthetic.messages, ...selectedMessages.slice(1)]
+    : [...synthetic.messages, ...selectedMessages];
 
-  return result(
-    finalMessages,
-    sumTokens(finalMessages),
+  return createCompactionResult({
+    messages: finalMessages,
+    estimatedInputTokens: sumTokens(finalMessages),
     totalEstimatedTokens,
-    selectedIndices.length,
-    synthetic,
-    notes,
-    {
-      compacted: true,
-      latestGroundedKept: groundedUnit !== undefined && selected.has(groundedUnit),
-      activeChainKept: activeUnit === undefined || selected.has(activeUnit),
-    },
-    messages.length
-  );
+    selectedOriginalCount: selectedIndices.length,
+    originalCount: messages.length,
+    syntheticMessages: synthetic.messages,
+    summaryNotes: synthetic.notes,
+    compacted: true,
+    latestGroundedKept: groundedUnit !== undefined && selection.selected.has(groundedUnit),
+    activeChainKept: activeUnit === undefined || selection.selected.has(activeUnit),
+  });
 }
 
-function result(
-  messages: OpenAIMessage[],
-  estimatedInputTokens: number,
-  totalEstimatedTokens: number,
-  selectedOriginalCount: number,
-  syntheticMessages: OpenAIMessage[],
-  summaryNotes: string[],
-  flags: { compacted: boolean; latestGroundedKept: boolean; activeChainKept: boolean },
-  originalCount = selectedOriginalCount
-): ConversationCompactionResult {
-  const dropped = originalCount - selectedOriginalCount;
+function selectConversationUnits(
+  units: readonly ConversationUnit[],
+  protectedUnits: readonly number[],
+  available: number,
+  reserve: number
+): UnitSelection {
+  const selected = new Set<number>();
+  let usedTokens = selectProtectedUnits(units, protectedUnits, available, selected);
+  const recentBudget = Math.max(usedTokens, available - reserve);
+
+  for (let index = units.length - 1; index >= 0; index--) {
+    const unit = units[index];
+    if (selected.has(index) || !unit.selectable) { continue; }
+    if (usedTokens + unit.tokenCount > recentBudget) { continue; }
+    selected.add(index);
+    usedTokens += unit.tokenCount;
+  }
+  return { selected, usedTokens };
+}
+
+function selectProtectedUnits(
+  units: readonly ConversationUnit[],
+  protectedUnits: readonly number[],
+  available: number,
+  selected: Set<number>
+): number {
+  let usedTokens = 0;
+  // Essential units are indivisible. If one cannot fit, it is omitted rather
+  // than leaving an assistant call or tool result orphaned.
+  for (const unitIndex of protectedUnits) {
+    const unit = units[unitIndex];
+    if (!unit.selectable || usedTokens + unit.tokenCount > available) { continue; }
+    selected.add(unitIndex);
+    usedTokens += unit.tokenCount;
+  }
+  return usedTokens;
+}
+
+function buildSyntheticHistory(
+  messages: readonly OpenAIMessage[],
+  selectedIndices: ReadonlySet<number>,
+  omitted: readonly OpenAIMessage[],
+  policy: CompactionPolicy,
+  tokenBudget: number
+): SyntheticHistory {
+  const synthetic: OpenAIMessage[] = [];
+  const notes: string[] = [];
+  const remaining = addTaskAnchor(messages, selectedIndices, policy, tokenBudget, synthetic, notes);
+  addArchiveSummary(messages, omitted, policy, remaining, synthetic, notes);
+  return { messages: synthetic, notes };
+}
+
+function addTaskAnchor(
+  messages: readonly OpenAIMessage[],
+  selectedIndices: ReadonlySet<number>,
+  policy: CompactionPolicy,
+  tokenBudget: number,
+  synthetic: OpenAIMessage[],
+  notes: string[]
+): number {
+  const firstUserIndex = messages.findIndex((message) => message.role === 'user');
+  if (firstUserIndex < 0 || selectedIndices.has(firstUserIndex)) { return tokenBudget; }
+  const anchor = fitSyntheticMessage(
+    'user',
+    'Task anchor: ',
+    extractText(messages[firstUserIndex].content),
+    policy.taskAnchorCharacters,
+    tokenBudget
+  );
+  if (!anchor) { return tokenBudget; }
+  synthetic.push(anchor);
+  notes.push('Preserved the first user objective as a synthetic task anchor.');
+  return tokenBudget - estimateMessageTokens(anchor);
+}
+
+function addArchiveSummary(
+  messages: readonly OpenAIMessage[],
+  omitted: readonly OpenAIMessage[],
+  policy: CompactionPolicy,
+  tokenBudget: number,
+  synthetic: OpenAIMessage[],
+  notes: string[]
+): void {
+  if (omitted.length === 0) { return; }
+  const archiveBody = buildArchiveBody(
+    omitted,
+    buildToolNamesByCallId(messages),
+    policy.toolResultSummaryCharacters
+  );
+  const archive = fitSyntheticMessage(
+    'user',
+    'Archived history:\n',
+    archiveBody,
+    policy.archivedSummaryCharacters,
+    tokenBudget
+  );
+  if (!archive) { return; }
+  synthetic.push(archive);
+  notes.push(`Archived ${omitted.length} older message(s) into a deterministic summary.`);
+}
+
+function createCompactionResult(input: CompactionResultInput): ConversationCompactionResult {
+  const dropped = input.originalCount - input.selectedOriginalCount;
   return {
-    messages,
-    estimatedInputTokens,
-    totalEstimatedTokens,
+    messages: input.messages,
+    estimatedInputTokens: input.estimatedInputTokens,
+    totalEstimatedTokens: input.totalEstimatedTokens,
     truncatedMessageCount: dropped,
-    wasCompacted: flags.compacted,
-    taskAnchorApplied: syntheticMessages.some((message) =>
+    wasCompacted: input.compacted,
+    taskAnchorApplied: input.syntheticMessages.some((message) =>
       typeof message.content === 'string' && message.content.startsWith('Task anchor:')
     ),
-    archivedSummaryApplied: syntheticMessages.some((message) =>
+    archivedSummaryApplied: input.syntheticMessages.some((message) =>
       typeof message.content === 'string' && message.content.startsWith('Archived history:')
     ),
-    keptLatestGroundedSummary: flags.latestGroundedKept,
-    preservedActiveToolChain: flags.activeChainKept,
+    keptLatestGroundedSummary: input.latestGroundedKept,
+    preservedActiveToolChain: input.activeChainKept,
     droppedMessageCount: dropped,
-    syntheticMessages,
-    summaryNotes,
+    syntheticMessages: input.syntheticMessages,
+    summaryNotes: input.summaryNotes,
   };
 }
 

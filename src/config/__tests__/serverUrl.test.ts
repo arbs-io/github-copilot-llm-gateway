@@ -8,6 +8,10 @@ describe('validateServerUrl', () => {
       ok: true,
       value: 'https://gateway.example/v1',
     });
+    assert.deepEqual(validateServerUrl('https://gateway.example////'), {
+      ok: true,
+      value: 'https://gateway.example',
+    });
   });
 
   test('rejects unsupported protocols and embedded credentials', () => {

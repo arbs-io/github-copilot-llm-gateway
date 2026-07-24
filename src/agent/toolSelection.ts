@@ -73,7 +73,8 @@ export function selectToolsForRequest<T extends ToolLike>(
   // cap downstream. Otherwise a large discretionary definition appearing
   // first could consume the schema budget and evict pinned/recent/core tools
   // even when the count cap itself is not active.
-  const selectedTools = ranked.sort(compareSelectedTools).slice(0, maxTools);
+  ranked.sort(compareSelectedTools);
+  const selectedTools = ranked.slice(0, maxTools);
 
   const items = selectedTools.map((entry) => entry.tool);
   const selectedNames = new Set(items.map((tool) => tool.name));

@@ -29,7 +29,7 @@ jobs:
         with:
           node-version: "22"
       - name: Install Extension Dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
       - name: Run Complete Quality Gate
         run: npm run check
       - name: Audit Production Dependencies
@@ -47,7 +47,7 @@ jobs:
         with:
           node-version: "22"
       - name: Install Extension Dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
       - name: Run Complete Quality Gate
         run: npm run check
       - name: Audit Production Dependencies
@@ -56,6 +56,6 @@ jobs:
       # though `npm run check` already includes it. This makes the publishing
       # gate explicit and prevents a future workflow edit from bypassing it.
       - name: Verify and Publish Extension
-        run: npm run verify-package && npm run deploy
+        run: npm run verify-package && npm run vscode:prepublish && npm run deploy
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}

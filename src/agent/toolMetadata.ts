@@ -54,7 +54,7 @@ export function summarizeToolResult(
       family,
       quality,
       path,
-      summary: buildSummary(toolName, `${status}${path ? ` path=${path}` : ''}${previewSuffix(clipped, 80)}`),
+      summary: buildSummary(toolName, buildEditingDetail(status, path, clipped)),
       indicatesVisibleProgress: status !== 'changed' || quality === 'useful',
     };
   }
@@ -64,10 +64,7 @@ export function summarizeToolResult(
       family,
       quality,
       command,
-      summary: buildSummary(
-        toolName,
-        `${command ? `cmd=${command}` : 'command result'}${exitCode === undefined ? '' : ` exit=${exitCode}`}${tailSuffix(clipped, 100)}`
-      ),
+      summary: buildSummary(toolName, buildExecutionDetail(command, exitCode, clipped)),
       indicatesVisibleProgress: exitCode === 0 || quality === 'useful',
     };
   }
@@ -77,10 +74,7 @@ export function summarizeToolResult(
       family,
       quality,
       path,
-      summary: buildSummary(
-        toolName,
-        `${paths.length > 0 ? `paths=${paths.join(', ')}` : 'workspace lookup'}${previewSuffix(clipped, 100)}`
-      ),
+      summary: buildSummary(toolName, buildDiscoveryDetail(paths, clipped)),
       indicatesVisibleProgress: quality === 'useful',
     };
   }
@@ -92,6 +86,26 @@ export function summarizeToolResult(
     summary: buildSummary(toolName, `${label}${previewSuffix(clipped, 80)}`),
     indicatesVisibleProgress: quality === 'useful',
   };
+}
+
+function buildEditingDetail(status: string, path: string | undefined, content: string): string {
+  const pathDetail = path ? ` path=${path}` : '';
+  return status + pathDetail + previewSuffix(content, 80);
+}
+
+function buildExecutionDetail(
+  command: string | undefined,
+  exitCode: number | undefined,
+  content: string
+): string {
+  const commandDetail = command ? `cmd=${command}` : 'command result';
+  const exitDetail = exitCode === undefined ? '' : ` exit=${exitCode}`;
+  return commandDetail + exitDetail + tailSuffix(content, 100);
+}
+
+function buildDiscoveryDetail(paths: readonly string[], content: string): string {
+  const pathDetail = paths.length > 0 ? `paths=${paths.join(', ')}` : 'workspace lookup';
+  return pathDetail + previewSuffix(content, 100);
 }
 
 function classifyQuality(content: string): ToolResultDigest['quality'] {
@@ -123,11 +137,37 @@ function extractCommand(content: string): string | undefined {
 
 function extractPaths(content: string): string[] {
   const paths = new Set<string>();
-  for (const match of content.matchAll(/\b(?:\/[\w./-]+|[\w.-]+(?:\/[\w.-]+)+(?:\.[\w-]+)?)\b/g)) {
-    if (match[0].length >= 3 && !match[0].startsWith('http')) { paths.add(match[0]); }
-    if (paths.size >= 8) { break; }
+  let candidateStart = -1;
+  for (let index = 0; index <= content.length; index++) {
+    if (index < content.length && isPathCharacter(content[index])) {
+      if (candidateStart < 0) { candidateStart = index; }
+      continue;
+    }
+    if (candidateStart >= 0) {
+      const candidate = content.slice(candidateStart, index);
+      if (isPathCandidate(candidate)) { paths.add(candidate); }
+      candidateStart = -1;
+    }
+    if (paths.size >= 8) { return [...paths]; }
   }
   return [...paths];
+}
+
+function isPathCharacter(character: string): boolean {
+  const code = character.charCodeAt(0);
+  return (
+    (code >= 48 && code <= 57) ||
+    (code >= 65 && code <= 90) ||
+    (code >= 97 && code <= 122) ||
+    character === '_' ||
+    character === '.' ||
+    character === '/' ||
+    character === '-'
+  );
+}
+
+function isPathCandidate(value: string): boolean {
+  return value.length >= 3 && value.includes('/') && !value.startsWith('//');
 }
 
 function normalizeWhitespace(value: string): string {

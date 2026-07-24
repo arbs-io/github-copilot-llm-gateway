@@ -121,6 +121,12 @@ interface StreamState {
   terminal: boolean;
 }
 
+interface ParsedChoiceOutput {
+  content: string;
+  reasoningContent: string;
+  finishedToolCalls: AccumulatedToolCall[];
+}
+
 /**
  * Timeout for the one-shot Ollama `GET /api/version` detection probe. Kept
  * well below `requestTimeout` so a non-Ollama server that hangs on unknown
@@ -400,50 +406,10 @@ export class GatewayClient {
     cancellationToken: vscode.CancellationToken,
     resetInactivity: () => void
   ): AsyncGenerator<GatewayStreamChunk, void, unknown> {
-    const reader = body.getReader();
-    const decoder = new TextDecoder();
-    const parser = new IncrementalStreamParser();
-    let reachedEnd = false;
-
-    try {
-      while (true) {
-        if (cancellationToken.isCancellationRequested) {
-          await reader.cancel();
-          return;
-        }
-
-        const { done, value } = await reader.read();
-        if (done) {
-          reachedEnd = true;
-          break;
-        }
-
-        resetInactivity();
-        const text = decoder.decode(value, { stream: true });
-        for (const record of parser.push(text)) {
-          const result = this.processStreamRecord(record, accumulator, state);
-          if (result) { yield result; }
-        }
-      }
-
-      const finalText = decoder.decode();
-      for (const record of parser.push(finalText)) {
-        const result = this.processStreamRecord(record, accumulator, state);
-        if (result) { yield result; }
-      }
-      for (const record of parser.flush()) {
-        const result = this.processStreamRecord(record, accumulator, state);
-        if (result) { yield result; }
-      }
-    } finally {
-      if (!reachedEnd) {
-        try {
-          await reader.cancel();
-        } catch {
-          // The stream may already be aborted or errored.
-        }
-      }
-      reader.releaseLock();
+    const records = parseResponseBody(body, cancellationToken, resetInactivity);
+    for await (const record of records) {
+      const result = this.processStreamRecord(record, accumulator, state);
+      if (result) { yield result; }
     }
   }
 
@@ -548,81 +514,18 @@ export class GatewayClient {
     accumulator: ToolCallAccumulator
   ): GatewayStreamChunk | null {
     const usage = extractUsage(obj.usage);
-    const choices = Array.isArray(obj.choices) ? obj.choices : undefined;
-    const choice = choices?.[0] as Record<string, unknown> | undefined;
-
-    // OpenAI's stream-with-include_usage convention puts the totals on a
-    // trailing chunk with an empty `choices` array — surface it as a
-    // usage-only stream chunk so the provider can forward it to the chat
-    // context-window widget (issue #24).
-    if (choices && !choice) {
-      if (!usage) { return null; }
-      return {
-        content: '',
-        reasoning_content: '',
-        tool_calls: [],
-        finished_tool_calls: [],
-        usage,
-      };
+    if (Array.isArray(obj.choices)) {
+      return this.dispatchOpenAIChoices(obj, obj.choices, accumulator, usage);
     }
 
-    if (choice) {
-      const chunk: ParsedChunk = {
-        delta: choice.delta as ParsedChunk['delta'],
-        message: choice.message as ParsedChunk['message'],
-        finishReason: choice.finish_reason as string | undefined,
-        id: typeof obj.id === 'string' ? obj.id : undefined,
-      };
+    if (isRecord(obj.message)) {
+      return this.dispatchOllamaMessage(obj, obj.message, accumulator, usage);
+    }
 
-      if (chunk.delta) {
-        const { content, reasoningContent, finishedToolCalls } =
-          this.applyDeltaChoice(chunk, accumulator);
-        return {
-          content,
-          reasoning_content: reasoningContent,
-          tool_calls: [],
-          finished_tool_calls: finishedToolCalls,
-          ...(usage ? { usage } : {}),
-        };
-      }
-      if (chunk.message) {
-        const { content, reasoningContent, finishedToolCalls } =
-          this.applyMessageChoice(chunk, accumulator);
-        return {
-          content,
-          reasoning_content: reasoningContent,
-          tool_calls: [],
-          finished_tool_calls: finishedToolCalls,
-          ...(usage ? { usage } : {}),
-        };
-      }
-    }
-    const ollamaMessage = obj.message;
-    if (ollamaMessage && typeof ollamaMessage === 'object' && !Array.isArray(ollamaMessage)) {
-      const parsedMessage: ParsedChunk = {
-        message: ollamaMessage as ParsedChunk['message'],
-        finishReason: readTopLevelFinishReason(obj),
-        id: typeof obj.id === 'string' ? obj.id : undefined,
-      };
-      const { content, reasoningContent, finishedToolCalls } =
-        this.applyMessageChoice(parsedMessage, accumulator);
-      return {
-        content,
-        reasoning_content: reasoningContent,
-        tool_calls: [],
-        finished_tool_calls: finishedToolCalls,
-        ...(usage ? { usage } : {}),
-      };
-    }
     if (typeof obj.response === 'string') {
       return {
         content: obj.response,
-        reasoning_content:
-          typeof obj.reasoning_content === 'string'
-            ? obj.reasoning_content
-            : typeof obj.reasoning === 'string'
-              ? obj.reasoning
-              : '',
+        reasoning_content: firstString(obj.reasoning_content, obj.reasoning),
         tool_calls: [],
         finished_tool_calls: [],
         ...(usage ? { usage } : {}),
@@ -631,10 +534,50 @@ export class GatewayClient {
     return null;
   }
 
+  private dispatchOpenAIChoices(
+    payload: Record<string, unknown>,
+    choices: unknown[],
+    accumulator: ToolCallAccumulator,
+    usage: OpenAIUsage | undefined
+  ): GatewayStreamChunk | null {
+    const choice = choices[0];
+
+    // OpenAI's stream-with-include_usage convention puts the totals on a
+    // trailing chunk with an empty `choices` array — surface it as a
+    // usage-only stream chunk so the provider can forward it to the chat
+    // context-window widget (issue #24).
+    if (!isRecord(choice)) {
+      return usage ? toGatewayChunk(emptyChoiceOutput(), usage) : null;
+    }
+
+    const parsed = toParsedChoice(payload, choice);
+    if (parsed.delta) {
+      return toGatewayChunk(this.applyDeltaChoice(parsed, accumulator), usage);
+    }
+    if (parsed.message) {
+      return toGatewayChunk(this.applyMessageChoice(parsed, accumulator), usage);
+    }
+    return null;
+  }
+
+  private dispatchOllamaMessage(
+    payload: Record<string, unknown>,
+    message: Record<string, unknown>,
+    accumulator: ToolCallAccumulator,
+    usage: OpenAIUsage | undefined
+  ): GatewayStreamChunk {
+    const parsed: ParsedChunk = {
+      message: message as ParsedChunk['message'],
+      finishReason: readTopLevelFinishReason(payload),
+      id: typeof payload.id === 'string' ? payload.id : undefined,
+    };
+    return toGatewayChunk(this.applyMessageChoice(parsed, accumulator), usage);
+  }
+
   private applyDeltaChoice(
     parsed: ParsedChunk,
     accumulator: ToolCallAccumulator
-  ): { content: string; reasoningContent: string; finishedToolCalls: AccumulatedToolCall[] } {
+  ): ParsedChoiceOutput {
     const delta = parsed.delta!;
 
     if (Array.isArray(delta.tool_calls)) {
@@ -657,7 +600,7 @@ export class GatewayClient {
   private applyMessageChoice(
     parsed: ParsedChunk,
     accumulator: ToolCallAccumulator
-  ): { content: string; reasoningContent: string; finishedToolCalls: AccumulatedToolCall[] } {
+  ): ParsedChoiceOutput {
     const message = parsed.message!;
 
     if (Array.isArray(message.tool_calls)) {
@@ -829,7 +772,9 @@ async function readSafeErrorBody(response: Response): Promise<string> {
       true
     );
     const detail = sanitizeErrorDetail(text);
-    return truncated ? `${detail}${detail ? ' ' : ''}[truncated]` : detail;
+    if (!truncated) { return detail; }
+    const separator = detail ? ' ' : '';
+    return `${detail}${separator}[truncated]`;
   } catch {
     return '';
   }
@@ -884,7 +829,8 @@ async function readBoundedResponseText(
 }
 
 function sanitizeErrorDetail(value: string): string {
-  const redacted = value
+  const redacted = redactNamedSecrets(
+    value
     .replace(
       /\b(https?:\/\/)[^/\s:@]+:[^/\s@]+@/gi,
       '$1[redacted]@'
@@ -893,16 +839,24 @@ function sanitizeErrorDetail(value: string): string {
       /(authorization\s*[:=]\s*(?:bearer\s+)?)[^\s,;"'}]+/gi,
       '$1[redacted]'
     )
-    .replace(
-      /(["']?(?:api[_ -]?key|access[_ -]?token|token|secret|password)["']?\s*[:=]\s*["']?)[^"',}\s]+/gi,
-      '$1[redacted]'
-    )
+  )
     .replace(/[\u0000-\u001F\u007F-\u009F]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
   return redacted.length > MAX_ERROR_DETAIL_CHARACTERS
     ? `${redacted.slice(0, MAX_ERROR_DETAIL_CHARACTERS)}…`
     : redacted;
+}
+
+function redactNamedSecrets(value: string): string {
+  const names = ['api[_ -]?key', 'access[_ -]?token', 'token', 'secret', 'password'];
+  return names.reduce((redacted, name) => {
+    const pattern = new RegExp(
+      `(["']?${name}["']?\\s*[:=]\\s*["']?)[^"',}\\s]+`,
+      'gi'
+    );
+    return redacted.replace(pattern, '$1[redacted]');
+  }, value);
 }
 
 /**
@@ -972,6 +926,97 @@ function toolCallOnlyChunk(
     tool_calls: [],
     finished_tool_calls: toolCalls,
   };
+}
+
+async function* parseResponseBody(
+  body: ReadableStream<Uint8Array>,
+  cancellationToken: vscode.CancellationToken,
+  resetInactivity: () => void
+): AsyncGenerator<StreamRecord, void, unknown> {
+  const decoder = new TextDecoder();
+  const parser = new IncrementalStreamParser();
+  const values = readResponseBody(body, cancellationToken, resetInactivity);
+
+  for await (const value of values) {
+    yield* parser.push(decoder.decode(value, { stream: true }));
+  }
+  if (cancellationToken.isCancellationRequested) { return; }
+  yield* parser.push(decoder.decode());
+  yield* parser.flush();
+}
+
+async function* readResponseBody(
+  body: ReadableStream<Uint8Array>,
+  cancellationToken: vscode.CancellationToken,
+  resetInactivity: () => void
+): AsyncGenerator<Uint8Array, void, unknown> {
+  const reader = body.getReader();
+  let reachedEnd = false;
+  try {
+    while (!cancellationToken.isCancellationRequested) {
+      const { done, value } = await reader.read();
+      if (done) {
+        reachedEnd = true;
+        return;
+      }
+      resetInactivity();
+      yield value;
+    }
+    await reader.cancel();
+  } finally {
+    await cancelUnfinishedReader(reader, reachedEnd);
+    reader.releaseLock();
+  }
+}
+
+async function cancelUnfinishedReader(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  reachedEnd: boolean
+): Promise<void> {
+  if (reachedEnd) { return; }
+  try {
+    await reader.cancel();
+  } catch {
+    // The stream may already be aborted or errored.
+  }
+}
+
+function toParsedChoice(
+  payload: Record<string, unknown>,
+  choice: Record<string, unknown>
+): ParsedChunk {
+  return {
+    delta: choice.delta as ParsedChunk['delta'],
+    message: choice.message as ParsedChunk['message'],
+    finishReason: choice.finish_reason as string | undefined,
+    id: typeof payload.id === 'string' ? payload.id : undefined,
+  };
+}
+
+function emptyChoiceOutput(): ParsedChoiceOutput {
+  return { content: '', reasoningContent: '', finishedToolCalls: [] };
+}
+
+function toGatewayChunk(
+  output: ParsedChoiceOutput,
+  usage: OpenAIUsage | undefined
+): GatewayStreamChunk {
+  return {
+    content: output.content,
+    reasoning_content: output.reasoningContent,
+    tool_calls: [],
+    finished_tool_calls: output.finishedToolCalls,
+    ...(usage ? { usage } : {}),
+  };
+}
+
+function firstString(primary: unknown, fallback: unknown): string {
+  if (typeof primary === 'string') { return primary; }
+  return typeof fallback === 'string' ? fallback : '';
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 function hasTerminalSignal(payload: Record<string, unknown>): boolean {

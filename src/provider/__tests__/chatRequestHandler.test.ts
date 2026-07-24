@@ -326,4 +326,128 @@ describe('ChatRequestHandler hardening integration', () => {
     assert.equal(requestCount, 1);
     assert.equal((reported[0] as TextPart).value, 'Visible output.');
   });
+
+  test('rebuilds the request once after learning a context limit and emits one completion lifecycle', async () => {
+    const requests: OpenAIChatCompletionRequest[] = [];
+    const states: Array<{ kind: string }> = [];
+    let completed = 0;
+    let streamCount = 0;
+    let contextLearned = false;
+    const handler = new chatRequestHandler.ChatRequestHandler({
+      client: {
+        streamChatCompletion: (request: OpenAIChatCompletionRequest) => {
+          requests.push(request);
+          streamCount++;
+          return (async function* () {
+            if (streamCount === 1) {
+              throw new Error('maximum context length is 4096 tokens');
+            }
+            yield { content: 'Recovered with corrected context.' };
+          })();
+        },
+      },
+      catalog: {
+        resolveModelMaxContext: () => (contextLearned ? 4096 : 32768),
+        getDiscoveredParams: () => undefined,
+        learnContextSizeFromError: () => {
+          if (contextLearned) {
+            return false;
+          }
+          contextLearned = true;
+          return true;
+        },
+      },
+      getConfig: () => testConfig(),
+      log: () => undefined,
+      onRequestState: (event: { kind: string }) => states.push(event),
+      onCompleted: () => {
+        completed++;
+      },
+      showOutput: () => undefined,
+    } as never);
+
+    await handler.handle(
+      {
+        id: 'test-model',
+        maxOutputTokens: 1024,
+        capabilities: { toolCalling: false },
+      } as never,
+      [
+        {
+          role: vscodeMock.LanguageModelChatMessageRole.User,
+          content: [new TextPart('Summarize the repository.')],
+        },
+      ] as never,
+      {} as never,
+      { report: () => undefined } as never,
+      { isCancellationRequested: false } as never
+    );
+
+    assert.equal(requests.length, 2);
+    assert.equal(completed, 1);
+    assert.deepEqual(states.map((state) => state.kind), ['start', 'complete']);
+  });
+
+  test('does not enter recovery after cancellation and emits an error lifecycle', async () => {
+    const states: Array<{ kind: string }> = [];
+    let cancelled = false;
+    let requestCount = 0;
+    const token = {
+      get isCancellationRequested() {
+        return cancelled;
+      },
+    };
+    const handler = new chatRequestHandler.ChatRequestHandler({
+      client: {
+        streamChatCompletion: () => {
+          requestCount++;
+          return (async function* () {
+            cancelled = true;
+            throw new Error('request was cancelled');
+          })();
+        },
+      },
+      catalog: {
+        resolveModelMaxContext: () => 32768,
+        getDiscoveredParams: () => undefined,
+        learnContextSizeFromError: () => false,
+      },
+      getConfig: () => testConfig(),
+      log: () => undefined,
+      onRequestState: (event: { kind: string }) => states.push(event),
+      onCompleted: () => undefined,
+      showOutput: () => undefined,
+    } as never);
+
+    await assert.rejects(
+      handler.handle(
+        {
+          id: 'test-model',
+          maxOutputTokens: 1024,
+          capabilities: { toolCalling: true },
+        } as never,
+        [
+          {
+            role: vscodeMock.LanguageModelChatMessageRole.User,
+            content: [new TextPart('Inspect the repository.')],
+          },
+        ] as never,
+        {
+          tools: [
+            {
+              name: 'read_file',
+              description: 'Read a file',
+              inputSchema: { type: 'object' },
+            },
+          ],
+        } as never,
+        { report: () => undefined } as never,
+        token as never
+      ),
+      /request was cancelled/
+    );
+
+    assert.equal(requestCount, 1);
+    assert.deepEqual(states.map((state) => state.kind), ['start', 'error']);
+  });
 });

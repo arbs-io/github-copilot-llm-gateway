@@ -267,6 +267,52 @@ interface AttemptResult {
   toolCount: number;
 }
 
+interface TrackedProgress {
+  readonly reporter: vscode.Progress<vscode.LanguageModelResponsePart>;
+  hasReported(): boolean;
+}
+
+interface RequestContext {
+  readonly model: vscode.LanguageModelChatInformation;
+  readonly modelName: string;
+  readonly options: vscode.ProvideLanguageModelChatResponseOptions;
+  readonly token: vscode.CancellationToken;
+  readonly config: GatewayConfig;
+  readonly openAIMessages: OpenAIMessage[];
+  readonly planningMessages: OpenAIMessage[];
+  readonly configuredMaxOutput: number;
+  readonly progressPolicy: ProgressPolicy;
+  readonly transcriptProgress: ProgressEvaluation;
+  readonly toolPlan: ToolPlan;
+  readonly trackedProgress: TrackedProgress;
+  candidateHistory: OpenAIMessage[];
+  capturedUsage?: TokenUsage;
+}
+
+interface AttemptPlan {
+  readonly toolPlan: ToolPlan;
+  readonly hasTools: boolean;
+  readonly requestMessages: OpenAIMessage[];
+  readonly inputText: string;
+  readonly safeMaxOutputTokens: number;
+}
+
+interface AttemptPlanDiagnostics {
+  readonly stage: RequestRecoveryStage;
+  readonly toolPlan: ToolPlan;
+  readonly originalMessageCount: number;
+  readonly compaction: ReturnType<typeof compactConversationHistory>;
+  readonly toolsOverhead: number;
+  readonly modelMaxContext: number;
+  readonly safeMaxOutputTokens: number;
+}
+
+interface RecoveryState {
+  stage: RequestRecoveryStage;
+  attempts: number;
+  contextRetryUsed: boolean;
+}
+
 /**
  * Executes one chat request end-to-end: convert VS Code messages to the
  * OpenAI wire format, budget the context window, build and stream the
@@ -287,15 +333,40 @@ export class ChatRequestHandler {
     progress: vscode.Progress<vscode.LanguageModelResponsePart>,
     token: vscode.CancellationToken
   ): Promise<void> {
-    const { log, catalog } = this.deps;
+    const modelName = friendlyModelName(model.id);
+    this.deps.onRequestState({ kind: 'start', modelId: model.id, modelName });
+
+    try {
+      const context = this.createRequestContext(
+        model,
+        modelName,
+        messages,
+        options,
+        progress,
+        token
+      );
+      await this.runRecoveryLoop(context);
+      this.completeRequest(context);
+    } catch (error) {
+      this.failRequest(model.id, modelName, error);
+      handleChatError(error, this.deps.log, this.deps.showOutput);
+    }
+  }
+
+  private createRequestContext(
+    model: vscode.LanguageModelChatInformation,
+    modelName: string,
+    messages: readonly vscode.LanguageModelChatMessage[],
+    options: vscode.ProvideLanguageModelChatResponseOptions,
+    progress: vscode.Progress<vscode.LanguageModelResponsePart>,
+    token: vscode.CancellationToken
+  ): RequestContext {
+    const { log } = this.deps;
     log(`Sending chat request to model: ${model.id}`);
     log(
       `Tool mode: ${describeToolMode(options.toolMode)}, Tools: ${options.tools?.length ?? 0}`
     );
     log(`Message count: ${messages.length}`);
-
-    const modelName = friendlyModelName(model.id);
-    this.deps.onRequestState({ kind: 'start', modelId: model.id, modelName });
 
     const config = this.deps.getConfig();
     const openAIMessages = convertAllMessages(
@@ -307,292 +378,457 @@ export class ChatRequestHandler {
     log(`Converted to ${openAIMessages.length} OpenAI messages`);
     this.logMessageStructure(openAIMessages);
 
-    const configuredMaxOutput =
-      model.maxOutputTokens || TOKEN_CONSTANTS.DEFAULT_OUTPUT_TOKENS;
     const progressPolicy = buildProgressPolicy(config);
     const transcriptProgress = evaluateTranscriptProgress(openAIMessages, progressPolicy);
-    const planningMessages = this.injectProgressInstruction(
-      openAIMessages,
-      transcriptProgress
-    );
-    const toolPlan = this.buildToolsConfig(
-      config,
+    return {
       model,
+      modelName,
       options,
+      token,
+      config,
       openAIMessages,
-      transcriptProgress
-    );
+      planningMessages: this.injectProgressInstruction(
+        openAIMessages,
+        transcriptProgress
+      ),
+      configuredMaxOutput:
+        model.maxOutputTokens || TOKEN_CONSTANTS.DEFAULT_OUTPUT_TOKENS,
+      progressPolicy,
+      transcriptProgress,
+      toolPlan: this.buildToolsConfig(
+        config,
+        model,
+        options,
+        openAIMessages,
+        transcriptProgress
+      ),
+      trackedProgress: this.trackProgress(progress),
+      candidateHistory: [...openAIMessages],
+    };
+  }
 
-    // Once anything has been streamed to the chat view we can no longer
-    // transparently re-issue the request without duplicating output, so track
-    // whether the wrapped progress ever fired.
-    let partsReported = false;
-    const trackingProgress: vscode.Progress<vscode.LanguageModelResponsePart> = {
-      report: (part) => {
-        partsReported = true;
-        progress.report(part);
+  private trackProgress(
+    progress: vscode.Progress<vscode.LanguageModelResponsePart>
+  ): TrackedProgress {
+    let reported = false;
+    return {
+      reporter: {
+        report: (part) => {
+          reported = true;
+          progress.report(part);
+        },
       },
+      hasReported: () => reported,
+    };
+  }
+
+  private async runRecoveryLoop(context: RequestContext): Promise<void> {
+    const state: RecoveryState = {
+      stage: 'original',
+      attempts: 0,
+      contextRetryUsed: false,
     };
 
-    let capturedUsage: TokenUsage | undefined;
-    let candidateHistory = [...openAIMessages];
-
-    // The whole budget → request → stream pipeline, resolved against the
-    // model's current context size, so a corrected context can re-run it.
-    const attempt = async (stage: RequestRecoveryStage): Promise<AttemptResult> => {
-      const useTools = stage !== 'tool-free-summary';
-      const attemptToolPlan = useTools
-        ? toolPlan
-        : this.emptyToolPlan(options.tools?.length ?? 0);
-      const hasTools =
-        attemptToolPlan.tools !== undefined && attemptToolPlan.tools.length > 0;
-      const attemptMessages =
-        stage === 'tool-free-summary'
-          ? [
-              { role: 'system', content: TOOL_FREE_RECOVERY_INSTRUCTION } as OpenAIMessage,
-              ...planningMessages,
-            ]
-          : planningMessages;
-      const toolsSerializedLength = attemptToolPlan.tools
-        ? JSON.stringify(attemptToolPlan.tools).length
-        : 0;
-      const modelMaxContext = catalog.resolveModelMaxContext(model);
-      const maxInputTokens = calculateMaxInputTokens({
-        modelMaxContext,
-        configuredMaxOutput,
-        toolsSerializedLength,
-      });
-      const workingInputTokens = calculateWorkingInputTokens(
-        maxInputTokens,
-        config.maxAgentInputTokens,
-        hasTools
-      );
-      const compaction = compactConversationHistory({
-        messages: attemptMessages,
-        maxInputTokens: workingInputTokens,
-        policy: COMPACTION_POLICY,
-      });
-      const requestMessages = compaction.messages;
-      const inputText = buildInputText(requestMessages);
-      const toolsOverhead = Math.ceil(toolsSerializedLength / TOKEN_CONSTANTS.CHARS_PER_TOKEN);
-      const estimatedInputTokens = compaction.estimatedInputTokens;
-      const safeMaxOutputTokens = calculateSafeMaxOutputTokens({
-        estimatedInputTokens,
-        toolsOverhead,
-        modelMaxContext,
-        configuredMaxOutput,
-      });
-      assertUsableRequestPlan({
-        originalMessageCount: attemptMessages.length,
-        requestMessageCount: requestMessages.length,
-        preservedActiveToolChain: compaction.preservedActiveToolChain,
-        safeMaxOutputTokens,
-        modelMaxContext,
-      });
-
-      log(
-        `Token estimate: input=${estimatedInputTokens}, tools=${toolsOverhead}, model_context=${modelMaxContext}, chosen_max_tokens=${safeMaxOutputTokens}`
-      );
-
-      this.logStructuredDiagnostics(config, {
-        event: 'request-plan',
-        attemptStage: stage,
-        selectedToolCount: attemptToolPlan.selectedCount,
-        droppedToolCount: attemptToolPlan.droppedCount,
-        selectedToolSchemaTokens: attemptToolPlan.schemaTokens,
-        toolSchemaTokenBudget: config.maxToolSchemaTokens,
-        originalMessageCount: attemptMessages.length,
-        requestMessageCount: requestMessages.length,
-        droppedMessageCount: compaction.droppedMessageCount,
-        compacted: compaction.wasCompacted,
-        taskAnchorApplied: compaction.taskAnchorApplied,
-        archivedSummaryApplied: compaction.archivedSummaryApplied,
-        preservedActiveToolChain: compaction.preservedActiveToolChain,
-        progressStage: transcriptProgress.stage,
-        progressScore: transcriptProgress.score,
-        progressReasons: transcriptProgress.reasons.slice(0, 3),
-      });
-
-      // Sampler resolution, precedence high -> low:
-      //   caller modelOptions > perModelOptions > extraModelOptions >
-      //   backend-discovered params (e.g. Ollama Modelfile via /api/show) >
-      //   agentTemperature / DEFAULT_TEMPERATURE fallback.
-      // agentTemperature was previously applied unconditionally because
-      // backend params were never discovered; it is now a genuine last-resort
-      // fallback. Forwarding the discovered top_p also stops Ollama's OpenAI
-      // endpoint defaulting an omitted top_p to 1.0.
-      const perModel = resolvePerModelOptions(model.id, config.perModelOptions);
-      const discovered = catalog.getDiscoveredParams(model.id);
-
-      const configuredTemperature =
-        pickNumber(options.modelOptions?.temperature) ??
-        pickNumber(perModel.temperature) ??
-        pickNumber(config.extraModelOptions?.temperature);
-      const temperature =
-        configuredTemperature ??
-        pickNumber(discovered?.temperature) ??
-        (hasTools ? config.agentTemperature : DEFAULT_TEMPERATURE);
-
-      const requestOptions = buildChatRequest({
-        model: model.id,
-        messages: requestMessages,
-        maxTokens: safeMaxOutputTokens,
-        temperature,
-        tools: attemptToolPlan.tools,
-        toolChoice: hasTools
-          ? stage === 'serialized-tools'
-            ? 'auto'
-            : this.mapToolChoice(options.toolMode)
-          : undefined,
-        parallelToolCalls: hasTools
-          ? stage === 'serialized-tools'
-            ? false
-            : config.parallelToolCalling
-          : undefined,
-        extraOptions: {
-          ...discoveredSamplerOptions(discovered),
-          ...config.extraModelOptions,
-          ...perModel,
-          ...options.modelOptions,
-        },
-      });
-
-      if (hasTools) {
-        const parallelToolCalls =
-          stage === 'serialized-tools' ? false : config.parallelToolCalling;
-        log(
-          `Sending ${attemptToolPlan.selectedCount} tools to model (parallel: ${parallelToolCalls})`
-        );
-      }
-
-      this.logRequest(config, requestOptions);
-
-      const reporter = this.createStreamReporter(trackingProgress, (usage) => {
-        capturedUsage = usage;
-      });
-      const chunks = this.deps.client.streamChatCompletion(requestOptions, token);
-      const stats = await streamResponse({
-        chunks: chunks as AsyncIterable<StreamChunk>,
-        reporter,
-        isCancelled: () => token.isCancellationRequested,
-        prepareToolCallBatch: (toolCalls) => {
-          const prepared = this.prepareCandidateToolBatch(
-            toolCalls,
-            attemptToolPlan.schemas,
-            candidateHistory,
-            progressPolicy,
-            config
-          );
-          if (prepared.calls) {
-            candidateHistory = [
-              ...candidateHistory,
-              this.asAssistantToolCallMessage(toolCalls),
-            ];
-          }
-          return prepared;
-        },
-      });
-
-      log(
-        `Completed chat request, received ${stats.totalContentLength} chars, ${stats.totalTextParts} text parts, ${stats.totalToolCalls} tool calls`
-      );
-
-      return {
-        empty: isEmptyStreamResult(stats),
-        inputText,
-        toolCount: attemptToolPlan.selectedCount,
-      };
-    };
-
-    try {
-      let stage: RequestRecoveryStage = 'original';
-      let contextRetryUsed = false;
-      let attempts = 0;
-      let complete = false;
-
-      while (!complete && attempts < MAX_CHAT_ATTEMPTS) {
-        attempts++;
-        try {
-          const result = await attempt(stage);
-          if (!result.empty || token.isCancellationRequested) {
-            complete = true;
-            continue;
-          }
-
-          const nextStage: RequestRecoveryStage | undefined =
-            partsReported ? undefined : nextRecoveryStage(stage, toolPlan.selectedCount);
-          if (nextStage && attempts < MAX_CHAT_ATTEMPTS) {
-            this.logRecovery(config, 'empty-response', stage, nextStage, attempts);
-            stage = nextStage;
-            continue;
-          }
-
-          this.handleEmptyResponse(
-            model,
-            result.inputText,
-            openAIMessages.length,
-            result.toolCount,
-            trackingProgress
-          );
-          complete = true;
-        } catch (error) {
-          // Context-overflow errors carry the server's real context size
-          // (issue #55: llama-server router mode reports nothing up-front).
-          // Preserve the learned limit even when visible output prevents a
-          // retry, but retry at most once across the recovery sequence.
-          const learnedContext =
-            !contextRetryUsed && catalog.learnContextSizeFromError(model, error);
-          if (
-            learnedContext &&
-            !partsReported &&
-            !token.isCancellationRequested &&
-            attempts < MAX_CHAT_ATTEMPTS
-          ) {
-            contextRetryUsed = true;
-            log('Retrying chat request with corrected context size...');
-            this.logStructuredDiagnostics(config, {
-              event: 'request-retry',
-              retryStage: 'context-overflow',
-              attemptStage: stage,
-              attemptCount: attempts,
-              visibleOutputReported: false,
-            });
-            continue;
-          }
-
-          const failure = classifyRecoverableFailure(error);
-          const nextStage: RequestRecoveryStage | undefined =
-            failure && !partsReported && !token.isCancellationRequested
-              ? nextRecoveryStage(stage, toolPlan.selectedCount)
-              : undefined;
-          if (failure && nextStage && attempts < MAX_CHAT_ATTEMPTS) {
-            this.logRecovery(config, failure, stage, nextStage, attempts);
-            stage = nextStage;
-            continue;
-          }
-          throw error;
+    while (state.attempts < MAX_CHAT_ATTEMPTS) {
+      state.attempts++;
+      let result: AttemptResult;
+      try {
+        result = await this.executeAttempt(context, state.stage);
+      } catch (error) {
+        if (this.recoverFromError(context, state, error)) {
+          continue;
         }
+        throw error;
       }
 
-      if (!complete) {
-        throw new Error('Chat recovery attempt limit was exhausted.');
+      if (!result.empty || context.token.isCancellationRequested) {
+        return;
       }
-      this.deps.onCompleted(model.id, modelName, capturedUsage);
-      this.deps.onRequestState({
-        kind: 'complete',
-        modelId: model.id,
-        modelName,
-        usage: capturedUsage,
-      });
-    } catch (error) {
-      this.deps.onRequestState({
-        kind: 'error',
-        modelId: model.id,
-        modelName,
-        errorMessage: error instanceof Error ? error.message : String(error),
-      });
-      handleChatError(error, log, this.deps.showOutput);
+
+      const nextStage = this.safeNextRecoveryStage(context, state.stage);
+      if (nextStage && this.canAttemptAgain(state)) {
+        this.logRecovery(
+          context.config,
+          'empty-response',
+          state.stage,
+          nextStage,
+          state.attempts
+        );
+        state.stage = nextStage;
+        continue;
+      }
+
+      this.handleEmptyResponse(
+        context.model,
+        result.inputText,
+        context.openAIMessages.length,
+        result.toolCount,
+        context.trackedProgress.reporter
+      );
+      return;
     }
+
+    throw new Error('Chat recovery attempt limit was exhausted.');
+  }
+
+  private recoverFromError(
+    context: RequestContext,
+    state: RecoveryState,
+    error: unknown
+  ): boolean {
+    const learnedContext =
+      !state.contextRetryUsed &&
+      this.deps.catalog.learnContextSizeFromError(context.model, error);
+    if (learnedContext && this.canRetry(context, state)) {
+      state.contextRetryUsed = true;
+      this.deps.log('Retrying chat request with corrected context size...');
+      this.logStructuredDiagnostics(context.config, {
+        event: 'request-retry',
+        retryStage: 'context-overflow',
+        attemptStage: state.stage,
+        attemptCount: state.attempts,
+        visibleOutputReported: false,
+      });
+      return true;
+    }
+
+    const failure = classifyRecoverableFailure(error);
+    const nextStage = this.safeNextRecoveryStage(context, state.stage);
+    if (!failure || !nextStage || !this.canAttemptAgain(state)) {
+      return false;
+    }
+
+    this.logRecovery(
+      context.config,
+      failure,
+      state.stage,
+      nextStage,
+      state.attempts
+    );
+    state.stage = nextStage;
+    return true;
+  }
+
+  private canRetry(context: RequestContext, state: RecoveryState): boolean {
+    return (
+      !context.trackedProgress.hasReported() &&
+      !context.token.isCancellationRequested &&
+      this.canAttemptAgain(state)
+    );
+  }
+
+  private canAttemptAgain(state: RecoveryState): boolean {
+    return state.attempts < MAX_CHAT_ATTEMPTS;
+  }
+
+  private safeNextRecoveryStage(
+    context: RequestContext,
+    current: RequestRecoveryStage
+  ): RequestRecoveryStage | undefined {
+    if (
+      context.trackedProgress.hasReported() ||
+      context.token.isCancellationRequested
+    ) {
+      return undefined;
+    }
+    return nextRecoveryStage(current, context.toolPlan.selectedCount);
+  }
+
+  private async executeAttempt(
+    context: RequestContext,
+    stage: RequestRecoveryStage
+  ): Promise<AttemptResult> {
+    const plan = this.buildAttemptPlan(context, stage);
+    const request = this.buildAttemptRequest(context, stage, plan);
+    this.logAttemptTools(context, stage, plan);
+    this.logRequest(context.config, request);
+    const stats = await this.streamAttempt(context, request, plan);
+
+    this.deps.log(
+      `Completed chat request, received ${stats.totalContentLength} chars, ${stats.totalTextParts} text parts, ${stats.totalToolCalls} tool calls`
+    );
+    return {
+      empty: isEmptyStreamResult(stats),
+      inputText: plan.inputText,
+      toolCount: plan.toolPlan.selectedCount,
+    };
+  }
+
+  private buildAttemptPlan(
+    context: RequestContext,
+    stage: RequestRecoveryStage
+  ): AttemptPlan {
+    const toolPlan = this.toolPlanForStage(context, stage);
+    const hasTools = this.hasTools(toolPlan);
+    const attemptMessages = this.messagesForStage(context.planningMessages, stage);
+    const toolsSerializedLength = toolPlan.tools
+      ? JSON.stringify(toolPlan.tools).length
+      : 0;
+    const modelMaxContext = this.deps.catalog.resolveModelMaxContext(context.model);
+    const maxInputTokens = calculateMaxInputTokens({
+      modelMaxContext,
+      configuredMaxOutput: context.configuredMaxOutput,
+      toolsSerializedLength,
+    });
+    const workingInputTokens = calculateWorkingInputTokens(
+      maxInputTokens,
+      context.config.maxAgentInputTokens,
+      hasTools
+    );
+    const compaction = compactConversationHistory({
+      messages: attemptMessages,
+      maxInputTokens: workingInputTokens,
+      policy: COMPACTION_POLICY,
+    });
+    const toolsOverhead = Math.ceil(
+      toolsSerializedLength / TOKEN_CONSTANTS.CHARS_PER_TOKEN
+    );
+    const safeMaxOutputTokens = calculateSafeMaxOutputTokens({
+      estimatedInputTokens: compaction.estimatedInputTokens,
+      toolsOverhead,
+      modelMaxContext,
+      configuredMaxOutput: context.configuredMaxOutput,
+    });
+    assertUsableRequestPlan({
+      originalMessageCount: attemptMessages.length,
+      requestMessageCount: compaction.messages.length,
+      preservedActiveToolChain: compaction.preservedActiveToolChain,
+      safeMaxOutputTokens,
+      modelMaxContext,
+    });
+    this.logAttemptPlan(context, {
+      stage,
+      toolPlan,
+      originalMessageCount: attemptMessages.length,
+      compaction,
+      toolsOverhead,
+      modelMaxContext,
+      safeMaxOutputTokens,
+    });
+    return {
+      toolPlan,
+      hasTools,
+      requestMessages: compaction.messages,
+      inputText: buildInputText(compaction.messages),
+      safeMaxOutputTokens,
+    };
+  }
+
+  private toolPlanForStage(
+    context: RequestContext,
+    stage: RequestRecoveryStage
+  ): ToolPlan {
+    if (stage === 'tool-free-summary') {
+      return this.emptyToolPlan(context.options.tools?.length ?? 0);
+    }
+    return context.toolPlan;
+  }
+
+  private messagesForStage(
+    planningMessages: OpenAIMessage[],
+    stage: RequestRecoveryStage
+  ): OpenAIMessage[] {
+    if (stage !== 'tool-free-summary') {
+      return planningMessages;
+    }
+    return [
+      { role: 'system', content: TOOL_FREE_RECOVERY_INSTRUCTION },
+      ...planningMessages,
+    ];
+  }
+
+  private hasTools(toolPlan: ToolPlan): boolean {
+    return Boolean(toolPlan.tools && toolPlan.tools.length > 0);
+  }
+
+  private logAttemptPlan(
+    context: RequestContext,
+    diagnostics: AttemptPlanDiagnostics
+  ): void {
+    this.deps.log(
+      `Token estimate: input=${diagnostics.compaction.estimatedInputTokens}, tools=${diagnostics.toolsOverhead}, model_context=${diagnostics.modelMaxContext}, chosen_max_tokens=${diagnostics.safeMaxOutputTokens}`
+    );
+    this.logStructuredDiagnostics(context.config, {
+      event: 'request-plan',
+      attemptStage: diagnostics.stage,
+      selectedToolCount: diagnostics.toolPlan.selectedCount,
+      droppedToolCount: diagnostics.toolPlan.droppedCount,
+      selectedToolSchemaTokens: diagnostics.toolPlan.schemaTokens,
+      toolSchemaTokenBudget: context.config.maxToolSchemaTokens,
+      originalMessageCount: diagnostics.originalMessageCount,
+      requestMessageCount: diagnostics.compaction.messages.length,
+      droppedMessageCount: diagnostics.compaction.droppedMessageCount,
+      compacted: diagnostics.compaction.wasCompacted,
+      taskAnchorApplied: diagnostics.compaction.taskAnchorApplied,
+      archivedSummaryApplied: diagnostics.compaction.archivedSummaryApplied,
+      preservedActiveToolChain: diagnostics.compaction.preservedActiveToolChain,
+      progressStage: context.transcriptProgress.stage,
+      progressScore: context.transcriptProgress.score,
+      progressReasons: context.transcriptProgress.reasons.slice(0, 3),
+    });
+  }
+
+  private buildAttemptRequest(
+    context: RequestContext,
+    stage: RequestRecoveryStage,
+    plan: AttemptPlan
+  ): OpenAIChatCompletionRequest {
+    const perModel = resolvePerModelOptions(
+      context.model.id,
+      context.config.perModelOptions
+    );
+    const discovered = this.deps.catalog.getDiscoveredParams(context.model.id);
+    const temperature = this.resolveTemperature(
+      context,
+      plan.hasTools,
+      perModel,
+      discovered
+    );
+    return buildChatRequest({
+      model: context.model.id,
+      messages: plan.requestMessages,
+      maxTokens: plan.safeMaxOutputTokens,
+      temperature,
+      tools: plan.toolPlan.tools,
+      toolChoice: this.resolveToolChoice(
+        plan.hasTools,
+        stage,
+        context.options.toolMode
+      ),
+      parallelToolCalls: this.resolveParallelToolCalls(
+        plan.hasTools,
+        stage,
+        context.config.parallelToolCalling
+      ),
+      extraOptions: {
+        ...discoveredSamplerOptions(discovered),
+        ...context.config.extraModelOptions,
+        ...perModel,
+        ...context.options.modelOptions,
+      },
+    });
+  }
+
+  private resolveTemperature(
+    context: RequestContext,
+    hasTools: boolean,
+    perModel: Readonly<Record<string, unknown>>,
+    discovered: Readonly<Record<string, number>> | undefined
+  ): number {
+    const configured =
+      pickNumber(context.options.modelOptions?.temperature) ??
+      pickNumber(perModel.temperature) ??
+      pickNumber(context.config.extraModelOptions?.temperature);
+    const fallback = hasTools ? context.config.agentTemperature : DEFAULT_TEMPERATURE;
+    return configured ?? pickNumber(discovered?.temperature) ?? fallback;
+  }
+
+  private resolveToolChoice(
+    hasTools: boolean,
+    stage: RequestRecoveryStage,
+    toolMode: vscode.LanguageModelChatToolMode | undefined
+  ): ToolChoice | undefined {
+    if (!hasTools) {
+      return undefined;
+    }
+    if (stage === 'serialized-tools') {
+      return 'auto';
+    }
+    return this.mapToolChoice(toolMode);
+  }
+
+  private resolveParallelToolCalls(
+    hasTools: boolean,
+    stage: RequestRecoveryStage,
+    configured: boolean
+  ): boolean | undefined {
+    if (!hasTools) {
+      return undefined;
+    }
+    return stage === 'serialized-tools' ? false : configured;
+  }
+
+  private logAttemptTools(
+    context: RequestContext,
+    stage: RequestRecoveryStage,
+    plan: AttemptPlan
+  ): void {
+    if (!plan.hasTools) {
+      return;
+    }
+    const parallel = this.resolveParallelToolCalls(
+      true,
+      stage,
+      context.config.parallelToolCalling
+    );
+    this.deps.log(
+      `Sending ${plan.toolPlan.selectedCount} tools to model (parallel: ${parallel})`
+    );
+  }
+
+  private async streamAttempt(
+    context: RequestContext,
+    request: OpenAIChatCompletionRequest,
+    plan: AttemptPlan
+  ): Promise<Awaited<ReturnType<typeof streamResponse>>> {
+    const reporter = this.createStreamReporter(
+      context.trackedProgress.reporter,
+      (usage) => {
+        context.capturedUsage = usage;
+      }
+    );
+    const chunks = this.deps.client.streamChatCompletion(request, context.token);
+    return streamResponse({
+      chunks: chunks as AsyncIterable<StreamChunk>,
+      reporter,
+      isCancelled: () => context.token.isCancellationRequested,
+      prepareToolCallBatch: (toolCalls) =>
+        this.prepareStreamToolBatch(context, plan, toolCalls),
+    });
+  }
+
+  private prepareStreamToolBatch(
+    context: RequestContext,
+    plan: AttemptPlan,
+    toolCalls: readonly ToolCallArguments[]
+  ): PreparedToolCallBatch {
+    const prepared = this.prepareCandidateToolBatch(
+      toolCalls,
+      plan.toolPlan.schemas,
+      context.candidateHistory,
+      context.progressPolicy,
+      context.config
+    );
+    if (prepared.calls) {
+      context.candidateHistory = [
+        ...context.candidateHistory,
+        this.asAssistantToolCallMessage(toolCalls),
+      ];
+    }
+    return prepared;
+  }
+
+  private completeRequest(context: RequestContext): void {
+    this.deps.onCompleted(
+      context.model.id,
+      context.modelName,
+      context.capturedUsage
+    );
+    this.deps.onRequestState({
+      kind: 'complete',
+      modelId: context.model.id,
+      modelName: context.modelName,
+      usage: context.capturedUsage,
+    });
+  }
+
+  private failRequest(modelId: string, modelName: string, error: unknown): void {
+    this.deps.onRequestState({
+      kind: 'error',
+      modelId,
+      modelName,
+      errorMessage: error instanceof Error ? error.message : String(error),
+    });
   }
 
   // ---------- tool config + stream adapters ----------

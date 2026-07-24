@@ -32,6 +32,17 @@ const UNSAFE_OBJECT_KEYS = new Set([
   'valueOf',
 ]);
 
+interface ValidationContext {
+  path: string;
+  depth: number;
+  budget: { remaining: number };
+}
+
+interface TraversalNode {
+  value: unknown;
+  depth: number;
+}
+
 export function prepareToolCallBatch(
   toolCalls: readonly ToolCallArguments[],
   schemas: ReadonlyMap<string, Record<string, unknown> | undefined>
@@ -93,7 +104,7 @@ export function prepareToolArguments(
       return { error: schemaStructureError, wasRepaired: false };
     }
     const budget = { remaining: MAX_TOOL_ARGUMENT_NODES };
-    const error = validateSchemaValue(value, schema, '$', 0, budget);
+    const error = validateSchemaValue(value, schema, { path: '$', depth: 0, budget });
     if (error) { return { error, wasRepaired: false }; }
     const finalStructureError = inspectJsonStructure(
       value,
@@ -128,17 +139,31 @@ export function repairJsonObject(jsonText: string): Record<string, unknown> | nu
 function validateSchemaValue(
   value: unknown,
   schema: Record<string, unknown>,
-  path: string,
-  depth: number,
-  budget: { remaining: number }
+  context: ValidationContext
 ): string | undefined {
-  if (depth > MAX_TOOL_ARGUMENT_DEPTH) {
+  if (context.depth > MAX_TOOL_ARGUMENT_DEPTH) {
     return `arguments exceeded the maximum nesting depth of ${MAX_TOOL_ARGUMENT_DEPTH}`;
   }
-  budget.remaining--;
-  if (budget.remaining < 0) {
+  context.budget.remaining--;
+  if (context.budget.remaining < 0) {
     return `arguments exceeded the maximum node count of ${MAX_TOOL_ARGUMENT_NODES}`;
   }
+  const constraintError = validateValueConstraints(value, schema, context.path);
+  if (constraintError) { return constraintError; }
+  if (isRecord(value)) {
+    return validateObjectValue(value, schema, context);
+  }
+  if (Array.isArray(value) && isRecord(schema.items)) {
+    return validateArrayItems(value, schema.items, context);
+  }
+  return undefined;
+}
+
+function validateValueConstraints(
+  value: unknown,
+  schema: Record<string, unknown>,
+  path: string
+): string | undefined {
   if ('const' in schema && !deepEqual(value, schema.const)) {
     return `${path} did not match the schema const`;
   }
@@ -148,60 +173,107 @@ function validateSchemaValue(
   if (!matchesSchemaType(value, schema.type)) {
     return `${path} did not match schema type ${formatSchemaType(schema.type)}`;
   }
+  return undefined;
+}
 
-  if (isRecord(value)) {
-    const properties = isRecord(schema.properties) ? schema.properties : {};
-    const required = Array.isArray(schema.required)
-      ? schema.required.filter((entry): entry is string => typeof entry === 'string')
-      : [];
+function validateObjectValue(
+  value: Record<string, unknown>,
+  schema: Record<string, unknown>,
+  context: ValidationContext
+): string | undefined {
+  const properties = isRecord(schema.properties) ? schema.properties : {};
+  const required = getRequiredPropertyNames(schema);
+  const requiredError = applyRequiredDefaults(value, properties, required, context.path);
+  if (requiredError) { return requiredError; }
+  return validateObjectProperties(value, properties, schema.additionalProperties, context);
+}
 
-    for (const propertyName of required) {
-      if (UNSAFE_OBJECT_KEYS.has(propertyName)) {
-        return `${path} contained an unsafe schema property name`;
-      }
-      if (Object.prototype.hasOwnProperty.call(value, propertyName)) { continue; }
-      const propertySchema = properties[propertyName];
-      if (isRecord(propertySchema) && 'default' in propertySchema) {
-        const clonedDefault = cloneJsonValue(propertySchema.default);
-        if (!clonedDefault.ok) {
-          return `${path}.${propertyName} had an invalid schema default`;
-        }
-        value[propertyName] = clonedDefault.value;
-      } else {
-        return `${path} missing required argument: ${propertyName}`;
-      }
+function getRequiredPropertyNames(schema: Record<string, unknown>): string[] {
+  return Array.isArray(schema.required)
+    ? schema.required.filter((entry): entry is string => typeof entry === 'string')
+    : [];
+}
+
+function applyRequiredDefaults(
+  value: Record<string, unknown>,
+  properties: Record<string, unknown>,
+  required: readonly string[],
+  path: string
+): string | undefined {
+  for (const propertyName of required) {
+    if (UNSAFE_OBJECT_KEYS.has(propertyName)) {
+      return `${path} contained an unsafe schema property name`;
     }
-
-    for (const [propertyName, propertyValue] of Object.entries(value)) {
-      const propertySchema = properties[propertyName];
-      if (isRecord(propertySchema)) {
-        const error = validateSchemaValue(
-          propertyValue,
-          propertySchema,
-          `${path}.${propertyName}`,
-          depth + 1,
-          budget
-        );
-        if (error) { return error; }
-      } else if (schema.additionalProperties === false) {
-        return `${path}.${propertyName} was not allowed by the schema`;
-      }
+    if (Object.prototype.hasOwnProperty.call(value, propertyName)) { continue; }
+    const defaultResult = getPropertyDefault(properties[propertyName]);
+    if (!defaultResult.hasDefault) {
+      return `${path} missing required argument: ${propertyName}`;
     }
-  }
-
-  if (Array.isArray(value) && isRecord(schema.items)) {
-    for (let index = 0; index < value.length; index++) {
-      const error = validateSchemaValue(
-        value[index],
-        schema.items,
-        `${path}[${index}]`,
-        depth + 1,
-        budget
-      );
-      if (error) { return error; }
+    if (!defaultResult.cloned.ok) {
+      return `${path}.${propertyName} had an invalid schema default`;
     }
+    value[propertyName] = defaultResult.cloned.value;
   }
   return undefined;
+}
+
+type PropertyDefault =
+  | { hasDefault: false }
+  | { hasDefault: true; cloned: ReturnType<typeof cloneJsonValue> };
+
+function getPropertyDefault(propertySchema: unknown): PropertyDefault {
+  if (!isRecord(propertySchema) || !('default' in propertySchema)) {
+    return { hasDefault: false };
+  }
+  return { hasDefault: true, cloned: cloneJsonValue(propertySchema.default) };
+}
+
+function validateObjectProperties(
+  value: Record<string, unknown>,
+  properties: Record<string, unknown>,
+  additionalProperties: unknown,
+  context: ValidationContext
+): string | undefined {
+  for (const [propertyName, propertyValue] of Object.entries(value)) {
+    const propertySchema = properties[propertyName];
+    if (!isRecord(propertySchema)) {
+      if (additionalProperties === false) {
+        return `${context.path}.${propertyName} was not allowed by the schema`;
+      }
+      continue;
+    }
+    const error = validateSchemaValue(
+      propertyValue,
+      propertySchema,
+      childContext(context, `.${propertyName}`)
+    );
+    if (error) { return error; }
+  }
+  return undefined;
+}
+
+function validateArrayItems(
+  value: readonly unknown[],
+  itemSchema: Record<string, unknown>,
+  context: ValidationContext
+): string | undefined {
+  for (let index = 0; index < value.length; index++) {
+    const error = validateSchemaValue(
+      value[index],
+      itemSchema,
+      childContext(context, `[${index}]`)
+    );
+    if (error) { return error; }
+  }
+  return undefined;
+}
+
+function childContext(context: ValidationContext, pathSuffix: string): ValidationContext {
+  return {
+    path: context.path + pathSuffix,
+    depth: context.depth + 1,
+    budget: context.budget,
+  };
 }
 
 function matchesSchemaType(value: unknown, type: unknown): boolean {
@@ -264,7 +336,7 @@ function inspectJsonStructure(
   maxDepth: number,
   maxNodes: number
 ): string | undefined {
-  const stack: Array<{ value: unknown; depth: number }> = [{ value: root, depth: 0 }];
+  const stack: TraversalNode[] = [{ value: root, depth: 0 }];
   const seen = new WeakSet<object>();
   let nodes = 0;
 
@@ -277,66 +349,111 @@ function inspectJsonStructure(
     if (current.depth > maxDepth) {
       return `${label} exceeded the maximum nesting depth of ${maxDepth}`;
     }
-    if (current.value === null) { continue; }
-    const valueType = typeof current.value;
-    if (
-      valueType === 'string' ||
-      valueType === 'boolean' ||
-      (valueType === 'number' && Number.isFinite(current.value))
-    ) {
-      continue;
-    }
-    if (valueType !== 'object') {
+    if (isJsonPrimitive(current.value)) { continue; }
+    if (typeof current.value !== 'object' || current.value === null) {
       return `${label} contained a non-JSON value`;
     }
-
-    const objectValue = current.value as object;
-    if (seen.has(objectValue)) {
-      return `${label} contained a cyclic value`;
-    }
-    seen.add(objectValue);
-
-    const isArray = Array.isArray(current.value);
-    let prototype: object | null;
-    let descriptors: Record<string, PropertyDescriptor>;
-    let symbolCount: number;
-    try {
-      prototype = Object.getPrototypeOf(objectValue) as object | null;
-      descriptors = Object.getOwnPropertyDescriptors(objectValue);
-      symbolCount = Object.getOwnPropertySymbols(objectValue).length;
-    } catch {
-      return `${label} contained an unreadable object`;
-    }
-    if (
-      (isArray && prototype !== Array.prototype) ||
-      (!isArray && prototype !== Object.prototype && prototype !== null)
-    ) {
-      return `${label} contained a non-plain object`;
-    }
-    if (symbolCount > 0) {
-      return `${label} contained a symbol property`;
-    }
-
-    for (const [key, descriptor] of Object.entries(descriptors)) {
-      if (isArray && key === 'length') { continue; }
-      if (
-        descriptor.get ||
-        descriptor.set ||
-        !('value' in descriptor) ||
-        descriptor.enumerable !== true
-      ) {
-        return `${label} contained an accessor or non-data property`;
-      }
-      if (
-        (!isArray && UNSAFE_OBJECT_KEYS.has(key)) ||
-        (isArray && !/^(0|[1-9]\d*)$/.test(key))
-      ) {
-        return `${label} contained an unsafe object key`;
-      }
-      stack.push({ value: descriptor.value, depth: current.depth + 1 });
-    }
+    const inspectionError = appendObjectChildren(current, label, seen, stack);
+    if (inspectionError) { return inspectionError; }
   }
   return undefined;
+}
+
+function isJsonPrimitive(value: unknown): boolean {
+  return (
+    value === null ||
+    typeof value === 'string' ||
+    typeof value === 'boolean' ||
+    (typeof value === 'number' && Number.isFinite(value))
+  );
+}
+
+function appendObjectChildren(
+  current: TraversalNode,
+  label: string,
+  seen: WeakSet<object>,
+  stack: TraversalNode[]
+): string | undefined {
+  const objectValue = current.value as object;
+  if (seen.has(objectValue)) { return `${label} contained a cyclic value`; }
+  seen.add(objectValue);
+
+  const metadata = readObjectMetadata(objectValue, label);
+  if (typeof metadata === 'string') { return metadata; }
+  const shapeError = validateObjectShape(metadata.isArray, metadata.prototype, metadata.symbolCount, label);
+  if (shapeError) { return shapeError; }
+  return appendDescriptorValues(metadata.descriptors, metadata.isArray, current.depth, label, stack);
+}
+
+interface ObjectMetadata {
+  isArray: boolean;
+  prototype: object | null;
+  descriptors: Record<string, PropertyDescriptor>;
+  symbolCount: number;
+}
+
+function readObjectMetadata(objectValue: object, label: string): ObjectMetadata | string {
+  try {
+    return {
+      isArray: Array.isArray(objectValue),
+      prototype: Object.getPrototypeOf(objectValue) as object | null,
+      descriptors: Object.getOwnPropertyDescriptors(objectValue),
+      symbolCount: Object.getOwnPropertySymbols(objectValue).length,
+    };
+  } catch {
+    return `${label} contained an unreadable object`;
+  }
+}
+
+function validateObjectShape(
+  isArray: boolean,
+  prototype: object | null,
+  symbolCount: number,
+  label: string
+): string | undefined {
+  const validPrototype = isArray
+    ? prototype === Array.prototype
+    : prototype === Object.prototype || prototype === null;
+  if (!validPrototype) { return `${label} contained a non-plain object`; }
+  return symbolCount > 0 ? `${label} contained a symbol property` : undefined;
+}
+
+function appendDescriptorValues(
+  descriptors: Record<string, PropertyDescriptor>,
+  isArray: boolean,
+  parentDepth: number,
+  label: string,
+  stack: TraversalNode[]
+): string | undefined {
+  for (const [key, descriptor] of Object.entries(descriptors)) {
+    if (isArray && key === 'length') { continue; }
+    const descriptorError = validateDescriptor(key, descriptor, isArray, label);
+    if (descriptorError) { return descriptorError; }
+    stack.push({ value: descriptor.value, depth: parentDepth + 1 });
+  }
+  return undefined;
+}
+
+function validateDescriptor(
+  key: string,
+  descriptor: PropertyDescriptor,
+  isArray: boolean,
+  label: string
+): string | undefined {
+  if (descriptor.get || descriptor.set || !('value' in descriptor) || descriptor.enumerable !== true) {
+    return `${label} contained an accessor or non-data property`;
+  }
+  const unsafeKey = isArray ? !isCanonicalArrayIndex(key) : UNSAFE_OBJECT_KEYS.has(key);
+  return unsafeKey ? `${label} contained an unsafe object key` : undefined;
+}
+
+function isCanonicalArrayIndex(value: string): boolean {
+  if (value === '0') { return true; }
+  if (value.length === 0 || value[0] < '1' || value[0] > '9') { return false; }
+  for (let index = 1; index < value.length; index++) {
+    if (value[index] < '0' || value[index] > '9') { return false; }
+  }
+  return true;
 }
 
 function cloneJsonValue(value: unknown): { ok: true; value: unknown } | { ok: false } {

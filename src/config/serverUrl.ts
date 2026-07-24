@@ -2,6 +2,14 @@ export type ServerUrlValidation =
   | { readonly ok: true; readonly value: string }
   | { readonly ok: false; readonly error: string };
 
+function stripTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value.charAt(end - 1) === '/') {
+    end--;
+  }
+  return value.slice(0, end);
+}
+
 /**
  * Validate and canonicalize the inference-server origin before it can receive
  * prompts or credentials. Paths are preserved for compatible reverse proxies;
@@ -33,6 +41,6 @@ export function validateServerUrl(rawValue: string): ServerUrlValidation {
     return { ok: false, error: 'The server URL must not contain a query string or fragment.' };
   }
 
-  const normalized = parsed.toString().replace(/\/+$/, '');
+  const normalized = stripTrailingSlashes(parsed.toString());
   return { ok: true, value: normalized };
 }
