@@ -6,6 +6,7 @@ import {
   readFrameworkConfiguration,
   resolveApiKey,
 } from '../config/frameworkConfig';
+
 import { estimateTextTokens } from '../chat/tokenBudget';
 import { diagnoseModelFetchError } from '../chat/errorDiagnostics';
 import { InlineCompletionBackend } from '../completions/inlineCompletionProvider';
@@ -25,6 +26,7 @@ import {
   formatContextLabel,
 } from '../status/statusSnapshot';
 import { ChatRequestHandler, RequestStateEvent } from './chatRequestHandler';
+import { BackendRegistry } from './backendRegistry';
 import { ConfigService } from './configService';
 import { InlineCompletionService } from './inlineCompletionService';
 import { ModelCatalog } from './modelCatalog';
@@ -56,6 +58,7 @@ const MODEL_AFFECTING_KEYS: readonly string[] = [
   'github.copilot.llm-gateway.enableToolCalling',
   'github.copilot.llm-gateway.customHeaders',
   'github.copilot.llm-gateway.modelContextWindows',
+  'github.copilot.llm-gateway.backends',
 ];
 
 /**
@@ -73,7 +76,7 @@ const LEGACY_SECRET_KEYS: readonly string[] = [
  *
  * A thin facade over focused services: {@link ConfigService} (settings +
  * validation), {@link SecretsManager} (SecretStorage cache + legacy
- * migration), {@link ModelCatalog} (model list cache + context sizes),
+ * migration), {@link BackendRegistry} (multi-backend model list + routing),
  * {@link ChatRequestHandler} (the chat pipeline), and
  * {@link InlineCompletionService} (FIM ghost text). This class owns the
  * VS Code API surface, the event emitters, and the session stats the status
@@ -92,6 +95,7 @@ export class GatewayProvider
   private readonly discovery: OllamaDiscovery;
   private readonly chatHandler: ChatRequestHandler;
   private readonly inlineCompletions: InlineCompletionService;
+  private readonly registry: BackendRegistry;
   /**
    * Latest API-key override supplied by VS Code's framework-managed
    * `configuration` schema (the `chatProvider@4` proposed API used by native
@@ -156,6 +160,17 @@ export class GatewayProvider
       log,
       onStatusChanged: () => this._onDidChangeStatusSnapshot.fire(),
     });
+
+    // Multi-backend registry: manages one GatewayClient + ModelCatalog per
+    // configured backend profile. When only the single top-level `serverUrl`
+    // is configured, the registry holds one implicit "default" backend.
+    this.registry = new BackendRegistry({
+      getConfig: () => this.config,
+      secretsManager: this.secretsManager,
+      log,
+      onStatusChanged: () => this._onDidChangeStatusSnapshot.fire(),
+    });
+
     this.chatHandler = new ChatRequestHandler({
       client: this.client,
       catalog: this.catalog,
@@ -165,6 +180,7 @@ export class GatewayProvider
       onCompleted: (modelId, modelName, usage) =>
         this.recordCompletedRequest(modelId, modelName, usage),
       showOutput: () => this.outputChannel.show(),
+      registry: this.registry,
     });
     this.inlineCompletions = new InlineCompletionService({
       client: this.client,
@@ -223,6 +239,8 @@ export class GatewayProvider
    */
   public async loadSecrets(): Promise<void> {
     await this.secretsManager.loadSecrets();
+    // Build the registry instances now that secrets are available.
+    await this.registry.rebuild();
   }
 
   public async setApiKey(apiKey: string): Promise<void> {
@@ -258,6 +276,8 @@ export class GatewayProvider
     // The user asked for a re-probe — the server behind the URL may have
     // changed, so forget the cached backend detection too.
     this.discovery.reset();
+    // Also invalidate all registry backends.
+    this.registry.invalidateAllCaches();
   }
 
   /**
@@ -276,12 +296,35 @@ export class GatewayProvider
     // picker open.
     this.applyFrameworkConfiguration(options.configuration);
 
+    // When multiple backends are configured, use the registry to aggregate
+    // models from all of them.
+    if (this.registry.isMultiBackend()) {
+      const { models, errors } = await this.registry.getAggregatedModels(token);
+      if (!options.silent && errors.size > 0) {
+        const errorMessages = Array.from(errors.entries())
+          .map(([name, err]) => `${name}: ${diagnoseModelFetchError(err)}`)
+          .join('; ');
+        promptOpenSettings(
+          `GitHub Copilot LLM Gateway: Failed to fetch models from some backends. ${errorMessages}`,
+          (msg) => this.outputChannel.appendLine(msg)
+        );
+      }
+      if (models.length > 0) {
+        this.ensureUtilityModelsConfigured(models[0].id);
+      }
+      return models;
+    }
+
+    // Single backend — use the original catalog for backward compatibility.
     const outcome = await this.catalog.getOrFetchModels(token);
     if (!options.silent && outcome.error) {
       promptOpenSettings(
         `GitHub Copilot LLM Gateway: Failed to fetch models. ${diagnoseModelFetchError(outcome.error)}`,
         (msg) => this.outputChannel.appendLine(msg)
       );
+    }
+    if (outcome.models.length > 0) {
+      this.ensureUtilityModelsConfigured(outcome.models[0].id);
     }
     return outcome.models;
   }
@@ -324,6 +367,9 @@ export class GatewayProvider
     progress: vscode.Progress<vscode.LanguageModelResponsePart>,
     token: vscode.CancellationToken
   ): Promise<void> {
+    // Track the currently selected model as the utility model — this ensures
+    // the utility setting always points at the model the user is actively using.
+    this.ensureUtilityModelsConfigured(model.id);
     return this.chatHandler.handle(model, messages, options, progress, token);
   }
 
@@ -410,6 +456,11 @@ export class GatewayProvider
       connection = { state: 'ok' };
     }
 
+    // Multi-backend connection info for the status tooltip
+    const backendConnections = this.registry.isMultiBackend()
+      ? this.registry.getConnectionInfos()
+      : undefined;
+
     return {
       host: extractHost(this.config.serverUrl),
       connection,
@@ -425,6 +476,7 @@ export class GatewayProvider
         inlineCompletionModel: this.config.inlineCompletionModel,
         agentTemperature: this.config.agentTemperature,
       },
+      ...(backendConnections ? { backendConnections } : {}),
       now: Date.now(),
     };
   }
@@ -451,6 +503,52 @@ export class GatewayProvider
 
   // ---------- config ----------
 
+  /**
+   * Auto-configure `chat.utilityModel` and `chat.utilitySmallModel` to point
+   * at a gateway model. VS Code requires these when the main chat model is
+   * BYOK; without them, prompts fail with "No utility model is configured
+   * for 'copilot-utility-small'".
+   *
+   * Uses the currently selected model (from the chat request) as the utility
+   * model, falling back to the first available model from the model list.
+   * Always updates when the value is empty or was previously set by this
+   * extension, so dynamic model fleets stay tracked.
+   */
+  private ensureUtilityModelsConfigured(modelId: string): void {
+    const qualifiedId = `copilot-llm-gateway/${modelId}`;
+    const chatConfig = vscode.workspace.getConfiguration('chat');
+
+    const currentUtility = chatConfig.get<string>('utilityModel', '');
+    const currentSmall = chatConfig.get<string>('utilitySmallModel', '');
+
+    // Update if empty or if previously auto-set by us (prefix match).
+    const needsUtility = !currentUtility || currentUtility.startsWith('copilot-llm-gateway/');
+    const needsSmall = !currentSmall || currentSmall.startsWith('copilot-llm-gateway/');
+
+    // Skip if already pointing at this exact model.
+    if ((!needsUtility || currentUtility === qualifiedId) &&
+        (!needsSmall || currentSmall === qualifiedId)) {
+      return;
+    }
+
+    // Sequential writes to avoid JSON serialization race (missing comma).
+    const doUpdate = async (): Promise<void> => {
+      if (needsUtility && currentUtility !== qualifiedId) {
+        await chatConfig.update('utilityModel', qualifiedId, vscode.ConfigurationTarget.Global);
+        this.outputChannel.appendLine(
+          `Auto-configured chat.utilityModel → ${qualifiedId}`
+        );
+      }
+      if (needsSmall && currentSmall !== qualifiedId) {
+        await chatConfig.update('utilitySmallModel', qualifiedId, vscode.ConfigurationTarget.Global);
+        this.outputChannel.appendLine(
+          `Auto-configured chat.utilitySmallModel → ${qualifiedId}`
+        );
+      }
+    };
+    void doUpdate();
+  }
+
   private reloadConfig(): void {
     this.config = this.configService.load();
     this.client.updateConfig(this.config);
@@ -460,6 +558,23 @@ export class GatewayProvider
     // and neither does the cached backend detection.
     this.catalog.clearLearnedContexts();
     this.discovery.reset();
+    // Rebuild registry instances for config changes (new/removed backends,
+    // changed URLs, etc.). Fire-and-forget — the rebuild is async for
+    // secret reads but the config-change handler can't be async.
+    this.registry.clearAllLearnedContexts();
+    void this.registry.rebuild();
     this.outputChannel.appendLine('Configuration reloaded');
+  }
+
+  // ---------- registry access ----------
+
+  /** Expose the registry for commands that need to manage backends. */
+  public getRegistry(): BackendRegistry {
+    return this.registry;
+  }
+
+  /** Expose the secrets manager for backend management commands. */
+  public getSecretsManager(): SecretsManager {
+    return this.secretsManager;
   }
 }

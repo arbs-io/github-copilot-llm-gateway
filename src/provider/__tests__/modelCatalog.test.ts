@@ -38,6 +38,7 @@ function fakeConfig(overrides: Partial<GatewayConfig> = {}): GatewayConfig {
     inlineCompletionTimeout: 3000,
     inlineCompletionMaxPrefixChars: 4000,
     inlineCompletionMaxSuffixChars: 1000,
+    backendProfiles: [],
     ...overrides,
   };
 }

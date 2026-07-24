@@ -90,6 +90,16 @@
         "command": "github.copilot.llm-gateway.showOutput",
         "title": "Show Output Log",
         "category": "GitHub Copilot LLM Gateway"
+      },
+      {
+        "command": "github.copilot.llm-gateway.addBackend",
+        "title": "Add Backend",
+        "category": "GitHub Copilot LLM Gateway"
+      },
+      {
+        "command": "github.copilot.llm-gateway.removeBackend",
+        "title": "Remove Backend",
+        "category": "GitHub Copilot LLM Gateway"
       }
     ],
     "configuration": {
@@ -184,6 +194,49 @@
           },
           "description": "Per-model chat-completion parameters, keyed by model id. Merged on top of 'extraModelOptions' for matching models; per-request modelOptions from the caller still take precedence. Keys match the model id exactly, or use a '*' wildcard for a whole family (case-insensitive, e.g. 'qwen*'). Exact-id entries win over wildcard entries. Example: { \"qwen*\": { \"temperature\": 0.7, \"top_p\": 0.8 }, \"deepseek-r1\": { \"temperature\": 0.6 } }. Edit in settings.json.",
           "order": 13
+        },
+        "github.copilot.llm-gateway.backends": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "serverUrl": {
+                "type": "string",
+                "description": "Inference server URL for this backend"
+              },
+              "requestTimeout": {
+                "type": "number",
+                "description": "Request timeout in milliseconds (overrides the global setting)"
+              },
+              "defaultMaxTokens": {
+                "type": "number",
+                "description": "Fallback context window size for this backend"
+              },
+              "defaultMaxOutputTokens": {
+                "type": "number",
+                "description": "Fallback maximum output tokens for this backend"
+              },
+              "extraModelOptions": {
+                "type": "object",
+                "additionalProperties": true,
+                "description": "Extra parameters merged into the chat-completions request body for this backend"
+              },
+              "perModelOptions": {
+                "type": "object",
+                "additionalProperties": { "type": "object", "additionalProperties": true },
+                "description": "Per-model chat-completion parameters for this backend"
+              },
+              "modelContextWindows": {
+                "type": "object",
+                "additionalProperties": { "type": "number" },
+                "description": "Per-model context-window overrides for this backend"
+              }
+            },
+            "required": ["serverUrl"]
+          },
+          "markdownDescription": "Named backend profiles for connecting to multiple inference servers. Each key is a backend name (e.g. `local-vllm`, `remote-ollama`) and each value is an object with at least `serverUrl`. When configured, models from each backend appear in the picker prefixed with the backend name (`backendName::modelId`). API keys per backend are managed via the 'Configure Server' command. Example:\n```json\n{\n  \"local\": { \"serverUrl\": \"http://localhost:8000\" },\n  \"remote\": { \"serverUrl\": \"https://my-server.example.com\", \"requestTimeout\": 120000 }\n}\n```\nWhen empty (default), the extension uses the single `serverUrl` setting.",
+          "order": 22
         },
         "github.copilot.llm-gateway.modelContextWindows": {
           "type": "object",

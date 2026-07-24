@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { GatewayProvider } from '../provider/gatewayProvider';
 import { StatusBarManager } from '../status/statusBarManager';
-import { configureServerFlow } from './configureServer';
+import { configureServerFlow, migrateLegacyServerUrl } from './configureServer';
 import { editCustomHeadersFlow } from './customHeaders';
 
 /**
@@ -99,4 +99,22 @@ export function registerCommands(
       }
     )
   );
+
+  // "Add Backend" and "Remove Backend" commands both delegate to the
+  // unified Configure Server flow which shows the backend management UI.
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      'github.copilot.llm-gateway.addBackend',
+      () => configureServerFlow(provider, refreshStatusBar)
+    )
+  );
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      'github.copilot.llm-gateway.removeBackend',
+      () => configureServerFlow(provider, refreshStatusBar)
+    )
+  );
+
+  // Auto-migrate legacy single-server `serverUrl` into the `backends` object.
+  void migrateLegacyServerUrl(provider);
 }

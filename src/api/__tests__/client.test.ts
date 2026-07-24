@@ -208,6 +208,7 @@ describe('streamChatCompletion reasoning field handling (issue #59)', () => {
     inlineCompletionTimeout: 5000,
     inlineCompletionMaxPrefixChars: 4000,
     inlineCompletionMaxSuffixChars: 2000,
+    backendProfiles: [],
   };
 
   const token = {

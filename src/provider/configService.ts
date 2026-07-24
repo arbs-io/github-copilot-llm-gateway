@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { GatewayConfig } from '../config/gatewayConfig';
+import { RawBackendEntry, resolveBackendProfiles } from '../config/backendConfig';
 import { TOKEN_CONSTANTS } from '../chat/tokenBudget';
 import {
   ConfigIssue,
@@ -46,24 +47,44 @@ export class ConfigService {
 
   private readRawConfig(): GatewayConfig {
     const config = vscode.workspace.getConfiguration('github.copilot.llm-gateway');
+    const serverUrl = config.get<string>('serverUrl', FALLBACK_SERVER_URL);
+    const requestTimeout = config.get<number>('requestTimeout', DEFAULT_REQUEST_TIMEOUT_MS);
+    const defaultMaxTokens = config.get<number>('defaultMaxTokens', TOKEN_CONSTANTS.DEFAULT_CONTEXT_TOKENS);
+    const defaultMaxOutputTokens = config.get<number>(
+      'defaultMaxOutputTokens',
+      TOKEN_CONSTANTS.FALLBACK_OUTPUT_TOKENS
+    );
+    const extraModelOptions = config.get<Record<string, unknown>>('extraModelOptions', {}) ?? {};
+    const perModelOptions = config.get<Record<string, unknown>>('perModelOptions', {}) ?? {};
+    const modelContextWindows = config.get<Record<string, number>>('modelContextWindows', {}) ?? {};
+    const backends = config.get<Record<string, RawBackendEntry>>('backends', {}) ?? {};
+
+    const backendProfiles = resolveBackendProfiles({
+      backends: Object.keys(backends).length > 0 ? backends : undefined,
+      globalServerUrl: serverUrl,
+      globalRequestTimeout: requestTimeout,
+      globalDefaultMaxTokens: defaultMaxTokens,
+      globalDefaultMaxOutputTokens: defaultMaxOutputTokens,
+      globalExtraModelOptions: extraModelOptions,
+      globalPerModelOptions: perModelOptions,
+      globalModelContextWindows: modelContextWindows,
+    });
+
     return {
-      serverUrl: config.get<string>('serverUrl', FALLBACK_SERVER_URL),
+      serverUrl,
       apiKey: this.deps.getApiKey(),
-      requestTimeout: config.get<number>('requestTimeout', DEFAULT_REQUEST_TIMEOUT_MS),
-      defaultMaxTokens: config.get<number>('defaultMaxTokens', TOKEN_CONSTANTS.DEFAULT_CONTEXT_TOKENS),
-      defaultMaxOutputTokens: config.get<number>(
-        'defaultMaxOutputTokens',
-        TOKEN_CONSTANTS.FALLBACK_OUTPUT_TOKENS
-      ),
+      requestTimeout,
+      defaultMaxTokens,
+      defaultMaxOutputTokens,
       enableImageInput: config.get<boolean>('enableImageInput', true),
       enableToolCalling: config.get<boolean>('enableToolCalling', true),
       parallelToolCalling: config.get<boolean>('parallelToolCalling', true),
       agentTemperature: config.get<number>('agentTemperature', 0),
       verboseLogging: config.get<boolean>('verboseLogging', false),
       customHeaders: { ...this.deps.getCustomHeaders() },
-      extraModelOptions: config.get<Record<string, unknown>>('extraModelOptions', {}) ?? {},
-      perModelOptions: config.get<Record<string, unknown>>('perModelOptions', {}) ?? {},
-      modelContextWindows: config.get<Record<string, number>>('modelContextWindows', {}) ?? {},
+      extraModelOptions,
+      perModelOptions,
+      modelContextWindows,
       enableInlineCompletion: config.get<boolean>('enableInlineCompletion', false),
       inlineCompletionModel: config.get<string>('inlineCompletionModel', ''),
       inlineCompletionMaxTokens: config.get<number>('inlineCompletionMaxTokens', 256),
@@ -71,6 +92,7 @@ export class ConfigService {
       inlineCompletionTimeout: config.get<number>('inlineCompletionTimeout', 3000),
       inlineCompletionMaxPrefixChars: config.get<number>('inlineCompletionMaxPrefixChars', 4000),
       inlineCompletionMaxSuffixChars: config.get<number>('inlineCompletionMaxSuffixChars', 1000),
+      backendProfiles,
     };
   }
 

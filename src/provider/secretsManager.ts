@@ -7,8 +7,19 @@ import {
   migrateLegacySecrets,
   parseCustomHeadersJson,
 } from '../config/secretMigration';
+import { DEFAULT_BACKEND_NAME } from '../config/backendConfig';
 
 export interface SecretCache {
+  apiKey: string;
+  customHeaders: Record<string, string>;
+}
+
+/**
+ * Per-backend secret cache. Each backend name maps to its own API key and
+ * custom headers. The un-prefixed "default" backend uses the legacy global
+ * secrets for backward compatibility.
+ */
+export interface BackendSecretCache {
   apiKey: string;
   customHeaders: Record<string, string>;
 }
@@ -117,7 +128,86 @@ export class SecretsManager {
 
   /** True when the changed secret key belongs to this extension. */
   public ownsSecretKey(key: string): boolean {
-    return key === SECRET_KEYS.apiKey || key === SECRET_KEYS.customHeaders;
+    return key === SECRET_KEYS.apiKey || key === SECRET_KEYS.customHeaders
+      || key.startsWith(SECRET_KEYS.apiKey + ':')
+      || key.startsWith(SECRET_KEYS.customHeaders + ':');
+  }
+
+  // ---------- per-backend secrets ----------
+
+  /**
+   * SecretStorage key for a named backend's API key. The "default" backend
+   * uses the un-suffixed global key for backward compatibility.
+   */
+  private backendApiKeyKey(backendName: string): string {
+    if (backendName === DEFAULT_BACKEND_NAME) {
+      return SECRET_KEYS.apiKey;
+    }
+    return `${SECRET_KEYS.apiKey}:${backendName}`;
+  }
+
+  /**
+   * SecretStorage key for a named backend's custom headers.
+   */
+  private backendCustomHeadersKey(backendName: string): string {
+    if (backendName === DEFAULT_BACKEND_NAME) {
+      return SECRET_KEYS.customHeaders;
+    }
+    return `${SECRET_KEYS.customHeaders}:${backendName}`;
+  }
+
+  /**
+   * Get the API key for a specific backend. Falls back to the global key
+   * for the "default" backend.
+   */
+  public async getBackendApiKey(backendName: string): Promise<string> {
+    const key = await this.secrets.get(this.backendApiKeyKey(backendName));
+    return key ?? '';
+  }
+
+  /**
+   * Get the custom headers for a specific backend.
+   */
+  public async getBackendCustomHeaders(backendName: string): Promise<Record<string, string>> {
+    const json = await this.secrets.get(this.backendCustomHeadersKey(backendName));
+    return parseCustomHeadersJson(json, this.deps.log);
+  }
+
+  /**
+   * Store an API key for a specific named backend.
+   */
+  public async setBackendApiKey(backendName: string, apiKey: string): Promise<void> {
+    const trimmed = apiKey.trim();
+    const key = this.backendApiKeyKey(backendName);
+    if (trimmed.length === 0) {
+      await this.secrets.delete(key);
+    } else {
+      await this.secrets.store(key, trimmed);
+    }
+    await this.refreshCache();
+  }
+
+  /**
+   * Store custom headers for a specific named backend.
+   */
+  public async setBackendCustomHeaders(backendName: string, headers: Record<string, string>): Promise<void> {
+    const key = this.backendCustomHeadersKey(backendName);
+    if (Object.keys(headers).length === 0) {
+      await this.secrets.delete(key);
+    } else {
+      await this.secrets.store(key, JSON.stringify(headers));
+    }
+    await this.refreshCache();
+  }
+
+  /**
+   * Delete all secrets for a named backend (API key + custom headers).
+   * Called when a backend is removed from the configuration.
+   */
+  public async deleteBackendSecrets(backendName: string): Promise<void> {
+    await this.secrets.delete(this.backendApiKeyKey(backendName));
+    await this.secrets.delete(this.backendCustomHeadersKey(backendName));
+    await this.refreshCache();
   }
 
   /**

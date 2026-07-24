@@ -7,20 +7,27 @@
 
 import { OpenAIModel } from '../api/types';
 import { serverReportedContext } from '../chat/contextWindow';
+import { BACKEND_DELIMITER } from '../config/backendConfig';
 
 /**
  * Produce a display-friendly short name for a model ID.
  *
- * Hugging-Face-style IDs contain an org prefix (`Qwen/Qwen3-8B`) that the
- * Copilot model picker renders verbatim with a slash. Strip the prefix so the
- * picker shows `Qwen3-8B` (the owner is still available on the tooltip).
+ * Strips backend prefixes (`backendName::modelId`) and Hugging-Face-style
+ * org prefixes (`Qwen/Qwen3-8B`) so the picker shows a clean short name.
  */
 export function friendlyModelName(id: string): string {
-  const slash = id.lastIndexOf('/');
-  if (slash >= 0 && slash < id.length - 1) {
-    return id.slice(slash + 1);
+  // Strip backend prefix if present
+  let stripped = id;
+  const delimIdx = id.indexOf(BACKEND_DELIMITER);
+  if (delimIdx >= 0) {
+    stripped = id.slice(delimIdx + BACKEND_DELIMITER.length);
   }
-  return id;
+  // Strip org prefix (e.g. "Qwen/Qwen3-8B" → "Qwen3-8B")
+  const slash = stripped.lastIndexOf('/');
+  if (slash >= 0 && slash < stripped.length - 1) {
+    return stripped.slice(slash + 1);
+  }
+  return stripped;
 }
 
 const FAMILY_KEYWORDS: Array<{ match: RegExp; family: string }> = [

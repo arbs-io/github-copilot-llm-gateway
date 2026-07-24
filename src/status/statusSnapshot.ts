@@ -37,6 +37,15 @@ export interface FeatureFlags {
   readonly agentTemperature: number;
 }
 
+export interface BackendConnectionSummary {
+  readonly name: string;
+  readonly serverUrl: string;
+  readonly state: ConnectionState;
+  readonly errorMessage?: string;
+  readonly modelCount: number;
+  readonly lastSuccessfulFetchAt?: number;
+}
+
 export interface StatusSnapshot {
   readonly host: string;
   readonly connection: { readonly state: ConnectionState; readonly errorMessage?: string };
@@ -45,6 +54,8 @@ export interface StatusSnapshot {
   readonly sessionStats: SessionStats;
   readonly lastRequest?: LastRequestInfo;
   readonly features: FeatureFlags;
+  /** Per-backend connection details (only set in multi-backend mode). */
+  readonly backendConnections?: readonly BackendConnectionSummary[];
   /** Injected so relative-time output is deterministic in tests. */
   readonly now: number;
 }

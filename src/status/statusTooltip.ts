@@ -92,6 +92,7 @@ export function renderStatusTooltipHtml(snapshot: StatusSnapshot): string {
   return [
     renderHeader(snapshot),
     renderConnection(snapshot),
+    renderBackends(snapshot),
     renderSession(snapshot),
     renderLastRequest(snapshot),
     renderModels(snapshot),
@@ -139,6 +140,45 @@ interface ConnectionDescriptor {
   sideText: string;
   /** VS Code CSS variable suffix (with leading dash), e.g. "-charts-green". */
   color: string | undefined;
+}
+
+/**
+ * Render per-backend connection states (only in multi-backend mode).
+ */
+function renderBackends(snapshot: StatusSnapshot): string {
+  if (!snapshot.backendConnections || snapshot.backendConnections.length === 0) {
+    return '';
+  }
+  const rows = snapshot.backendConnections.map((b) => {
+    let icon: string;
+    let color: string | undefined;
+    switch (b.state) {
+      case 'ok':
+        icon = '$(check)';
+        color = '-charts-green';
+        break;
+      case 'error':
+        icon = '$(error)';
+        color = '-errorForeground';
+        break;
+      case 'noModels':
+        icon = '$(warning)';
+        color = '-editorWarning-foreground';
+        break;
+      default:
+        icon = '$(sync~spin)';
+        color = '-descriptionForeground';
+    }
+    const modelInfo = b.state === 'ok' ? `${b.modelCount} model${b.modelCount !== 1 ? 's' : ''}` : '';
+    return `<tr><td>${coloredSpan(icon, color)}&nbsp;<strong>${esc(b.name)}</strong>&nbsp;${mutedSpan(esc(b.serverUrl))}</td><td align="right">${mutedSpan(esc(modelInfo))}</td></tr>`;
+  });
+  return [
+    '\n<hr>\n',
+    '<strong>Backends</strong>',
+    '<table width="100%">',
+    ...rows,
+    '</table>',
+  ].join('');
 }
 
 function describeConnection(snapshot: StatusSnapshot): ConnectionDescriptor {

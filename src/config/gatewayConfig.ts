@@ -4,6 +4,9 @@
  * framework-supplied overrides — everything downstream reads this shape
  * instead of touching `vscode.workspace.getConfiguration` directly.
  */
+
+import { BackendProfile } from './backendConfig';
+
 export interface GatewayConfig {
   serverUrl: string;
   apiKey?: string;
@@ -38,4 +41,10 @@ export interface GatewayConfig {
   inlineCompletionTimeout: number;
   inlineCompletionMaxPrefixChars: number;
   inlineCompletionMaxSuffixChars: number;
+  /**
+   * Resolved backend profiles. When the `backends` setting is empty, this
+   * contains a single implicit "default" profile synthesized from the
+   * top-level settings. When `backends` is configured, one profile per entry.
+   */
+  backendProfiles: BackendProfile[];
 }

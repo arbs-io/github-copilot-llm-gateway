@@ -24,6 +24,7 @@ import {
 import { friendlyModelName } from '../models/modelDisplay';
 import { TokenUsage } from '../status/sessionStats';
 import { ModelCatalog } from './modelCatalog';
+import { BackendRegistry } from './backendRegistry';
 import { convertAllMessages } from './vscodeParts';
 import { handleChatError } from './notifications';
 
@@ -117,6 +118,8 @@ interface ChatRequestHandlerDeps {
   onCompleted: (modelId: string, modelName: string, usage: TokenUsage | undefined) => void;
   /** Opens the extension's output channel (used by error prompts). */
   showOutput: () => void;
+  /** Multi-backend registry — when set, routes requests to the correct backend. */
+  registry?: BackendRegistry;
 }
 
 /**
@@ -138,8 +141,24 @@ export class ChatRequestHandler {
     progress: vscode.Progress<vscode.LanguageModelResponsePart>,
     token: vscode.CancellationToken
   ): Promise<void> {
-    const { log, catalog } = this.deps;
-    log(`Sending chat request to model: ${model.id}`);
+    const { log } = this.deps;
+
+    // Resolve the client and catalog: in multi-backend mode, route based on
+    // the model ID prefix; otherwise use the single default client/catalog.
+    let client = this.deps.client;
+    let catalog = this.deps.catalog;
+    let wireModelId = model.id;
+
+    if (this.deps.registry?.isMultiBackend()) {
+      const resolved = this.deps.registry.resolveBackend(model.id);
+      if (resolved) {
+        client = resolved.instance.client;
+        catalog = resolved.instance.catalog;
+        wireModelId = resolved.rawModelId;
+      }
+    }
+
+    log(`Sending chat request to model: ${model.id} (wire: ${wireModelId})`);
     log(
       `Tool mode: ${describeToolMode(options.toolMode)}, Tools: ${options.tools?.length ?? 0}`
     );
@@ -218,8 +237,8 @@ export class ChatRequestHandler {
       // backend params were never discovered; it is now a genuine last-resort
       // fallback. Forwarding the discovered top_p also stops Ollama's OpenAI
       // endpoint defaulting an omitted top_p to 1.0.
-      const perModel = resolvePerModelOptions(model.id, config.perModelOptions);
-      const discovered = catalog.getDiscoveredParams(model.id);
+      const perModel = resolvePerModelOptions(wireModelId, config.perModelOptions);
+      const discovered = catalog.getDiscoveredParams(wireModelId);
 
       const configuredTemperature =
         pickNumber(options.modelOptions?.temperature) ??
@@ -231,7 +250,7 @@ export class ChatRequestHandler {
         (hasTools ? config.agentTemperature : DEFAULT_TEMPERATURE);
 
       const requestOptions = buildChatRequest({
-        model: model.id,
+        model: wireModelId,
         messages: truncatedMessages,
         maxTokens: safeMaxOutputTokens,
         temperature,
@@ -257,7 +276,7 @@ export class ChatRequestHandler {
       const reporter = this.createStreamReporter(trackingProgress, (usage) => {
         capturedUsage = usage;
       });
-      const chunks = this.deps.client.streamChatCompletion(requestOptions, token);
+      const chunks = client.streamChatCompletion(requestOptions, token);
       const stats = await streamResponse({
         chunks: chunks as AsyncIterable<StreamChunk>,
         reporter,
@@ -271,7 +290,7 @@ export class ChatRequestHandler {
 
       if (isEmptyStreamResult(stats)) {
         const toolCount = filteredTools?.length ?? 0;
-        this.handleEmptyResponse(model, inputText, openAIMessages.length, toolCount, trackingProgress);
+        this.handleEmptyResponse(model, inputText, openAIMessages.length, toolCount, trackingProgress, catalog);
       }
     };
 
@@ -480,11 +499,12 @@ export class ChatRequestHandler {
     inputText: string,
     messageCount: number,
     toolCount: number,
-    progress: vscode.Progress<vscode.LanguageModelResponsePart>
+    progress: vscode.Progress<vscode.LanguageModelResponsePart>,
+    catalog: ModelCatalog
   ): void {
     const { log } = this.deps;
     const inputTokenCount = estimateTextTokens(inputText);
-    const modelMaxContext = this.deps.catalog.resolveModelMaxContext(model);
+    const modelMaxContext = catalog.resolveModelMaxContext(model);
 
     log(`WARNING: Model returned empty response with no tool calls.`);
     log(`  Input tokens estimated: ${inputTokenCount}`);
