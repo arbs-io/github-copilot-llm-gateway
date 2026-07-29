@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { balanceBrackets, countChar, tryRepairJson } from '../jsonRepair';
+import { balanceBrackets, countChar, repairInvalidEscapes, tryRepairJson } from '../jsonRepair';
 
 describe('countChar', () => {
   test('counts literal occurrences of a character', () => {
@@ -51,6 +51,42 @@ describe('balanceBrackets', () => {
     // If there are more closers than openers, don't touch it.
     assert.equal(balanceBrackets('1,2]'), '1,2]');
     assert.equal(balanceBrackets('a}'), 'a}');
+  });
+});
+
+describe('repairInvalidEscapes', () => {
+  test('escapes invalid escape sequences inside strings', () => {
+    assert.equal(
+      repairInvalidEscapes(String.raw`{"path":"c:\Users\App.tsx"}`),
+      String.raw`{"path":"c:\\Users\\App.tsx"}`
+    );
+  });
+
+  test('preserves valid escape sequences', () => {
+    const valid = String.raw`{"a":"line\nbreak","b":"quote\"q","c":"back\\slash","d":"tab\t"}`;
+    assert.equal(repairInvalidEscapes(valid), valid);
+  });
+
+  test('preserves valid unicode escapes, fixes invalid ones', () => {
+    const valid = String.raw`{"a":"\u00e9"}`;
+    assert.equal(repairInvalidEscapes(valid), valid);
+    assert.equal(
+      repairInvalidEscapes(String.raw`{"a":"\utils"}`),
+      String.raw`{"a":"\\utils"}`
+    );
+  });
+
+  test('escapes a lone trailing backslash from a truncated stream', () => {
+    assert.equal(repairInvalidEscapes('{"path":"c:\\'), '{"path":"c:\\\\');
+  });
+
+  test('leaves backslashes outside string literals alone', () => {
+    assert.equal(repairInvalidEscapes(String.raw`\{"a":1}`), String.raw`\{"a":1}`);
+  });
+
+  test('leaves already-valid JSON unchanged', () => {
+    const input = '{"query":"hello","n":3}';
+    assert.equal(repairInvalidEscapes(input), input);
   });
 });
 
@@ -116,6 +152,29 @@ describe('tryRepairJson', () => {
     const messages: string[] = [];
     tryRepairJson('{"a":1', (m) => messages.push(m));
     assert.equal(messages.length, 0);
+  });
+
+  test('repairs unescaped Windows path in tool args (issue #70)', () => {
+    const input = String.raw`{"filePath": "c:\Users\sasha\Desktop\interviewSelf1\src\App.tsx", "startLine": 1, "endLine": 1}`;
+    assert.deepEqual(tryRepairJson(input), {
+      filePath: 'c:\\Users\\sasha\\Desktop\\interviewSelf1\\src\\App.tsx',
+      startLine: 1,
+      endLine: 1,
+    });
+  });
+
+  test('repairs unescaped Windows path in truncated args', () => {
+    const input = String.raw`{"filePath": "c:\Users\sasha\src\App.tsx`;
+    assert.deepEqual(tryRepairJson(input), {
+      filePath: 'c:\\Users\\sasha\\src\\App.tsx',
+    });
+  });
+
+  test('does not mangle correctly escaped paths', () => {
+    const input = String.raw`{"filePath": "c:\\Users\\sasha\\src\\App.tsx"}`;
+    assert.deepEqual(tryRepairJson(input), {
+      filePath: 'c:\\Users\\sasha\\src\\App.tsx',
+    });
   });
 
   test('handles complex realistic tool call args', () => {

@@ -5,6 +5,8 @@
  *  - truncated output (unclosed strings, braces, brackets)
  *  - trailing commas
  *  - empty / whitespace-only argument strings
+ *  - invalid escape sequences inside string literals (e.g. unescaped
+ *    Windows path separators such as `"c:\Users\..."` — issue #70)
  *
  * The repair logic is implemented as a single string-aware scan so that
  * structural characters inside string literals (e.g. `"{"`) are not mistaken
@@ -49,6 +51,67 @@ function advanceStringState(c: string, escaped: boolean): [boolean, boolean] {
     return [false, false];
   }
   return [true, false];
+}
+
+const VALID_ESCAPE_CHARS = new Set(['"', '\\', '/', 'b', 'f', 'n', 'r', 't']);
+const HEX_DIGIT_PATTERN = /^[0-9a-fA-F]{4}$/;
+
+/**
+ * Escape invalid `\` escape sequences inside JSON string literals.
+ *
+ * Small local models frequently emit tool call arguments containing literal
+ * Windows paths without escaping the backslashes — e.g.
+ * `{"filePath": "c:\Users\sasha\src\App.tsx"}`. `\U` is not a valid JSON
+ * escape, so `JSON.parse` rejects the whole argument object and the tool is
+ * invoked with schema-default (empty) arguments, which then fails (issue #70).
+ *
+ * The scan only rewrites backslashes *inside* string literals whose next
+ * character is not a valid escape (`" \ / b f n r t`) and not a `u` followed
+ * by four hex digits. A lone trailing backslash at end-of-input (truncated
+ * stream) is also escaped so the string can be closed by `balanceStructures`.
+ * Valid escape sequences are preserved untouched, so already-correct JSON
+ * round-trips unchanged.
+ */
+export function repairInvalidEscapes(str: string): string {
+  let result = '';
+  let inString = false;
+
+  for (let i = 0; i < str.length; i++) {
+    const c = str[i];
+
+    if (!inString) {
+      if (c === '"') {
+        inString = true;
+      }
+      result += c;
+      continue;
+    }
+
+    if (c !== '\\') {
+      if (c === '"') {
+        inString = false;
+      }
+      result += c;
+      continue;
+    }
+
+    const next = str[i + 1];
+    if (next !== undefined && VALID_ESCAPE_CHARS.has(next)) {
+      result += c + next;
+      i++;
+      continue;
+    }
+    if (next === 'u' && HEX_DIGIT_PATTERN.test(str.substring(i + 2, i + 6))) {
+      result += str.substring(i, i + 6);
+      i += 5;
+      continue;
+    }
+    // Invalid (or truncated) escape — double the backslash so the character
+    // after it survives as a literal.
+    result += '\\\\';
+  }
+
+  return result;
 }
 
 /**
@@ -131,7 +194,9 @@ export function tryRepairJson(jsonStr: string, log: RepairLogger = NOOP_LOGGER):
     // Fall through to repair attempts.
   }
 
-  let repaired = jsonStr.trim();
+  // Fix invalid escapes first so the string-literal state tracking in
+  // balanceStructures sees well-formed escape sequences.
+  let repaired = repairInvalidEscapes(jsonStr.trim());
   repaired = repaired.replaceAll(TRAILING_COMMA_PATTERN, '$1');
   repaired = balanceStructures(repaired);
 
