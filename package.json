@@ -245,13 +245,14 @@
     }
   },
   "devDependencies": {
-    "@types/node": "^26.1.0",
+    "@types/node": "^26.1.2",
     "@types/vscode": "^1.125.0",
-    "@typescript-eslint/eslint-plugin": "^8.63.0",
-    "@typescript-eslint/parser": "^8.63.0",
+    "@typescript/native": "npm:typescript@^7.0.2",
+    "@typescript-eslint/eslint-plugin": "^8.65.0",
+    "@typescript-eslint/parser": "^8.65.0",
     "@vscode/vsce": "^3.9.2",
     "esbuild": "^0.28.1",
-    "eslint": "^10.6.0",
-    "typescript": "^6.0.3"
+    "eslint": "^10.8.0",
+    "typescript": "npm:@typescript/typescript6@^6.0.2"
   }
 }
