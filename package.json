@@ -2,7 +2,7 @@
   "name": "github-copilot-llm-gateway",
   "displayName": "GitHub Copilot LLM Gateway",
   "description": "Connect GitHub Copilot to open-source models via vLLM or any OpenAI-compatible server",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "publisher": "AndrewButson",
   "icon": "assets/copilot-llm-gateway.png",
   "private": true,
@@ -146,9 +146,9 @@
         },
         "github.copilot.llm-gateway.agentTemperature": {
           "type": "number",
-          "default": 0.0,
-          "minimum": 0.0,
-          "maximum": 2.0,
+          "default": 0,
+          "minimum": 0,
+          "maximum": 2,
           "description": "Fallback temperature for agent/tool calling mode (lower = more consistent tool call formatting). Set to 0.0 for best results with fine-tuned models. A temperature discovered from the backend's own model config (e.g. an Ollama Modelfile via /api/show) takes precedence; use perModelOptions to force a specific value.",
           "order": 9
         },
