@@ -207,6 +207,11 @@ export class ChatRequestHandler {
       log(
         `Token estimate: input=${estimatedInputTokens}, tools=${toolsOverhead}, model_context=${modelMaxContext}, chosen_max_tokens=${safeMaxOutputTokens}`
       );
+      if (safeMaxOutputTokens <= TOKEN_CONSTANTS.MIN_OUTPUT_TOKENS) {
+        log(
+          `WARNING: max_tokens clamped to floor (${safeMaxOutputTokens}); input does not fit the context window even after truncation — responses will be cut off`
+        );
+      }
 
       const hasTools = filteredTools !== undefined && filteredTools.length > 0;
 

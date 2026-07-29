@@ -186,8 +186,8 @@ describe('calculateMaxInputTokens', () => {
       toolsSerializedLength: 0,
     });
     // desiredOutput = min(8000, 5000) = 5000
-    // Expected = 10000 - 5000 - 0 - 256 = 4744
-    assert.equal(result, 4744);
+    // Expected = floor((10000 - 5000 - 256) / 1.2) = 3953
+    assert.equal(result, 3953);
   });
 
   test('reserves configured output when less than half context', () => {
@@ -196,8 +196,8 @@ describe('calculateMaxInputTokens', () => {
       configuredMaxOutput: 2048,
       toolsSerializedLength: 0,
     });
-    // desiredOutput = 2048; expected = 32768 - 2048 - 0 - 256 = 30464
-    assert.equal(result, 30464);
+    // desiredOutput = 2048; expected = floor((32768 - 2048 - 256) / 1.2) = 25386
+    assert.equal(result, 25386);
   });
 
   test('subtracts tools overhead', () => {
@@ -212,5 +212,41 @@ describe('calculateMaxInputTokens', () => {
       toolsSerializedLength: 4000,
     });
     assert.ok(withTools < baseline);
+  });
+
+  test('never returns a negative ceiling', () => {
+    const result = calculateMaxInputTokens({
+      modelMaxContext: 4096,
+      configuredMaxOutput: 2048,
+      toolsSerializedLength: 100000,
+    });
+    assert.equal(result, 0);
+  });
+
+  test('input at the ceiling still leaves room for the desired output (issue #74)', () => {
+    // Reproduces issue #74: 163840-token context, ~27K tokens of tools,
+    // long conversation. Previously the truncation gate ignored the 1.2x
+    // overhead ratio on message input, so ~117K input tokens passed
+    // untruncated, then calculateSafeMaxOutputTokens inflated the same
+    // tokens by 1.2x, overflowed the context, and clamped max_tokens to 64.
+    const modelMaxContext = 163840;
+    const configuredMaxOutput = 4096;
+    const toolsSerializedLength = 27431 * TOKEN_CONSTANTS.CHARS_PER_TOKEN;
+
+    const maxInput = calculateMaxInputTokens({
+      modelMaxContext,
+      configuredMaxOutput,
+      toolsSerializedLength,
+    });
+
+    // Simulate a conversation truncated to exactly the input ceiling.
+    const safeOutput = calculateSafeMaxOutputTokens({
+      estimatedInputTokens: maxInput,
+      toolsOverhead: Math.ceil(toolsSerializedLength / TOKEN_CONSTANTS.CHARS_PER_TOKEN),
+      modelMaxContext,
+      configuredMaxOutput,
+    });
+
+    assert.equal(safeOutput, configuredMaxOutput);
   });
 });

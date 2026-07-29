@@ -155,15 +155,26 @@ export interface MaxInputTokensParams {
 /**
  * Compute the ceiling on input tokens for a request so there's still room
  * for output + tools in the context window.
+ *
+ * Must stay the exact inverse of {@link calculateSafeMaxOutputTokens}: that
+ * function inflates (input + tools) by INPUT_OVERHEAD_RATIO, so the ceiling
+ * here divides the available budget by the same ratio before subtracting the
+ * raw tools estimate. If the two drift apart, a conversation can pass the
+ * truncation gate yet leave "no room" for output, collapsing max_tokens to
+ * MIN_OUTPUT_TOKENS (issue #74).
  */
 export function calculateMaxInputTokens(params: MaxInputTokensParams): number {
   const desiredOutputTokens = Math.min(
     params.configuredMaxOutput,
     Math.floor(params.modelMaxContext / 2)
   );
-  const toolsTokenEstimate = Math.ceil(
-    (params.toolsSerializedLength / TOKEN_CONSTANTS.CHARS_PER_TOKEN) *
-      TOKEN_CONSTANTS.INPUT_OVERHEAD_RATIO
+  const toolsRawEstimate = Math.ceil(
+    params.toolsSerializedLength / TOKEN_CONSTANTS.CHARS_PER_TOKEN
   );
-  return params.modelMaxContext - desiredOutputTokens - toolsTokenEstimate - TOKEN_CONSTANTS.CONTEXT_BUFFER_TOKENS;
+  const inputBudget =
+    params.modelMaxContext - desiredOutputTokens - TOKEN_CONSTANTS.CONTEXT_BUFFER_TOKENS;
+  return Math.max(
+    0,
+    Math.floor(inputBudget / TOKEN_CONSTANTS.INPUT_OVERHEAD_RATIO) - toolsRawEstimate
+  );
 }
