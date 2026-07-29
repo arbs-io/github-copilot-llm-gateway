@@ -26,7 +26,11 @@ jobs:
         with:
           node-version: "22"
       - name: Install Extension Dependencies
-        run: npm ci
+        # --ignore-scripts blocks dependency lifecycle scripts from running at
+        # install time (supply-chain hardening). Safe here: all devDependencies
+        # (incl. esbuild, whose platform binary ships as an optionalDependency)
+        # work without install scripts.
+        run: npm ci --ignore-scripts
       - name: Build Extension
         run: npm run esbuild
       - name: Publish Extension

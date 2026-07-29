@@ -124,5 +124,11 @@ export function cleanCompletionText(text: string): string {
   if (text.trim().length === 0) {
     return '';
   }
-  return text.replace(/\n+$/, '');
+  // Manual scan instead of /\n+$/ — the anchored quantifier backtracks
+  // super-linearly on adversarial input.
+  let end = text.length;
+  while (end > 0 && text[end - 1] === '\n') {
+    end--;
+  }
+  return text.slice(0, end);
 }

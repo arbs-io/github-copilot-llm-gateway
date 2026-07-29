@@ -7,6 +7,7 @@ import {
   cleanCompletionText,
   extractCompletionText,
   extractFimContext,
+  FimContext,
   isSuffixUnsupportedError,
   shouldRequestCompletion,
 } from '../completions/inlineCompletion';
@@ -87,33 +88,46 @@ export class InlineCompletionService {
         error instanceof CompletionHttpError &&
         isSuffixUnsupportedError(error.status, error.body)
       ) {
-        this.suffixUnsupported = true;
-        this.deps.log(
-          'Inline completion: server rejected the FIM "suffix" parameter (vLLM does not implement it). ' +
-            'Falling back to prefix-only completions — the text after the cursor will be ignored.'
-        );
-        try {
-          return await this.fetchCompletionText(
-            buildCompletionRequestBody({
-              model,
-              context,
-              maxTokens: config.inlineCompletionMaxTokens,
-              includeSuffix: false,
-            }),
-            token,
-            config
-          );
-        } catch (retryError) {
-          this.deps.log(
-            `Inline completion failed: ${retryError instanceof Error ? retryError.message : String(retryError)}`
-          );
-          return undefined;
-        }
+        return this.retryWithoutSuffix(model, context, token, config);
       }
       // Completions are best-effort: a failure should silently yield no
       // suggestion rather than surfacing a toast on every keystroke.
       this.deps.log(
         `Inline completion failed: ${error instanceof Error ? error.message : String(error)}`
+      );
+      return undefined;
+    }
+  }
+
+  /**
+   * The server rejected the FIM `suffix` parameter — remember that and retry
+   * the same completion prefix-only.
+   */
+  private async retryWithoutSuffix(
+    model: string,
+    context: FimContext,
+    token: CancellationToken,
+    config: GatewayConfig
+  ): Promise<string | undefined> {
+    this.suffixUnsupported = true;
+    this.deps.log(
+      'Inline completion: server rejected the FIM "suffix" parameter (vLLM does not implement it). ' +
+        'Falling back to prefix-only completions — the text after the cursor will be ignored.'
+    );
+    try {
+      return await this.fetchCompletionText(
+        buildCompletionRequestBody({
+          model,
+          context,
+          maxTokens: config.inlineCompletionMaxTokens,
+          includeSuffix: false,
+        }),
+        token,
+        config
+      );
+    } catch (retryError) {
+      this.deps.log(
+        `Inline completion failed: ${retryError instanceof Error ? retryError.message : String(retryError)}`
       );
       return undefined;
     }

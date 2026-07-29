@@ -15,16 +15,14 @@ export function registerCommands(
   statusManager: StatusBarManager,
   refreshStatusBar: () => Promise<void>
 ): void {
-  // Tooltip's "Show output log" link needs a registered command (command-link
-  // anchors can't call class methods directly). Tiny wrapper around
-  // provider.showOutput.
   context.subscriptions.push(
+    // Tooltip's "Show output log" link needs a registered command (command-link
+    // anchors can't call class methods directly). Tiny wrapper around
+    // provider.showOutput.
     vscode.commands.registerCommand('github.copilot.llm-gateway.showOutput', () =>
       provider.showOutput()
-    )
-  );
+    ),
 
-  context.subscriptions.push(
     vscode.commands.registerCommand(
       'github.copilot.llm-gateway.testConnection',
       async () => {
@@ -55,22 +53,18 @@ export function registerCommands(
           cts.dispose();
         }
       }
-    )
-  );
+    ),
 
-  // "Configure Server" command — triggered by the "Add Models..." dropdown
-  // via the managementCommand contribution.
-  context.subscriptions.push(
+    // "Configure Server" command — triggered by the "Add Models..." dropdown
+    // via the managementCommand contribution.
     vscode.commands.registerCommand('github.copilot.llm-gateway.manage', () =>
       configureServerFlow(provider, refreshStatusBar)
-    )
-  );
+    ),
 
-  // "Edit Custom Headers" command — lets users manage additional HTTP
-  // headers (e.g. `Authorization: Token …`, `Anthropic-Version`) without
-  // touching settings.json. Values are persisted via SecretStorage because
-  // these headers commonly carry credentials (issue #28).
-  context.subscriptions.push(
+    // "Edit Custom Headers" command — lets users manage additional HTTP
+    // headers (e.g. `Authorization: Token …`, `Anthropic-Version`) without
+    // touching settings.json. Values are persisted via SecretStorage because
+    // these headers commonly carry credentials (issue #28).
     vscode.commands.registerCommand(
       'github.copilot.llm-gateway.editCustomHeaders',
       async () => {
@@ -79,13 +73,11 @@ export function registerCommands(
         provider.refreshModels();
         await refreshStatusBar();
       }
-    )
-  );
+    ),
 
-  // Explicit "Refresh Models" command — previously users could only trigger
-  // a re-fetch by editing settings, which was confusing when models
-  // temporarily went missing.
-  context.subscriptions.push(
+    // Explicit "Refresh Models" command — previously users could only trigger
+    // a re-fetch by editing settings, which was confusing when models
+    // temporarily went missing.
     vscode.commands.registerCommand(
       'github.copilot.llm-gateway.refreshModels',
       async () => {

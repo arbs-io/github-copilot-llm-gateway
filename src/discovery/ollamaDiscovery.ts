@@ -46,7 +46,8 @@ export function parseOllamaParameters(parameters: unknown): Record<string, numbe
   const out: Record<string, number> = {};
   if (typeof parameters !== 'string') { return out; }
   for (const line of parameters.split('\n')) {
-    const match = /^(\S+)\s+(.+)$/.exec(line.trim());
+    // `\S` after `\s+` keeps the split unambiguous (no regex backtracking).
+    const match = /^(\S+)\s+(\S.*)$/.exec(line.trim());
     if (!match) { continue; }
     const key = match[1];
     if (!NUMERIC_PARAM_KEYS.has(key)) { continue; }
@@ -96,14 +97,16 @@ export function parseOllamaShowResponse(raw: unknown): OllamaModelInfo | undefin
 /** Map parsed Ollama metadata onto the backend-neutral discovery shape. */
 export function toDiscoveredModelInfo(info: OllamaModelInfo): DiscoveredModelInfo {
   const contextLength = info.numCtx ?? info.trainedContext;
+  let contextSource: string | undefined;
+  if (contextLength !== undefined) {
+    contextSource =
+      info.numCtx !== undefined
+        ? 'Ollama num_ctx (/api/show)'
+        : 'Ollama trained context (/api/show)';
+  }
   return {
     contextLength,
-    contextSource:
-      contextLength === undefined
-        ? undefined
-        : info.numCtx !== undefined
-          ? 'Ollama num_ctx (/api/show)'
-          : 'Ollama trained context (/api/show)',
+    contextSource,
     samplerParams: info.params,
     visionSupported: info.capabilities?.includes('vision'),
     toolsSupported: info.capabilities?.includes('tools'),

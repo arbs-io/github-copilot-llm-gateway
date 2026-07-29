@@ -57,6 +57,23 @@ const VALID_ESCAPE_CHARS = new Set(['"', '\\', '/', 'b', 'f', 'n', 'r', 't']);
 const HEX_DIGIT_PATTERN = /^[0-9a-fA-F]{4}$/;
 
 /**
+ * Consume the escape sequence starting at the `\` at `str[i]` inside a string
+ * literal. Returns the (possibly repaired) text to emit and how many input
+ * characters it covers. Invalid (or truncated) escapes get their backslash
+ * doubled so the character after it survives as a literal.
+ */
+function repairEscapeSequence(str: string, i: number): { text: string; length: number } {
+  const next = str[i + 1];
+  if (next !== undefined && VALID_ESCAPE_CHARS.has(next)) {
+    return { text: str[i] + next, length: 2 };
+  }
+  if (next === 'u' && HEX_DIGIT_PATTERN.test(str.substring(i + 2, i + 6))) {
+    return { text: str.substring(i, i + 6), length: 6 };
+  }
+  return { text: '\\\\', length: 1 };
+}
+
+/**
  * Escape invalid `\` escape sequences inside JSON string literals.
  *
  * Small local models frequently emit tool call arguments containing literal
@@ -87,28 +104,17 @@ export function repairInvalidEscapes(str: string): string {
       continue;
     }
 
-    if (c !== '\\') {
-      if (c === '"') {
-        inString = false;
-      }
-      result += c;
+    if (c === '\\') {
+      const { text, length } = repairEscapeSequence(str, i);
+      result += text;
+      i += length - 1;
       continue;
     }
 
-    const next = str[i + 1];
-    if (next !== undefined && VALID_ESCAPE_CHARS.has(next)) {
-      result += c + next;
-      i++;
-      continue;
+    if (c === '"') {
+      inString = false;
     }
-    if (next === 'u' && HEX_DIGIT_PATTERN.test(str.substring(i + 2, i + 6))) {
-      result += str.substring(i, i + 6);
-      i += 5;
-      continue;
-    }
-    // Invalid (or truncated) escape — double the backslash so the character
-    // after it survives as a literal.
-    result += '\\\\';
+    result += c;
   }
 
   return result;

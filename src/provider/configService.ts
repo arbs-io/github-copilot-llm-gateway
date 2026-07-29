@@ -80,14 +80,12 @@ export class ConfigService {
    * future regressions are re-surfaced.
    */
   private reportIssues(issues: ConfigIssue[]): void {
-    const urlIssue = issues.find((i) => i.kind === 'invalidServerUrl');
-    if (!urlIssue) {
+    if (!issues.some((i) => i.kind === 'invalidServerUrl')) {
       // URL became valid — reset the dedupe key so future invalid values are
       // re-surfaced.
       this.lastInvalidUrlNotified = undefined;
     }
-    const outputIssue = issues.find((i) => i.kind === 'outputTokensAdjusted');
-    if (!outputIssue) {
+    if (!issues.some((i) => i.kind === 'outputTokensAdjusted')) {
       // Valid configuration — reset the dedupe key.
       this.lastOutputTokenAdjustmentNotified = undefined;
     }

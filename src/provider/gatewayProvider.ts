@@ -101,7 +101,7 @@ export class GatewayProvider
    * a user clearing the field in the native UI should override any stale
    * SecretStorage entry.
    */
-  private frameworkOverride: FrameworkConfigOverride = {};
+  private readonly frameworkOverride: FrameworkConfigOverride = {};
 
   private readonly _onDidChangeLanguageModelChatInformation = new vscode.EventEmitter<void>();
   readonly onDidChangeLanguageModelChatInformation = this._onDidChangeLanguageModelChatInformation.event;

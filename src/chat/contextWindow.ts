@@ -75,7 +75,7 @@ export function resolveContextWindowOverride(
 function matchesWildcard(pattern: string, modelId: string): boolean {
   const escaped = pattern
     .split('*')
-    .map((segment) => segment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .map((segment) => segment.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`))
     .join('.*');
   return new RegExp(`^${escaped}$`, 'i').test(modelId);
 }
@@ -108,7 +108,7 @@ export function parseContextOverflowError(message: string): number | undefined {
   for (const pattern of patterns) {
     const match = pattern.exec(message);
     if (match) {
-      const value = parseInt(match[1], 10);
+      const value = Number.parseInt(match[1], 10);
       if (isUsableContext(value)) {
         return value;
       }

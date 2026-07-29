@@ -121,10 +121,11 @@ function renderConnection(snapshot: StatusSnapshot): string {
     snapshot.connection.state === 'error' && snapshot.connection.errorMessage
       ? `\n\n<div>${mutedSpan(esc(snapshot.connection.errorMessage))}</div>`
       : '';
+  const stateLabel = coloredSpan(`<strong>${esc(desc.label)}</strong>`, desc.color);
   return [
     '\n<hr>\n',
     '<table width="100%"><tr>',
-    `<td>${desc.icon}&nbsp;${coloredSpan(`<strong>${esc(desc.label)}</strong>`, desc.color)}</td>`,
+    `<td>${desc.icon}&nbsp;${stateLabel}</td>`,
     desc.sideText
       ? `<td align="right">${mutedSpan(esc(desc.sideText))}</td>`
       : '<td></td>',
@@ -199,13 +200,14 @@ function renderSession(snapshot: StatusSnapshot): string {
           `$(arrow-up) ${esc(s.promptTokens.toLocaleString())} in · $(arrow-down) ${esc(s.completionTokens.toLocaleString())} out`
         )}</td></tr>`
       : '';
+  const totalsLabel = mutedSpan(`${esc(formatTokenCount(s.totalTokens))} tokens${esc(avgText)}`);
   return [
     '\n<hr>\n',
     '<strong>Session usage</strong>',
     '<table width="100%">',
     '<tr>',
     `<td><strong>${esc(s.requestCount.toLocaleString())}</strong>&nbsp;${mutedSpan(esc(noun))}</td>`,
-    `<td align="right">${mutedSpan(`${esc(formatTokenCount(s.totalTokens))} tokens${esc(avgText)}`)}</td>`,
+    `<td align="right">${totalsLabel}</td>`,
     '</tr>',
     ioRow,
     '</table>',
@@ -243,8 +245,9 @@ function renderLastRequest(snapshot: StatusSnapshot): string {
       // tiny usage (e.g. 100 tokens of a 1M-context model = 0.01% → rounds
       // to 0) still shows a single filled cell rather than vanishing.
       const pct = Math.min(100, Math.round(ratio * 100));
+      const barCaption = mutedSpan(`${pct}% of ${esc(formatTokenCount(totalContext))} context`);
       rows.push(
-        `<tr><td colspan="2">${renderUsageBar(ratio)} ${mutedSpan(`${pct}% of ${esc(formatTokenCount(totalContext))} context`)}</td></tr>`
+        `<tr><td colspan="2">${renderUsageBar(ratio)} ${barCaption}</td></tr>`
       );
     }
   } else {
@@ -304,19 +307,20 @@ function renderModels(snapshot: StatusSnapshot): string {
           `…and ${esc(snapshot.models.length - TOOLTIP_MODEL_LIST_MAX)} more`
         )}</td></tr>`
       : '';
+  const countLabel = mutedSpan(`${esc(snapshot.models.length)} available`);
   return [
     '\n<hr>\n',
-    `<table width="100%"><tr><td><strong>Models</strong></td><td align="right">${mutedSpan(`${esc(snapshot.models.length)} available`)}</td></tr></table>`,
+    `<table width="100%"><tr><td><strong>Models</strong></td><td align="right">${countLabel}</td></tr></table>`,
     `<table width="100%">${rows}${overflowRow}</table>`,
   ].join('');
 }
 
 function renderModelRow(model: ModelSummary): string {
   const pills = model.capabilityLabels.map((c) => capabilityPill(c)).join('&nbsp;');
-  const meta = model.contextLabel ? mutedSpan(esc(model.contextLabel)) : '';
+  const meta = model.contextLabel ? ` ${mutedSpan(esc(model.contextLabel))}` : '';
   return [
     '<tr>',
-    `<td><code>${esc(model.name)}</code>${meta ? ` ${meta}` : ''}</td>`,
+    `<td><code>${esc(model.name)}</code>${meta}</td>`,
     `<td align="right">${pills}</td>`,
     '</tr>',
   ].join('');

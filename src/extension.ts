@@ -17,16 +17,14 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   await provider.loadSecrets();
 
   context.subscriptions.push(
-    vscode.lm.registerLanguageModelChatProvider('copilot-llm-gateway', provider)
-  );
+    vscode.lm.registerLanguageModelChatProvider('copilot-llm-gateway', provider),
 
-  // Experimental standalone inline (ghost-text) completions backed by the
-  // inference server's /v1/completions endpoint. Registered unconditionally
-  // for all files; it no-ops unless the user opts in via
-  // `enableInlineCompletion`, so toggling the setting takes effect without a
-  // reload. This runs alongside GitHub Copilot because VS Code doesn't expose
-  // BYOK models to its own inline suggestions (issue #44).
-  context.subscriptions.push(
+    // Experimental standalone inline (ghost-text) completions backed by the
+    // inference server's /v1/completions endpoint. Registered unconditionally
+    // for all files; it no-ops unless the user opts in via
+    // `enableInlineCompletion`, so toggling the setting takes effect without a
+    // reload. This runs alongside GitHub Copilot because VS Code doesn't expose
+    // BYOK models to its own inline suggestions (issue #44).
     vscode.languages.registerInlineCompletionItemProvider(
       { pattern: '**' },
       new GatewayInlineCompletionProvider(provider)
@@ -59,19 +57,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         .get<string>('serverUrl', 'http://localhost:8000'),
     () => provider.getStatusSnapshot()
   );
-  context.subscriptions.push(statusManager);
-
-  // Live request state: streaming → responded → idle, with errors flashing in
-  // place. The provider fires `start` / `complete` / `error` events around
-  // each provideLanguageModelChatResponse call.
   context.subscriptions.push(
-    provider.onDidChangeRequestState((event) => statusManager.onRequest(event))
-  );
+    statusManager,
 
-  // Rich hover tooltip is rebuilt from the provider's snapshot — refresh it
-  // whenever the snapshot changes (model refresh, request completion, session
-  // totals tick) so a hovering user always sees current numbers.
-  context.subscriptions.push(
+    // Live request state: streaming → responded → idle, with errors flashing in
+    // place. The provider fires `start` / `complete` / `error` events around
+    // each provideLanguageModelChatResponse call.
+    provider.onDidChangeRequestState((event) => statusManager.onRequest(event)),
+
+    // Rich hover tooltip is rebuilt from the provider's snapshot — refresh it
+    // whenever the snapshot changes (model refresh, request completion, session
+    // totals tick) so a hovering user always sees current numbers.
     provider.onDidChangeStatusSnapshot(() => statusManager.refreshTooltip())
   );
 

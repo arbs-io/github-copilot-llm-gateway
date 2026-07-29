@@ -30,7 +30,7 @@ function isOptionsObject(value: unknown): value is Record<string, unknown> {
 function matchesWildcard(pattern: string, modelId: string): boolean {
   const escaped = pattern
     .split('*')
-    .map((segment) => segment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .map((segment) => segment.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`))
     .join('.*');
   return new RegExp(`^${escaped}$`, 'i').test(modelId);
 }
