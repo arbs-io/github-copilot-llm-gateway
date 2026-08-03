@@ -9,6 +9,10 @@ export interface OpenAIModel {
   owned_by: string;
   /** vLLM, LiteLLM */
   max_model_len?: number;
+  /** LiteLLM: maximum prompt/context tokens accepted by the model. */
+  max_input_tokens?: number;
+  /** LiteLLM: maximum completion tokens the model can generate. */
+  max_output_tokens?: number;
   /** Ollama, LocalAI, LM Studio */
   context_length?: number;
   /** llama.cpp */

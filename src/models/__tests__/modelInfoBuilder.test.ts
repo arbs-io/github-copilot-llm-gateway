@@ -114,6 +114,19 @@ describe('buildModelInfo context resolution', () => {
     assert.equal(hasServerReportedContext, true);
   });
 
+  test('uses LiteLLM max_input_tokens and max_output_tokens', () => {
+    const { totalContext, info, hasServerReportedContext } = buildModelInfo({
+      model: baseModel({ max_input_tokens: 300000, max_output_tokens: 10000 }),
+      defaultMaxTokens: 9999,
+      defaultMaxOutputTokens: 2048,
+      capabilities: {},
+    });
+    assert.equal(totalContext, 300000);
+    assert.equal(info.maxInputTokens, 300000);
+    assert.equal(info.maxOutputTokens, 10000);
+    assert.equal(hasServerReportedContext, true);
+  });
+
   test('falls back to context_window when max_model_len and context_length are absent', () => {
     const { totalContext, hasServerReportedContext } = buildModelInfo({
       model: baseModel({ context_window: 4096 }),
@@ -182,6 +195,17 @@ describe('buildModelInfo output token math', () => {
       capabilities: {},
     });
     assert.equal(info.maxOutputTokens, 2048);
+  });
+
+  test('clamps a LiteLLM output limit to the available context headroom', () => {
+    const totalContext = 8192;
+    const { info } = buildModelInfo({
+      model: baseModel({ max_input_tokens: totalContext, max_output_tokens: totalContext }),
+      defaultMaxTokens: 32768,
+      defaultMaxOutputTokens: 2048,
+      capabilities: {},
+    });
+    assert.equal(info.maxOutputTokens, totalContext - TOKEN_CONSTANTS.ADJUST_TOKEN_BUFFER);
   });
 
   test('reduces maxOutputTokens to leave the ADJUST_TOKEN_BUFFER headroom when the window is tight', () => {

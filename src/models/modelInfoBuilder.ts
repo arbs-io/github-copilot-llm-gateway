@@ -7,7 +7,7 @@
 
 import { OpenAIModel } from '../api/types';
 import { describeModel, friendlyModelName, inferModelFamily } from './modelDisplay';
-import { serverReportedContext } from '../chat/contextWindow';
+import { serverReportedContext, serverReportedMaxOutput } from '../chat/contextWindow';
 import { TOKEN_CONSTANTS } from '../chat/tokenBudget';
 
 /**
@@ -76,7 +76,9 @@ export interface BuildModelInfoResult {
  *
  * `maxInputTokens` is intentionally set to the full server-reported context so
  * the picker shows the true window size. Output-token budgeting uses
- * `totalContext` separately so the math doesn't double-count.
+ * `totalContext` separately so the math doesn't double-count. When LiteLLM
+ * reports `max_output_tokens`, that model-specific ceiling replaces the
+ * configured fallback.
  */
 export function buildModelInfo({
   model,
@@ -87,10 +89,11 @@ export function buildModelInfo({
   discoveredContext,
 }: BuildModelInfoInput): BuildModelInfoResult {
   const serverContext = serverReportedContext(model);
+  const serverMaxOutput = serverReportedMaxOutput(model);
   const totalContext =
     contextOverride ?? discoveredContext ?? serverContext ?? defaultMaxTokens;
   const maxOutputTokens = Math.min(
-    defaultMaxOutputTokens,
+    serverMaxOutput ?? defaultMaxOutputTokens,
     Math.max(
       TOKEN_CONSTANTS.MIN_OUTPUT_TOKENS,
       totalContext - TOKEN_CONSTANTS.ADJUST_TOKEN_BUFFER

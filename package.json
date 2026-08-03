@@ -123,7 +123,7 @@
         "github.copilot.llm-gateway.defaultMaxOutputTokens": {
           "type": "number",
           "default": 4096,
-          "description": "Fallback maximum output tokens when the server does not report context size",
+          "description": "Fallback maximum output tokens when the server does not report max_output_tokens",
           "order": 5
         },
         "github.copilot.llm-gateway.enableImageInput": {

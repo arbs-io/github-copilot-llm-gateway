@@ -4,6 +4,7 @@ import {
   parseContextOverflowError,
   resolveContextWindowOverride,
   serverReportedContext,
+  serverReportedMaxOutput,
 } from '../contextWindow';
 import { OpenAIModel } from '../../api/types';
 
@@ -33,6 +34,11 @@ describe('serverReportedContext', () => {
     assert.equal(serverReportedContext(model), 123904);
   });
 
+  test('reads LiteLLM max_input_tokens when max_model_len is absent', () => {
+    const model = baseModel({ max_input_tokens: 300000, max_output_tokens: 10000 });
+    assert.equal(serverReportedContext(model), 300000);
+  });
+
   test('falls back to meta.n_ctx_train when n_ctx is absent', () => {
     const model = baseModel({ meta: { n_ctx_train: 32768 } });
     assert.equal(serverReportedContext(model), 32768);
@@ -50,6 +56,18 @@ describe('serverReportedContext', () => {
       meta: { n_ctx: 4096 },
     });
     assert.equal(serverReportedContext(model), 4096);
+  });
+});
+
+describe('serverReportedMaxOutput', () => {
+  test('reads LiteLLM max_output_tokens', () => {
+    assert.equal(serverReportedMaxOutput(baseModel({ max_output_tokens: 64000 })), 64000);
+  });
+
+  test('ignores absent and unusable values', () => {
+    assert.equal(serverReportedMaxOutput(baseModel()), undefined);
+    assert.equal(serverReportedMaxOutput(baseModel({ max_output_tokens: 0 })), undefined);
+    assert.equal(serverReportedMaxOutput(baseModel({ max_output_tokens: -1 })), undefined);
   });
 });
 
