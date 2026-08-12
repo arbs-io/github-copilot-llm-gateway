@@ -1,6 +1,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  hasSeparateOutputWindow,
   parseContextOverflowError,
   resolveContextWindowOverride,
   serverReportedContext,
@@ -22,6 +23,7 @@ describe('serverReportedContext', () => {
   test('prefers max_model_len over every other field', () => {
     const model = baseModel({
       max_model_len: 131072,
+      max_input_tokens: 200000,
       context_length: 8192,
       context_window: 4096,
       meta: { n_ctx: 2048, n_ctx_train: 1024 },
@@ -68,6 +70,36 @@ describe('serverReportedMaxOutput', () => {
     assert.equal(serverReportedMaxOutput(baseModel()), undefined);
     assert.equal(serverReportedMaxOutput(baseModel({ max_output_tokens: 0 })), undefined);
     assert.equal(serverReportedMaxOutput(baseModel({ max_output_tokens: -1 })), undefined);
+  });
+});
+
+describe('hasSeparateOutputWindow', () => {
+  test('true for LiteLLM input/output ceilings that differ', () => {
+    const model = baseModel({ max_input_tokens: 200000, max_output_tokens: 64000 });
+    assert.equal(hasSeparateOutputWindow(model), true);
+  });
+
+  test('false when max_model_len is present — a shared vLLM-style window', () => {
+    const model = baseModel({
+      max_model_len: 32768,
+      max_input_tokens: 32768,
+      max_output_tokens: 4096,
+    });
+    assert.equal(hasSeparateOutputWindow(model), false);
+  });
+
+  test('false when the ceilings match — one pool described twice', () => {
+    const model = baseModel({ max_input_tokens: 8192, max_output_tokens: 8192 });
+    assert.equal(hasSeparateOutputWindow(model), false);
+  });
+
+  test('false when either ceiling is missing or unusable', () => {
+    assert.equal(hasSeparateOutputWindow(baseModel({ max_input_tokens: 200000 })), false);
+    assert.equal(hasSeparateOutputWindow(baseModel({ max_output_tokens: 64000 })), false);
+    assert.equal(
+      hasSeparateOutputWindow(baseModel({ max_input_tokens: 200000, max_output_tokens: 0 })),
+      false
+    );
   });
 });
 

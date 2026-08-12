@@ -125,6 +125,12 @@ export interface SafeOutputTokensParams {
   toolsOverhead: number;
   modelMaxContext: number;
   configuredMaxOutput: number;
+  /**
+   * Set when `modelMaxContext` is an input-only ceiling and the model has its
+   * own separate completion window (LiteLLM). Output then doesn't compete with
+   * the prompt for space. See {@link hasSeparateOutputWindow}.
+   */
+  outputWindowIsSeparate?: boolean;
 }
 
 /**
@@ -133,6 +139,12 @@ export interface SafeOutputTokensParams {
  * slack to account for tokenizer drift and a fixed CONTEXT_BUFFER_TOKENS.
  */
 export function calculateSafeMaxOutputTokens(params: SafeOutputTokensParams): number {
+  // Two independent windows: the prompt can't crowd out the completion, so the
+  // model's own output ceiling is the only bound that applies.
+  if (params.outputWindowIsSeparate) {
+    return Math.max(TOKEN_CONSTANTS.MIN_OUTPUT_TOKENS, params.configuredMaxOutput);
+  }
+
   const totalEstimatedTokens = params.estimatedInputTokens + params.toolsOverhead;
   const conservativeInputEstimate = Math.ceil(
     totalEstimatedTokens * TOKEN_CONSTANTS.INPUT_OVERHEAD_RATIO
@@ -150,6 +162,8 @@ export interface MaxInputTokensParams {
   modelMaxContext: number;
   configuredMaxOutput: number;
   toolsSerializedLength: number;
+  /** See {@link SafeOutputTokensParams.outputWindowIsSeparate}. */
+  outputWindowIsSeparate?: boolean;
 }
 
 /**
@@ -164,10 +178,12 @@ export interface MaxInputTokensParams {
  * MIN_OUTPUT_TOKENS (issue #74).
  */
 export function calculateMaxInputTokens(params: MaxInputTokensParams): number {
-  const desiredOutputTokens = Math.min(
-    params.configuredMaxOutput,
-    Math.floor(params.modelMaxContext / 2)
-  );
+  // With a separate completion window there is nothing to reserve — carving
+  // output out of an input-only ceiling throws away prompt space the server
+  // was always willing to accept.
+  const desiredOutputTokens = params.outputWindowIsSeparate
+    ? 0
+    : Math.min(params.configuredMaxOutput, Math.floor(params.modelMaxContext / 2));
   const toolsRawEstimate = Math.ceil(
     params.toolsSerializedLength / TOKEN_CONSTANTS.CHARS_PER_TOKEN
   );

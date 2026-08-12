@@ -45,6 +45,28 @@ export function serverReportedMaxOutput(model: OpenAIModel): number | undefined 
 }
 
 /**
+ * True when the server described two *independent* ceilings rather than one
+ * shared window. LiteLLM's `max_input_tokens` is a prompt-only limit and
+ * `max_output_tokens` a separate completion limit — an Anthropic model proxied
+ * through LiteLLM accepts 200K in *and* 64K out, not 200K combined. Budgeting
+ * such a model as a shared window silently costs the user a third of their
+ * usable prompt (follow-up to PR #78, which introduced the two fields).
+ *
+ * Deliberately narrow, because being wrong in the other direction produces
+ * real context-overflow errors rather than merely wasted headroom:
+ *  - `max_model_len` means a vLLM-style shared window is on offer (LiteLLM
+ *    passes it straight through), so output must still come out of it;
+ *  - equal ceilings mean the server described one pool twice, not two windows.
+ */
+export function hasSeparateOutputWindow(model: OpenAIModel): boolean {
+  if (isUsableContext(model.max_model_len)) {
+    return false;
+  }
+  const { max_input_tokens: input, max_output_tokens: output } = model;
+  return isUsableContext(input) && isUsableContext(output) && output < input;
+}
+
+/**
  * Resolve the user-configured context override for `modelId` from the
  * `modelContextWindows` setting. Keys match the model id exactly or via `*`
  * wildcards (case-insensitive), mirroring `perModelOptions`; an exact-id

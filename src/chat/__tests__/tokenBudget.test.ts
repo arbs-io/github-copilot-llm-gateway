@@ -178,6 +178,67 @@ describe('calculateSafeMaxOutputTokens', () => {
   });
 });
 
+describe('separate output windows (LiteLLM)', () => {
+  test('calculateMaxInputTokens reserves nothing when the output window is separate', () => {
+    const params = {
+      modelMaxContext: 200000,
+      configuredMaxOutput: 64000,
+      toolsSerializedLength: 0,
+    };
+    const shared = calculateMaxInputTokens(params);
+    const separate = calculateMaxInputTokens({ ...params, outputWindowIsSeparate: true });
+
+    // The whole point of the fix: the 64K completion allowance must not be
+    // carved out of a prompt-only ceiling.
+    assert.ok(
+      separate > shared,
+      `expected a separate window to free up prompt space (${separate} vs ${shared})`
+    );
+    assert.equal(
+      separate,
+      Math.floor(
+        (params.modelMaxContext - TOKEN_CONSTANTS.CONTEXT_BUFFER_TOKENS) /
+          TOKEN_CONSTANTS.INPUT_OVERHEAD_RATIO
+      )
+    );
+  });
+
+  test('calculateSafeMaxOutputTokens ignores prompt size when the window is separate', () => {
+    const result = calculateSafeMaxOutputTokens({
+      estimatedInputTokens: 150000,
+      toolsOverhead: 5000,
+      modelMaxContext: 200000,
+      configuredMaxOutput: 64000,
+      outputWindowIsSeparate: true,
+    });
+    assert.equal(result, 64000);
+  });
+
+  test('still floors a separate window at MIN_OUTPUT_TOKENS', () => {
+    const result = calculateSafeMaxOutputTokens({
+      estimatedInputTokens: 10,
+      toolsOverhead: 0,
+      modelMaxContext: 200000,
+      configuredMaxOutput: 1,
+      outputWindowIsSeparate: true,
+    });
+    assert.equal(result, TOKEN_CONSTANTS.MIN_OUTPUT_TOKENS);
+  });
+
+  test('shared-window behaviour is unchanged when the flag is absent', () => {
+    const shared = {
+      estimatedInputTokens: 150000,
+      toolsOverhead: 5000,
+      modelMaxContext: 200000,
+      configuredMaxOutput: 64000,
+    };
+    assert.equal(
+      calculateSafeMaxOutputTokens(shared),
+      calculateSafeMaxOutputTokens({ ...shared, outputWindowIsSeparate: false })
+    );
+  });
+});
+
 describe('calculateMaxInputTokens', () => {
   test('reserves half the context for output when half is less than configured max', () => {
     const result = calculateMaxInputTokens({
