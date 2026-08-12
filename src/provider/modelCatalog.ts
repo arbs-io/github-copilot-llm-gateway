@@ -55,6 +55,13 @@ export class ModelCatalog {
    */
   private readonly learnedContextByModelId: Map<string, number> = new Map();
   /**
+   * Model ids whose context is an input-only ceiling with a separate
+   * completion window (LiteLLM). The chat path must not reserve output space
+   * out of their context. Rebuilt on every model fetch alongside
+   * `contextByModelId`.
+   */
+  private readonly separateOutputWindowModelIds: Set<string> = new Set();
+  /**
    * Backend-discovered metadata per model id (context, sampler params,
    * capabilities — e.g. from Ollama `/api/show`). Rebuilt on every model
    * fetch; empty for backends without native discovery. Lets the chat path
@@ -183,6 +190,7 @@ export class ModelCatalog {
     // concurrent chat request sees no context/params at all.
     const nextContextByModelId = new Map<string, number>();
     const nextDiscoveredByModelId = new Map<string, DiscoveredModelInfo>();
+    const nextSeparateOutputWindowModelIds = new Set<string>();
 
     const config = this.deps.getConfig();
     const models = await Promise.all(
@@ -204,7 +212,7 @@ export class ModelCatalog {
           nextDiscoveredByModelId.set(model.id, discovered);
         }
 
-        const { info, totalContext, hasServerReportedContext } = buildModelInfo({
+        const { info, totalContext, hasServerReportedContext, outputWindowIsSeparate } = buildModelInfo({
           model,
           defaultMaxTokens: config.defaultMaxTokens,
           defaultMaxOutputTokens: config.defaultMaxOutputTokens,
@@ -218,8 +226,13 @@ export class ModelCatalog {
           discoveredContext: discovered?.contextLength,
         });
         nextContextByModelId.set(model.id, totalContext);
+        if (outputWindowIsSeparate) {
+          nextSeparateOutputWindowModelIds.add(model.id);
+        }
 
-        const exposed = `exposed as input=${info.maxInputTokens}, output=${info.maxOutputTokens}`;
+        const exposed = `exposed as input=${info.maxInputTokens}, output=${info.maxOutputTokens}${
+          outputWindowIsSeparate ? ', separate output window' : ''
+        }`;
         if (contextOverride !== undefined) {
           log(
             `  Model ${model.id}: context ${totalContext} tokens from 'modelContextWindows' setting (${exposed})`
@@ -254,11 +267,15 @@ export class ModelCatalog {
     // gone so stale data can't leak into future chat requests.
     this.contextByModelId.clear();
     this.discoveredByModelId.clear();
+    this.separateOutputWindowModelIds.clear();
     for (const [id, context] of nextContextByModelId) {
       this.contextByModelId.set(id, context);
     }
     for (const [id, discovered] of nextDiscoveredByModelId) {
       this.discoveredByModelId.set(id, discovered);
+    }
+    for (const id of nextSeparateOutputWindowModelIds) {
+      this.separateOutputWindowModelIds.add(id);
     }
 
     log(`Found ${models.length} models: ${models.map((m) => m.id).join(', ')}`);
@@ -292,6 +309,23 @@ export class ModelCatalog {
       return learned;
     }
     return context;
+  }
+
+  /**
+   * Whether {@link resolveModelMaxContext} returned an input-only ceiling that
+   * the model's completion window doesn't share. Callers use it to skip
+   * reserving output space out of the prompt budget.
+   *
+   * Defaults to false whenever we can't be sure — before the first model fetch,
+   * or once the server has told us (via an overflow error) that it enforces a
+   * single combined limit after all. Guessing false only costs headroom;
+   * guessing true costs failed requests.
+   */
+  public hasSeparateOutputWindow(model: LanguageModelChatInformation): boolean {
+    if (!this.separateOutputWindowModelIds.has(model.id)) {
+      return false;
+    }
+    return !this.learnedContextByModelId.has(model.id);
   }
 
   /**

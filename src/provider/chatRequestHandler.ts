@@ -181,10 +181,14 @@ export class ChatRequestHandler {
     // model's current context size, so a corrected context can re-run it.
     const attempt = async (): Promise<void> => {
       const modelMaxContext = catalog.resolveModelMaxContext(model);
+      // Re-read per attempt: a context learned from an overflow error proves
+      // the server enforces one combined limit, which flips this back to false.
+      const outputWindowIsSeparate = catalog.hasSeparateOutputWindow(model);
       const maxInputTokens = calculateMaxInputTokens({
         modelMaxContext,
         configuredMaxOutput,
         toolsSerializedLength,
+        outputWindowIsSeparate,
       });
 
       const truncatedMessages = truncateMessagesToFit(openAIMessages, maxInputTokens, log);
@@ -202,10 +206,13 @@ export class ChatRequestHandler {
         toolsOverhead,
         modelMaxContext,
         configuredMaxOutput,
+        outputWindowIsSeparate,
       });
 
       log(
-        `Token estimate: input=${estimatedInputTokens}, tools=${toolsOverhead}, model_context=${modelMaxContext}, chosen_max_tokens=${safeMaxOutputTokens}`
+        `Token estimate: input=${estimatedInputTokens}, tools=${toolsOverhead}, model_context=${modelMaxContext}${
+          outputWindowIsSeparate ? ' (input-only)' : ''
+        }, chosen_max_tokens=${safeMaxOutputTokens}`
       );
       if (safeMaxOutputTokens <= TOKEN_CONSTANTS.MIN_OUTPUT_TOKENS) {
         log(

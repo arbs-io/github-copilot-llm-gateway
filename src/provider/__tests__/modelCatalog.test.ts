@@ -277,6 +277,60 @@ describe('ModelCatalog.resolveModelMaxContext', () => {
   });
 });
 
+describe('ModelCatalog.hasSeparateOutputWindow', () => {
+  /** A LiteLLM-shaped entry: prompt-only ceiling plus a smaller output one. */
+  function liteLLMResponse(): OpenAIModelsResponse {
+    return {
+      object: 'list',
+      data: [
+        {
+          id: 'a',
+          object: 'model',
+          created: 0,
+          owned_by: 'litellm',
+          max_input_tokens: 200000,
+          max_output_tokens: 64000,
+        },
+      ],
+    };
+  }
+
+  test('reports true once a LiteLLM model has been fetched', async () => {
+    const h = makeCatalog({ fetchModels: () => Promise.resolve(liteLLMResponse()) });
+    await h.catalog.getOrFetchModels(fakeToken());
+    assert.equal(h.catalog.hasSeparateOutputWindow(chatInfo('a', 200000)), true);
+  });
+
+  test('defaults to false before any fetch', () => {
+    const h = makeCatalog({ fetchModels: () => Promise.resolve(liteLLMResponse()) });
+    assert.equal(h.catalog.hasSeparateOutputWindow(chatInfo('a', 200000)), false);
+  });
+
+  test('false for a shared vLLM window', async () => {
+    const h = makeCatalog({
+      fetchModels: () => Promise.resolve(modelsResponse({ id: 'a', contextLen: 32768 })),
+    });
+    await h.catalog.getOrFetchModels(fakeToken());
+    assert.equal(h.catalog.hasSeparateOutputWindow(chatInfo('a', 32768)), false);
+  });
+
+  test('an overflow error proves one combined limit and flips it back to shared', async () => {
+    const h = makeCatalog({ fetchModels: () => Promise.resolve(liteLLMResponse()) });
+    await h.catalog.getOrFetchModels(fakeToken());
+    const model = chatInfo('a', 200000);
+    assert.equal(h.catalog.hasSeparateOutputWindow(model), true);
+
+    h.catalog.learnContextSizeFromError(
+      model,
+      new Error('maximum context length is 8192 tokens')
+    );
+    assert.equal(h.catalog.hasSeparateOutputWindow(model), false);
+
+    h.catalog.clearLearnedContexts();
+    assert.equal(h.catalog.hasSeparateOutputWindow(model), true);
+  });
+});
+
 describe('ModelCatalog.learnContextSizeFromError', () => {
   test('learns a smaller context from an overflow error and applies it', () => {
     const h = makeCatalog({ fetchModels: () => Promise.resolve(modelsResponse()) });
