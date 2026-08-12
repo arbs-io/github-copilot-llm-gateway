@@ -7,7 +7,11 @@
 
 import { OpenAIModel } from '../api/types';
 import { describeModel, friendlyModelName, inferModelFamily } from './modelDisplay';
-import { serverReportedContext, serverReportedMaxOutput } from '../chat/contextWindow';
+import {
+  hasSeparateOutputWindow,
+  serverReportedContext,
+  serverReportedMaxOutput,
+} from '../chat/contextWindow';
 import { TOKEN_CONSTANTS } from '../chat/tokenBudget';
 
 /**
@@ -68,6 +72,13 @@ export interface BuildModelInfoResult {
   };
   readonly totalContext: number;
   readonly hasServerReportedContext: boolean;
+  /**
+   * True when `totalContext` is an input-only ceiling and the model has its own
+   * separate completion window, so the chat path must not reserve output space
+   * out of it. Always false once a user override or a backend-discovered size
+   * is in play — those describe one shared window.
+   */
+  readonly outputWindowIsSeparate: boolean;
 }
 
 /**
@@ -92,13 +103,27 @@ export function buildModelInfo({
   const serverMaxOutput = serverReportedMaxOutput(model);
   const totalContext =
     contextOverride ?? discoveredContext ?? serverContext ?? defaultMaxTokens;
-  const maxOutputTokens = Math.min(
-    serverMaxOutput ?? defaultMaxOutputTokens,
-    Math.max(
-      TOKEN_CONSTANTS.MIN_OUTPUT_TOKENS,
-      totalContext - TOKEN_CONSTANTS.ADJUST_TOKEN_BUFFER
-    )
-  );
+
+  // Only believe the server's two-window story when the server's own context
+  // value is the one we ended up using. A `modelContextWindows` override or an
+  // Ollama-discovered size describes a single shared window, so output still
+  // has to be carved out of it.
+  const outputWindowIsSeparate =
+    contextOverride === undefined &&
+    discoveredContext === undefined &&
+    serverContext !== undefined &&
+    hasSeparateOutputWindow(model);
+
+  const outputCeiling = serverMaxOutput ?? defaultMaxOutputTokens;
+  const maxOutputTokens = outputWindowIsSeparate
+    ? outputCeiling
+    : Math.min(
+        outputCeiling,
+        Math.max(
+          TOKEN_CONSTANTS.MIN_OUTPUT_TOKENS,
+          totalContext - TOKEN_CONSTANTS.ADJUST_TOKEN_BUFFER
+        )
+      );
 
   const description = describeModel(model);
   const tooltip = description ? `${model.id} — ${description}` : model.id;
@@ -123,5 +148,6 @@ export function buildModelInfo({
     info,
     totalContext,
     hasServerReportedContext: serverContext !== undefined,
+    outputWindowIsSeparate,
   };
 }

@@ -208,6 +208,51 @@ describe('buildModelInfo output token math', () => {
     assert.equal(info.maxOutputTokens, totalContext - TOKEN_CONSTANTS.ADJUST_TOKEN_BUFFER);
   });
 
+  test('keeps a separate LiteLLM output window intact instead of clamping it', () => {
+    const { info, outputWindowIsSeparate } = buildModelInfo({
+      model: baseModel({ max_input_tokens: 200000, max_output_tokens: 64000 }),
+      defaultMaxTokens: 32768,
+      defaultMaxOutputTokens: 2048,
+      capabilities: {},
+    });
+    assert.equal(outputWindowIsSeparate, true);
+    assert.equal(info.maxInputTokens, 200000);
+    assert.equal(info.maxOutputTokens, 64000);
+  });
+
+  test('a modelContextWindows override forces shared-window budgeting', () => {
+    const { info, outputWindowIsSeparate } = buildModelInfo({
+      model: baseModel({ max_input_tokens: 200000, max_output_tokens: 64000 }),
+      defaultMaxTokens: 32768,
+      defaultMaxOutputTokens: 2048,
+      capabilities: {},
+      contextOverride: 8192,
+    });
+    assert.equal(outputWindowIsSeparate, false);
+    assert.equal(info.maxOutputTokens, 8192 - TOKEN_CONSTANTS.ADJUST_TOKEN_BUFFER);
+  });
+
+  test('a backend-discovered context forces shared-window budgeting', () => {
+    const { outputWindowIsSeparate } = buildModelInfo({
+      model: baseModel({ max_input_tokens: 200000, max_output_tokens: 64000 }),
+      defaultMaxTokens: 32768,
+      defaultMaxOutputTokens: 2048,
+      capabilities: {},
+      discoveredContext: 8192,
+    });
+    assert.equal(outputWindowIsSeparate, false);
+  });
+
+  test('a shared vLLM window is never treated as separate', () => {
+    const { outputWindowIsSeparate } = buildModelInfo({
+      model: baseModel({ max_model_len: 32768 }),
+      defaultMaxTokens: 32768,
+      defaultMaxOutputTokens: 2048,
+      capabilities: {},
+    });
+    assert.equal(outputWindowIsSeparate, false);
+  });
+
   test('reduces maxOutputTokens to leave the ADJUST_TOKEN_BUFFER headroom when the window is tight', () => {
     const totalContext = 512;
     const { info } = buildModelInfo({
