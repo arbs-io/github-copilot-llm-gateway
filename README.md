@@ -193,8 +193,10 @@ Configure the extension through VS Code Settings (`Ctrl+,` / `Cmd+,`) → search
 For each model the gateway uses, in priority order:
 
 1. **Your `modelContextWindows` override**, if one matches the model id (exactly or via a `*` wildcard — same matching rules as `perModelOptions`).
-2. **What the server reports** in `/v1/models`: `max_model_len` (vLLM), `max_input_tokens` (LiteLLM), `context_length` (Ollama, LocalAI, LM Studio), `context_window`, or llama.cpp's `meta.n_ctx` / `meta.n_ctx_train`. LiteLLM's separate `max_output_tokens` is also used as the model's output ceiling.
+2. **What the server reports** in `/v1/models`: `max_model_len` (vLLM, and LiteLLM when it fronts one), `max_input_tokens` (LiteLLM), `context_length` (Ollama, LocalAI, LM Studio), `context_window`, or llama.cpp's `meta.n_ctx` / `meta.n_ctx_train`. LiteLLM's separate `max_output_tokens` is also used as the model's output ceiling.
 3. **`defaultMaxTokens`** as the last resort.
+
+Most servers report one **shared** window that the prompt and the completion both come out of (vLLM's `max_model_len`, llama.cpp's `n_ctx`, Ollama's `context_length`), so the gateway reserves room for output before deciding how much conversation fits. LiteLLM is the exception: its `max_input_tokens` is a prompt-only ceiling with `max_output_tokens` as a **separate** allowance, so a model advertised as 200K in / 64K out gets the full 200K for the prompt rather than 136K. The gateway only treats the two as separate when `max_model_len` is absent and the output ceiling is genuinely smaller than the input one — anything else is budgeted as a single shared window, and a context-overflow error from the server flips a model back to shared for the rest of the session.
 
 Some servers can't report a size up-front — llama-server in **router mode**, for example, only includes context metadata for models that are currently loaded. If a request then overflows, the gateway parses the server's context-overflow error, learns the real limit for that model, and transparently retries the request once (when nothing has been streamed yet). Learned limits last for the session; add the model to `modelContextWindows` to persist them:
 
