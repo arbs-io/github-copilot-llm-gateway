@@ -29,7 +29,30 @@ const NOOP_LOGGER: TokenLogger = () => {
  */
 export interface TokenEstimableMessage {
   content?: string | object | null;
+  role?: string;
+  tool_call_id?: string;
   tool_calls?: unknown;
+}
+
+function getToolCallIds(message: TokenEstimableMessage): Set<string> {
+  const ids = new Set<string>();
+  if (message.role !== 'assistant' || !Array.isArray(message.tool_calls)) {
+    return ids;
+  }
+  for (const toolCall of message.tool_calls) {
+    if (typeof toolCall === 'object' && toolCall !== null) {
+      const id = (toolCall as { id?: unknown }).id;
+      if (typeof id === 'string') {
+        ids.add(id);
+      }
+    }
+  }
+  return ids;
+}
+
+function isToolResultFor(message: TokenEstimableMessage, toolCallIds: Set<string>): boolean {
+  const toolCallId = message.tool_call_id;
+  return message.role === 'tool' && typeof toolCallId === 'string' && toolCallIds.has(toolCallId);
 }
 
 /**
@@ -75,8 +98,10 @@ export function buildInputText(messages: readonly TokenEstimableMessage[]): stri
  * Truncate messages to fit within `maxTokens`.
  *
  * Strategy: always keep the first message (typically the system prompt) and
- * as many trailing messages as will fit, working backwards from the end.
- * Mid-conversation messages are dropped first.
+ * as many trailing message groups as will fit, working backwards from the end.
+ * An assistant tool call and its adjacent results form one group so truncation
+ * cannot retain only half of a tool exchange. Mid-conversation groups are
+ * dropped first.
  */
 export function truncateMessagesToFit<T extends TokenEstimableMessage>(
   messages: readonly T[],
@@ -101,23 +126,60 @@ export function truncateMessagesToFit<T extends TokenEstimableMessage>(
 
   log(`Context overflow: ${totalTokens} tokens > ${maxTokens} limit. Truncating...`);
 
-  const result: T[] = [messages[0]];
-  let usedTokens = messageTokens[0];
+  const units: Array<{ messages: T[]; tokens: number }> = [];
+  for (let i = 1; i < messages.length;) {
+    const unitMessages = [messages[i]];
+    let unitTokens = messageTokens[i];
+    const toolCallIds = getToolCallIds(messages[i]);
+    i++;
 
-  const recentMessages: T[] = [];
-  for (let i = messages.length - 1; i > 0; i--) {
-    const msgTokens = messageTokens[i];
-    if (usedTokens + msgTokens <= maxTokens) {
-      recentMessages.unshift(messages[i]);
-      usedTokens += msgTokens;
+    while (
+      i < messages.length &&
+      isToolResultFor(messages[i], toolCallIds)
+    ) {
+      unitMessages.push(messages[i]);
+      unitTokens += messageTokens[i];
+      i++;
+    }
+    units.push({ messages: unitMessages, tokens: unitTokens });
+  }
+
+  let usedTokens = messageTokens[0];
+  const recentUnits: T[][] = [];
+  for (let i = units.length - 1; i >= 0; i--) {
+    if (usedTokens + units[i].tokens <= maxTokens) {
+      recentUnits.unshift(units[i].messages);
+      usedTokens += units[i].tokens;
     } else {
       break;
     }
   }
 
-  result.push(...recentMessages);
-  log(`Truncated: kept ${result.length}/${messages.length} messages, ~${usedTokens} tokens`);
-  return result;
+  const result = [messages[0], ...recentUnits.flat()];
+  const retainedToolCallIds = new Set<string>();
+  for (const message of result) {
+    for (const id of getToolCallIds(message)) {
+      retainedToolCallIds.add(id);
+    }
+  }
+
+  let droppedOrphans = 0;
+  const validatedResult = result.filter((message) => {
+    const isOrphan =
+      message.role === 'tool' &&
+      typeof message.tool_call_id === 'string' &&
+      !retainedToolCallIds.has(message.tool_call_id);
+    if (isOrphan) {
+      droppedOrphans++;
+      usedTokens -= estimateMessageTokens(message);
+    }
+    return !isOrphan;
+  });
+  if (droppedOrphans > 0) {
+    log(`Dropped ${droppedOrphans} orphaned tool result message(s) after truncation`);
+  }
+  log(`Truncated: kept ${validatedResult.length}/${messages.length} messages, ~${usedTokens} tokens`);
+  return validatedResult;
 }
 
 export interface SafeOutputTokensParams {
