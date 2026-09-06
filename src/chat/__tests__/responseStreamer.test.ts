@@ -93,6 +93,7 @@ describe('streamResponse', () => {
     assert.equal(stats.hadThinking, true);
     const kinds = events.map((e) => e.kind);
     assert.deepEqual(kinds, ['thinking', 'thinkingDone']);
+    assert.equal(isEmptyStreamResult(stats), true);
   });
 
   test('parses inline <thinking> tags in content', async () => {
@@ -331,7 +332,7 @@ describe('isEmptyStreamResult', () => {
     );
   });
 
-  test('false when thinking occurred', () => {
+  test('true when thinking occurred without visible output', () => {
     assert.equal(
       isEmptyStreamResult({
         totalContentLength: 0,
@@ -340,7 +341,7 @@ describe('isEmptyStreamResult', () => {
         hadThinking: true,
         thinkingForceClosed: false,
       }),
-      false
+      true
     );
   });
 
