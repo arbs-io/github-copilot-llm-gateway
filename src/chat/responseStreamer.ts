@@ -197,15 +197,14 @@ export async function streamResponse(params: StreamResponseParams): Promise<Stre
 
 /**
  * Determine whether a completed stream should be treated as empty (and thus
- * needs an error fallback message). A stream with thinking content but no
- * visible output is still "empty" from the user's perspective only if the
- * thinking block was force-closed.
+ * needs an error fallback message). Thinking content is not a visible response
+ * for VS Code's purposes. Force-closed thinking is excluded because
+ * streamResponse already emits its dedicated fallback text.
  */
 export function isEmptyStreamResult(stats: StreamStats): boolean {
   return (
-    stats.totalContentLength === 0 &&
+    stats.totalTextParts === 0 &&
     stats.totalToolCalls === 0 &&
-    !stats.hadThinking &&
     !stats.thinkingForceClosed
   );
 }

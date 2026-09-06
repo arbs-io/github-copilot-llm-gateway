@@ -109,6 +109,81 @@ describe('truncateMessagesToFit', () => {
     );
   });
 
+  test('does not retain a tool result without its assistant tool call', () => {
+    const messages = [
+      { role: 'system', content: 's' },
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [
+          { id: 'call-1', type: 'function', function: { name: 'search', arguments: '{}' } },
+        ],
+      },
+      { role: 'tool', tool_call_id: 'call-1', content: 'r' },
+    ];
+
+    const result = truncateMessagesToFit(messages, 2);
+
+    assert.deepEqual(result, [messages[0]]);
+  });
+
+  test('retains a complete parallel tool exchange when the whole group fits', () => {
+    const messages = [
+      { role: 'system', content: 's' },
+      { role: 'user', content: 'x'.repeat(400) },
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [
+          { id: 'call-1', type: 'function', function: { name: 'first', arguments: '{}' } },
+          { id: 'call-2', type: 'function', function: { name: 'second', arguments: '{}' } },
+        ],
+      },
+      { role: 'tool', tool_call_id: 'call-1', content: 'a' },
+      { role: 'tool', tool_call_id: 'call-2', content: 'b' },
+    ];
+    const groupBudget = [messages[0], ...messages.slice(2)]
+      .reduce((total, message) => total + estimateMessageTokens(message), 0);
+
+    const result = truncateMessagesToFit(messages, groupBudget);
+
+    assert.deepEqual(result, [messages[0], ...messages.slice(2)]);
+  });
+
+  test('drops every result when a parallel tool exchange does not fully fit', () => {
+    const messages = [
+      { role: 'system', content: 's' },
+      {
+        role: 'assistant',
+        content: null,
+        tool_calls: [
+          { id: 'call-1', type: 'function', function: { name: 'first', arguments: '{}' } },
+          { id: 'call-2', type: 'function', function: { name: 'second', arguments: '{}' } },
+        ],
+      },
+      { role: 'tool', tool_call_id: 'call-1', content: 'a' },
+      { role: 'tool', tool_call_id: 'call-2', content: 'b' },
+    ];
+
+    const result = truncateMessagesToFit(messages, 3);
+
+    assert.deepEqual(result, [messages[0]]);
+  });
+
+  test('filters an unmatched tool result from malformed truncated history', () => {
+    const messages = [
+      { role: 'system', content: 's' },
+      { role: 'user', content: 'x'.repeat(100) },
+      { role: 'tool', tool_call_id: 'missing', content: 'r' },
+    ];
+    const logs: string[] = [];
+
+    const result = truncateMessagesToFit(messages, 2, (message) => logs.push(message));
+
+    assert.deepEqual(result, [messages[0]]);
+    assert.ok(logs.some((message) => message.includes('Dropped 1 orphaned tool result')));
+  });
+
   test('logs truncation events when provided a logger', () => {
     const messages = [
       { content: 'a'.repeat(40) },
