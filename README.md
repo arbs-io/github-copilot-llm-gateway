@@ -419,6 +419,21 @@ Access from the Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`):
 | **GitHub Copilot LLM Gateway: Edit Custom Headers**    | Add, edit, or remove custom HTTP headers (stored in secret storage) |
 | **GitHub Copilot LLM Gateway: Show Output Log**        | Open the extension's output channel                                 |
 
+## Reply Token Summary
+
+GitHub Copilot's native chat footer shows a **credits** figure, which is meaningless for a self-hosted gateway model (gateway models report `multiplierNumeric: 0` — they never consume Copilot premium quota). Instead, when this setting is on, the extension appends a plain-text summary line to the end of each reply:
+
+```
+Tokens: input 12,345 | output 1,234 | total 13,579
+```
+
+- **Scope is one completed reply**, including all of its internal tool-call rounds — not the whole chat conversation, and not the extension's lifetime session totals shown in the [status dialog](#status-bar--connection-info). Nested subagent calls (a tool that spawns its own separate chat) are **not** rolled into the parent reply's total.
+- Counts are **server-reported usage**, summed once per actual model call — not a token estimate. Because each round of a multi-step tool-calling reply resends the growing conversation, the input count is the sum of what was *actually sent* on each call, not a single context-window snapshot.
+- If the server didn't report usage for one round, the line reads `Tokens (partial): …` using only the rounds that did. If no round ever reported usage, it reads `Tokens: input unavailable | output unavailable | total unavailable`.
+- The line is ordinary assistant text, so it is included if you copy or export the reply, and (like any other assistant text) becomes part of the conversation history sent on later turns — it is not counted as part of this reply's own output tokens.
+- Setting: `github.copilot.llm-gateway.showReplyTokenUsage` (default: on). Turn it off to get the previous plain-reply behavior with no added line.
+- **Compatibility note**: linking a reply's tool-call rounds together requires per-request identity fields that Copilot Chat passes internally but does not publish as a stable API. If your installed Copilot Chat build doesn't supply them, this feature silently does nothing — no line is added, and nothing else about the reply changes. This does not affect the [context-window usage widget](#what-it-does-that-a-plain-connection-doesnt), which uses a separate, stable mechanism.
+
 ## Privacy & Network Requests
 
 This extension is a **Language Model provider** — it registers alongside GitHub's built-in models and handles inference when you select an LLM Gateway model. Understanding what it does and does not control is important:

@@ -5,6 +5,7 @@ import {
   OpenAICompletionResponse,
   OpenAIModelsResponse,
   OpenAIUsage,
+  OpenAIUsageAvailability,
 } from './types';
 import { GatewayConfig } from '../config/gatewayConfig';
 import {
@@ -77,6 +78,8 @@ export interface GatewayStreamChunk {
   tool_calls: AccumulatedToolCall[];
   finished_tool_calls: AccumulatedToolCall[];
   usage?: OpenAIUsage;
+  /** Field-presence companion to `usage` — see {@link OpenAIUsageAvailability}. */
+  usageAvailability?: OpenAIUsageAvailability;
 }
 
 /**
@@ -448,6 +451,7 @@ export class GatewayClient {
         tool_calls: [],
         finished_tool_calls: [],
         usage,
+        usageAvailability: extractUsageAvailability(obj.usage),
       };
     }
 
@@ -465,7 +469,7 @@ export class GatewayClient {
         reasoning_content: reasoningContent,
         tool_calls: [],
         finished_tool_calls: finishedToolCalls,
-        ...(usage ? { usage } : {}),
+        ...(usage ? { usage, usageAvailability: extractUsageAvailability(obj.usage) } : {}),
       };
     }
     if (chunk.message) {
@@ -475,7 +479,7 @@ export class GatewayClient {
         reasoning_content: reasoningContent,
         tool_calls: [],
         finished_tool_calls: finishedToolCalls,
-        ...(usage ? { usage } : {}),
+        ...(usage ? { usage, usageAvailability: extractUsageAvailability(obj.usage) } : {}),
       };
     }
     return null;
@@ -697,6 +701,24 @@ export function extractUsage(raw: unknown): OpenAIUsage | undefined {
 function toNonNegativeNumber(value: unknown, fallback = 0): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) { return fallback; }
   return value < 0 ? 0 : value;
+}
+
+/**
+ * Whether the raw (pre-normalization) usage payload actually included each
+ * field. Read on the same raw object `extractUsage` normalizes, so a server
+ * that omits `prompt_tokens` entirely is distinguishable from one reporting
+ * a real `0` — needed by the per-reply token summary's partial/unavailable
+ * labeling (issue: gateway per-reply token summary).
+ */
+export function extractUsageAvailability(raw: unknown): OpenAIUsageAvailability {
+  if (!raw || typeof raw !== 'object') {
+    return { promptKnown: false, completionKnown: false };
+  }
+  const obj = raw as Record<string, unknown>;
+  return {
+    promptKnown: typeof obj.prompt_tokens === 'number' && Number.isFinite(obj.prompt_tokens),
+    completionKnown: typeof obj.completion_tokens === 'number' && Number.isFinite(obj.completion_tokens),
+  };
 }
 
 function extractServerErrorMessage(payload: ServerErrorPayload): string {

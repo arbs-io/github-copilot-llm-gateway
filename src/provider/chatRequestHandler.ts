@@ -21,6 +21,13 @@ import {
   isEmptyStreamResult,
   streamResponse,
 } from '../chat/responseStreamer';
+import {
+  ReplyTokenUsageTracker,
+  RoundUsage,
+  extractReplyIdentity,
+  extractToolResultIds,
+  formatReplyTokenSummaryLine,
+} from '../chat/replyTokenUsage';
 import { friendlyModelName } from '../models/modelDisplay';
 import { TokenUsage } from '../status/sessionStats';
 import { ModelCatalog } from './modelCatalog';
@@ -129,6 +136,16 @@ interface ChatRequestHandlerDeps {
  * sizes, cached model data) lives in the {@link ModelCatalog}.
  */
 export class ChatRequestHandler {
+  /**
+   * Accumulates server-reported usage across one reply's internal tool-call
+   * rounds so a final `Tokens: input … | output … | total …` line can be
+   * appended to the reply. Rounds are linked via private, unstable
+   * `_conversationId` / `_telemetryTurn` fields — see `replyTokenUsage.ts`
+   * for the full compatibility contract. Long-lived like this handler; state
+   * is bounded and cleared per reply, never persisted.
+   */
+  private readonly tokenUsageTracker = new ReplyTokenUsageTracker();
+
   constructor(private readonly deps: ChatRequestHandlerDeps) {}
 
   public async handle(
@@ -152,6 +169,20 @@ export class ChatRequestHandler {
     const openAIMessages = convertAllMessages(messages, config.enableImageInput, log);
     log(`Converted to ${openAIMessages.length} OpenAI messages`);
     this.logMessageStructure(openAIMessages);
+
+    // Fail closed: only track/append a token summary when the installed
+    // Copilot build actually supplies both private identity fields (see
+    // replyTokenUsage.ts). Gating extraction on the setting means a disabled
+    // feature never touches the tracker at all.
+    const replyIdentity = config.showReplyTokenUsage
+      ? extractReplyIdentity(options.modelOptions)
+      : undefined;
+    if (config.showReplyTokenUsage && !replyIdentity) {
+      log(
+        'Reply token summary: no valid _conversationId/_telemetryTurn on this request; skipping (this is expected on Copilot builds that don\'t supply them).'
+      );
+    }
+    const incomingToolResultIds = replyIdentity ? extractToolResultIds(openAIMessages) : [];
 
     const configuredMaxOutput =
       model.maxOutputTokens || TOKEN_CONSTANTS.DEFAULT_OUTPUT_TOKENS;
@@ -266,9 +297,17 @@ export class ChatRequestHandler {
 
       this.logRequest(config, requestOptions);
 
-      const reporter = this.createStreamReporter(trackingProgress, (usage) => {
-        capturedUsage = usage;
-      });
+      if (replyIdentity) {
+        this.tokenUsageTracker.beginRound(replyIdentity, incomingToolResultIds);
+      }
+      const emittedToolCallIds: string[] = [];
+      let roundUsage: RoundUsage | undefined;
+      const reporter = this.createStreamReporter(
+        trackingProgress,
+        (usage) => { capturedUsage = usage; },
+        (round) => { roundUsage = round; },
+        (id) => { emittedToolCallIds.push(id); }
+      );
       const chunks = this.deps.client.streamChatCompletion(requestOptions, token);
       const stats = await streamResponse({
         chunks: chunks as AsyncIterable<StreamChunk>,
@@ -280,6 +319,27 @@ export class ChatRequestHandler {
       log(
         `Completed chat request, received ${stats.totalContentLength} chars, ${stats.totalTextParts} text parts, ${stats.totalToolCalls} tool calls`
       );
+
+      if (replyIdentity) {
+        this.tokenUsageTracker.recordRound(replyIdentity, {
+          usage: roundUsage,
+          outgoingToolCallIds: emittedToolCallIds,
+        });
+        const isTerminalRound = stats.totalToolCalls === 0;
+        if (isTerminalRound) {
+          // Only a genuine visible reply gets the summary appended — not a
+          // cancelled request, an empty-response diagnostic, or a
+          // thinking-force-closed fallback (none of those increment
+          // totalTextParts through the normal text path).
+          if (stats.totalTextParts > 0 && !token.isCancellationRequested) {
+            const summary = this.tokenUsageTracker.summarize(replyIdentity);
+            trackingProgress.report(
+              new vscode.LanguageModelTextPart(`\n\n${formatReplyTokenSummaryLine(summary)}`)
+            );
+          }
+          this.tokenUsageTracker.finish(replyIdentity);
+        }
+      }
 
       if (isEmptyStreamResult(stats)) {
         const toolCount = filteredTools?.length ?? 0;
@@ -418,16 +478,20 @@ export class ChatRequestHandler {
 
   private createStreamReporter(
     progress: vscode.Progress<vscode.LanguageModelResponsePart>,
-    onUsage?: (usage: TokenUsage) => void
+    onUsage?: (usage: TokenUsage) => void,
+    onRoundUsage?: (round: RoundUsage) => void,
+    onToolCallEmitted?: (id: string) => void
   ): StreamReporter {
     return {
       reportText: (text) => progress.report(new vscode.LanguageModelTextPart(text)),
       reportThinking: (text) => progress.report(new vscode.LanguageModelThinkingPart(text)),
       reportThinkingDone: () =>
         progress.report(new vscode.LanguageModelThinkingPart('', '', { vscode_reasoning_done: true })),
-      reportToolCall: (id, name, args) =>
-        progress.report(new vscode.LanguageModelToolCallPart(id, name, args)),
-      reportUsage: (usage) => {
+      reportToolCall: (id, name, args) => {
+        onToolCallEmitted?.(id);
+        progress.report(new vscode.LanguageModelToolCallPart(id, name, args));
+      },
+      reportUsage: (usage, availability) => {
         // VS Code 1.120 picks up token usage emitted as a LanguageModelDataPart
         // with the literal mime type `usage` (see microsoft/vscode#315394).
         // The shape mirrors OpenAI's `usage` object. Surfacing it here makes
@@ -440,6 +504,12 @@ export class ChatRequestHandler {
           prompt: usage.prompt_tokens,
           completion: usage.completion_tokens,
           total: usage.total_tokens,
+        });
+        onRoundUsage?.({
+          promptTokens: usage.prompt_tokens,
+          completionTokens: usage.completion_tokens,
+          promptKnown: availability?.promptKnown ?? true,
+          completionKnown: availability?.completionKnown ?? true,
         });
         const payload = new TextEncoder().encode(JSON.stringify(usage));
         progress.report(new vscode.LanguageModelDataPart(payload, USAGE_DATA_PART_MIME_TYPE));

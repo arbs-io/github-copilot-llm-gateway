@@ -9,7 +9,7 @@
  */
 
 import { ThinkingParser, ThinkingChunk } from './thinking';
-import { OpenAIUsage } from '../api/types';
+import { OpenAIUsage, OpenAIUsageAvailability } from '../api/types';
 
 export interface StreamReporter {
   reportText(text: string): void;
@@ -20,9 +20,12 @@ export interface StreamReporter {
    * Report a usage frame from the inference server. Called at most once per
    * stream — the OpenAI convention is to emit a trailing chunk with totals
    * after the last delta. Wired to VS Code's chat context-window widget via
-   * a `LanguageModelDataPart` (issue #24).
+   * a `LanguageModelDataPart` (issue #24). `availability` records which
+   * fields were actually present on the wire, for consumers (the per-reply
+   * token summary) that must distinguish a reported zero from an absent
+   * field.
    */
-  reportUsage(usage: OpenAIUsage): void;
+  reportUsage(usage: OpenAIUsage, availability?: OpenAIUsageAvailability): void;
 }
 
 export interface StreamChunk {
@@ -30,6 +33,7 @@ export interface StreamChunk {
   reasoning_content?: string;
   finished_tool_calls?: Array<{ id: string; name: string; arguments: string }>;
   usage?: OpenAIUsage;
+  usageAvailability?: OpenAIUsageAvailability;
 }
 
 export interface StreamStats {
@@ -140,7 +144,7 @@ function processStreamChunk(
     // across the trailing few chunks. Reporting twice would briefly double
     // VS Code's running context-window count before settling.
     stats.reportedUsage = true;
-    reporter.reportUsage(chunk.usage);
+    reporter.reportUsage(chunk.usage, chunk.usageAvailability);
   }
 
   return inReasoningField;
