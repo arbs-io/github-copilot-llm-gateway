@@ -139,6 +139,18 @@ export interface OpenAIUsage {
   };
 }
 
+/**
+ * Whether the raw usage payload actually included each field, BEFORE
+ * `extractUsage` normalizes a missing value to 0. Lets downstream consumers
+ * (the per-reply token summary) distinguish a genuinely reported zero from
+ * an absent field, without changing the normalized `OpenAIUsage` shape that
+ * VS Code's context-window widget already consumes.
+ */
+export interface OpenAIUsageAvailability {
+  readonly promptKnown: boolean;
+  readonly completionKnown: boolean;
+}
+
 export interface OpenAIChatCompletionResponse {
   id: string;
   object: string;

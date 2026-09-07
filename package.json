@@ -240,6 +240,12 @@
           "minimum": 1,
           "description": "Maximum characters of context after the cursor to send for inline completions. Lower values reduce latency but provide less context.",
           "order": 20
+        },
+        "github.copilot.llm-gateway.showReplyTokenUsage": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Append a `Tokens: input \u2026 | output \u2026 | total \u2026` line to the end of each reply, summing this gateway's server-reported usage across that reply's internal tool-call rounds (a completed reply, not the whole chat). This is separate from GitHub Copilot's own credits/quota display, which this extension cannot change. Requires the installed Copilot Chat build to supply private, unstable per-request identity fields; if it doesn't, no line is added and nothing else changes. Disable to restore the previous plain-text behavior.",
+          "order": 22
         }
       }
     }

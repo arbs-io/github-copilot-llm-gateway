@@ -38,4 +38,12 @@ export interface GatewayConfig {
   inlineCompletionTimeout: number;
   inlineCompletionMaxPrefixChars: number;
   inlineCompletionMaxSuffixChars: number;
+  /**
+   * Append a `Tokens: input … | output … | total …` line to the end of each
+   * reply, summing server-reported usage across that reply's internal
+   * tool-call rounds. Requires the installed Copilot Chat build to supply
+   * private, unstable per-request identity fields — silently does nothing
+   * (no line, no error) when they're absent. See replyTokenUsage.ts.
+   */
+  showReplyTokenUsage: boolean;
 }
