@@ -71,6 +71,7 @@ export class ConfigService {
       inlineCompletionTimeout: config.get<number>('inlineCompletionTimeout', 3000),
       inlineCompletionMaxPrefixChars: config.get<number>('inlineCompletionMaxPrefixChars', 4000),
       inlineCompletionMaxSuffixChars: config.get<number>('inlineCompletionMaxSuffixChars', 1000),
+      showReplyTokenUsage: config.get<boolean>('showReplyTokenUsage', true),
     };
   }
 
