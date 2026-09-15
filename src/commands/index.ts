@@ -4,6 +4,7 @@ import { StatusBarManager } from '../status/statusBarManager';
 import { configureServerFlow } from './configureServer';
 import { editCustomHeadersFlow } from './customHeaders';
 import { setThinkingEffortFlow } from './thinkingEffort';
+import { showStatusMenu } from './statusMenu';
 
 /**
  * Register every user-facing command the extension contributes. Kept out of
@@ -74,6 +75,13 @@ export function registerCommands(
         provider.refreshModels();
         await refreshStatusBar();
       }
+    ),
+
+    // Status-bar click target: a Quick Pick menu laid out like Copilot's
+    // status popup (that popup itself is VS Code-internal and not available
+    // to extensions — see status/statusMenu.ts).
+    vscode.commands.registerCommand('github.copilot.llm-gateway.showStatusMenu', () =>
+      showStatusMenu(provider)
     ),
 
     // "Set Thinking Effort" command — Copilot's native per-model submenu is

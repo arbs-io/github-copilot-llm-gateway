@@ -95,6 +95,11 @@
         "command": "github.copilot.llm-gateway.setThinkingEffort",
         "title": "Set Thinking Effort",
         "category": "GitHub Copilot LLM Gateway"
+      },
+      {
+        "command": "github.copilot.llm-gateway.showStatusMenu",
+        "title": "Show Status Menu",
+        "category": "GitHub Copilot LLM Gateway"
       }
     ],
     "configuration": {

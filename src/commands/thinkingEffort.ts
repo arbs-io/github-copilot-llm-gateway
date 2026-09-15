@@ -26,7 +26,10 @@ interface EffortPickItem extends vscode.QuickPickItem {
  * reloads its config on the settings change, so the next request picks the
  * value up without a model refresh.
  */
-export async function setThinkingEffortFlow(provider: GatewayProvider): Promise<void> {
+export async function setThinkingEffortFlow(
+  provider: GatewayProvider,
+  preselectedModelId?: string
+): Promise<void> {
   const models = await listModels(provider);
   if (models.length === 0) {
     vscode.window.showWarningMessage(
@@ -38,23 +41,7 @@ export async function setThinkingEffortFlow(provider: GatewayProvider): Promise<
   const config = provider.getConfigSnapshot();
   const parameter = config.thinkingEffortParameter;
 
-  const modelPick = await vscode.window.showQuickPick<ModelPickItem>(
-    models.map((model) => {
-      const current = resolveThinkingEffort(model.id, config.perModelOptions, parameter);
-      return {
-        label: model.name,
-        description: model.id === model.name ? undefined : model.id,
-        detail: current ? `Current: ${parameter} = ${current}` : `Current: server default (${parameter} not sent)`,
-        modelId: model.id,
-      };
-    }),
-    {
-      title: 'LLM Gateway — Set Thinking Effort',
-      placeHolder: 'Select a model',
-      matchOnDescription: true,
-      ignoreFocusOut: true,
-    }
-  );
+  const modelPick = await pickModel(models, preselectedModelId, config.perModelOptions, parameter);
   if (!modelPick) { return; }
 
   const current = resolveThinkingEffort(modelPick.modelId, config.perModelOptions, parameter);
@@ -98,6 +85,42 @@ export async function setThinkingEffortFlow(provider: GatewayProvider): Promise<
     value === undefined
       ? `GitHub Copilot LLM Gateway: ${modelPick.label} will use the server's default thinking effort.`
       : `GitHub Copilot LLM Gateway: ${modelPick.label} will send ${parameter} = ${value}.`
+  );
+}
+
+/**
+ * Resolve the model to edit: skip the picker when the caller already chose
+ * one (the status menu's per-model rows), otherwise show every model with its
+ * current value.
+ */
+async function pickModel(
+  models: readonly vscode.LanguageModelChatInformation[],
+  preselectedModelId: string | undefined,
+  perModelOptions: Record<string, unknown>,
+  parameter: string
+): Promise<ModelPickItem | undefined> {
+  const preselected = preselectedModelId
+    ? models.find((model) => model.id === preselectedModelId)
+    : undefined;
+  if (preselected) {
+    return { label: preselected.name, modelId: preselected.id };
+  }
+  return vscode.window.showQuickPick<ModelPickItem>(
+    models.map((model) => {
+      const current = resolveThinkingEffort(model.id, perModelOptions, parameter);
+      return {
+        label: model.name,
+        description: model.id === model.name ? undefined : model.id,
+        detail: current ? `Current: ${parameter} = ${current}` : `Current: server default (${parameter} not sent)`,
+        modelId: model.id,
+      };
+    }),
+    {
+      title: 'LLM Gateway — Set Thinking Effort',
+      placeHolder: 'Select a model',
+      matchOnDescription: true,
+      ignoreFocusOut: true,
+    }
   );
 }
 

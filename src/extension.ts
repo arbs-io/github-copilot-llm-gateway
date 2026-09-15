@@ -41,11 +41,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     100
   );
   statusBar.name = 'LLM Gateway';
-  // Click refreshes the gateway. The rich GHCP-style popup is the hover
-  // tooltip — it's the closest stable-API approximation to a floating
-  // status-bar popup. Clicking is wired to a useful action so the bar
-  // isn't dead.
-  statusBar.command = 'github.copilot.llm-gateway.refreshModels';
+  // Hover shows the rich GHCP-style tooltip; click opens the status menu — a
+  // Quick Pick with the same sections plus in-place feature toggles. The
+  // anchored popup GHCP itself uses is VS Code-internal (locked open via a
+  // command the status bar matches by object identity), so a Quick Pick is
+  // the closest stable-API equivalent.
+  statusBar.command = 'github.copilot.llm-gateway.showStatusMenu';
   statusBar.show();
   context.subscriptions.push(statusBar);
 
