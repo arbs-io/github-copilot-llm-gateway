@@ -316,11 +316,17 @@ export class ChatRequestHandler {
         reporter,
         isCancelled: () => token.isCancellationRequested,
         resolveToolCallArgs: (toolCall) => this.resolveToolCallArgs(toolCall, toolSchemas),
+        maxOutputTokens: safeMaxOutputTokens,
       });
 
       log(
-        `Completed chat request, received ${stats.totalContentLength} chars, ${stats.totalTextParts} text parts, ${stats.totalToolCalls} tool calls`
+        `Completed chat request, received ${stats.totalContentLength} chars, ${stats.totalTextParts} text parts, ${stats.totalToolCalls} tool calls, finish_reason=${stats.finishReason ?? 'none'}`
       );
+      if (stats.outputTruncated) {
+        log(
+          `WARNING: max_tokens (${safeMaxOutputTokens}) exhausted${stats.hadThinking ? ' during thinking' : ''} with no visible output. Raise defaultMaxOutputTokens or lower the model's thinking effort.`
+        );
+      }
 
       if (replyIdentity) {
         this.completeReplyRound(replyIdentity, stats, roundUsage, emittedToolCallIds, token, trackingProgress);

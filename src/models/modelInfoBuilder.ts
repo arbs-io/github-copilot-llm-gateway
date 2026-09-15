@@ -119,6 +119,10 @@ export function buildModelInfo({
     serverContext !== undefined &&
     hasSeparateOutputWindow(model);
 
+  // A shared window never gives output more than half the context, matching
+  // `calculateMaxInputTokens` — otherwise a generous default output budget
+  // (sized for thinking models) would leave a small-context model almost no
+  // room for its prompt.
   const outputCeiling = serverMaxOutput ?? defaultMaxOutputTokens;
   const maxOutputTokens = outputWindowIsSeparate
     ? outputCeiling
@@ -126,7 +130,7 @@ export function buildModelInfo({
         outputCeiling,
         Math.max(
           TOKEN_CONSTANTS.MIN_OUTPUT_TOKENS,
-          totalContext - TOKEN_CONSTANTS.ADJUST_TOKEN_BUFFER
+          Math.min(Math.floor(totalContext / 2), totalContext - TOKEN_CONSTANTS.ADJUST_TOKEN_BUFFER)
         )
       );
 

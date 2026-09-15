@@ -202,15 +202,28 @@ describe('buildModelInfo picker-facing window (issue #84)', () => {
     assert.equal(info.maxInputTokens + info.maxOutputTokens, 248320);
   });
 
+  test('a shared window caps output at half the context so the prompt keeps room', () => {
+    const { info } = buildModelInfo({
+      model: baseModel({ max_model_len: 8192 }),
+      defaultMaxTokens: 262144,
+      defaultMaxOutputTokens: 16384,
+      capabilities: {},
+    });
+    assert.equal(info.maxOutputTokens, 4096);
+    assert.equal(info.maxInputTokens, 4096);
+  });
+
   test('the split never drives maxInputTokens to zero on a tiny window', () => {
     const { info } = buildModelInfo({
-      model: baseModel({ max_model_len: 1024 }),
+      model: baseModel({ max_model_len: 300 }),
       defaultMaxTokens: 262144,
       defaultMaxOutputTokens: 65536,
       capabilities: {},
     });
-    assert.equal(info.maxOutputTokens, 1024 - TOKEN_CONSTANTS.ADJUST_TOKEN_BUFFER);
-    assert.equal(info.maxInputTokens, TOKEN_CONSTANTS.ADJUST_TOKEN_BUFFER);
+    // total - ADJUST_TOKEN_BUFFER (44) is below half the window (150), so
+    // the buffer rule wins and the MIN_OUTPUT_TOKENS floor then lifts it.
+    assert.equal(info.maxOutputTokens, TOKEN_CONSTANTS.MIN_OUTPUT_TOKENS);
+    assert.equal(info.maxInputTokens, 300 - TOKEN_CONSTANTS.MIN_OUTPUT_TOKENS);
   });
 
   test('defaultMaxTokens is only a fallback and is also split', () => {
@@ -248,7 +261,7 @@ describe('buildModelInfo output token math', () => {
     assert.equal(info.maxOutputTokens, 2048);
   });
 
-  test('clamps a LiteLLM output limit to the available context headroom', () => {
+  test('clamps a LiteLLM output limit to half the shared window', () => {
     const totalContext = 8192;
     const { info } = buildModelInfo({
       model: baseModel({ max_input_tokens: totalContext, max_output_tokens: totalContext }),
@@ -256,7 +269,8 @@ describe('buildModelInfo output token math', () => {
       defaultMaxOutputTokens: 2048,
       capabilities: {},
     });
-    assert.equal(info.maxOutputTokens, totalContext - TOKEN_CONSTANTS.ADJUST_TOKEN_BUFFER);
+    assert.equal(info.maxOutputTokens, totalContext / 2);
+    assert.equal(info.maxInputTokens, totalContext / 2);
   });
 
   test('keeps a separate LiteLLM output window intact instead of clamping it', () => {
@@ -280,7 +294,7 @@ describe('buildModelInfo output token math', () => {
       contextOverride: 8192,
     });
     assert.equal(outputWindowIsSeparate, false);
-    assert.equal(info.maxOutputTokens, 8192 - TOKEN_CONSTANTS.ADJUST_TOKEN_BUFFER);
+    assert.equal(info.maxOutputTokens, 8192 / 2);
   });
 
   test('a backend-discovered context forces shared-window budgeting', () => {

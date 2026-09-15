@@ -9,7 +9,13 @@
 export const TOKEN_CONSTANTS = {
   DEFAULT_CONTEXT_TOKENS: 262144,
   DEFAULT_OUTPUT_TOKENS: 2048,
-  FALLBACK_OUTPUT_TOKENS: 4096,
+  /**
+   * Default output budget when the server doesn't report one. Sized for
+   * thinking models, whose `reasoning_content` alone can run past 4K on a
+   * modest coding request; the per-request budget is still clamped to what
+   * fits the context window.
+   */
+  FALLBACK_OUTPUT_TOKENS: 16384,
   MIN_OUTPUT_TOKENS: 64,
   CONTEXT_BUFFER_TOKENS: 256,
   ADJUST_TOKEN_BUFFER: 256,

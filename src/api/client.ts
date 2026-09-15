@@ -80,6 +80,12 @@ export interface GatewayStreamChunk {
   usage?: OpenAIUsage;
   /** Field-presence companion to `usage` — see {@link OpenAIUsageAvailability}. */
   usageAvailability?: OpenAIUsageAvailability;
+  /**
+   * The choice's `finish_reason` when the server set one on this chunk
+   * (`stop`, `length`, `tool_calls`, …). `length` means the model hit
+   * `max_tokens` — the provider uses it to explain an otherwise empty reply.
+   */
+  finish_reason?: string;
 }
 
 /**
@@ -462,6 +468,7 @@ export class GatewayClient {
       id: typeof obj.id === 'string' ? obj.id : undefined,
     };
 
+    const finishReason = typeof chunk.finishReason === 'string' ? { finish_reason: chunk.finishReason } : {};
     if (chunk.delta) {
       const { content, reasoningContent, finishedToolCalls } = this.applyDeltaChoice(chunk, accumulator);
       return {
@@ -469,6 +476,7 @@ export class GatewayClient {
         reasoning_content: reasoningContent,
         tool_calls: [],
         finished_tool_calls: finishedToolCalls,
+        ...finishReason,
         ...(usage ? { usage, usageAvailability: extractUsageAvailability(obj.usage) } : {}),
       };
     }
@@ -479,6 +487,7 @@ export class GatewayClient {
         reasoning_content: reasoningContent,
         tool_calls: [],
         finished_tool_calls: finishedToolCalls,
+        ...finishReason,
         ...(usage ? { usage, usageAvailability: extractUsageAvailability(obj.usage) } : {}),
       };
     }

@@ -184,7 +184,7 @@ Configure the extension through VS Code Settings (`Ctrl+,` / `Cmd+,`) → search
 | Setting                       | Default  | Description                                                                                                  |
 | ----------------------------- | -------- | ------------------------------------------------------------------------------------------------------------ |
 | **Default Max Tokens**        | `262144` | Fallback context window size (total tokens) used only when the inference server does not report one itself. Never overrides a server-reported value — use **Model Context Windows** for that. |
-| **Default Max Output Tokens** | `4096`   | Fallback maximum output tokens used when the server does not report `max_output_tokens`.                     |
+| **Default Max Output Tokens** | `16384`  | Fallback maximum output tokens used when the server does not report `max_output_tokens`. Thinking models spend part of this on reasoning before answering; it is clamped to at most half the context window. |
 | **Model Context Windows**     | `{}`     | Per-model context window override (total tokens), keyed by model id or `*` wildcard. Wins over server-reported values. |
 | **Enable Image Input**        | `true`   | Advertise image-input capability for multimodal models and forward image parts as base64 `image_url`s.       |
 
@@ -430,7 +430,7 @@ Access from the Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`):
 
 ## Reply Token Summary
 
-GitHub Copilot's native chat footer shows a **credits** figure, which is meaningless for a self-hosted gateway model (gateway models report `multiplierNumeric: 0` — they never consume Copilot premium quota). Instead, when this setting is on, the extension appends a plain-text summary line to the end of each reply:
+By default replies look exactly like native Copilot output — per-request token counts live in the [status bar menu](#status-bar--connection-info) and VS Code's context-window widget. If you'd rather see the numbers in the chat itself, an opt-in setting appends a plain-text summary line to the end of each reply:
 
 ```
 Tokens: input 12,345 | output 1,234 | total 13,579
@@ -440,7 +440,7 @@ Tokens: input 12,345 | output 1,234 | total 13,579
 - Counts are **server-reported usage**, summed once per actual model call — not a token estimate. Because each round of a multi-step tool-calling reply resends the growing conversation, the input count is the sum of what was *actually sent* on each call, not a single context-window snapshot.
 - If the server didn't report usage for one round, the line reads `Tokens (partial): …` using only the rounds that did. If no round ever reported usage, it reads `Tokens: input unavailable | output unavailable | total unavailable`.
 - The line is ordinary assistant text, so it is included if you copy or export the reply. The gateway strips it from the assistant history before sending later turns to the server, so it never costs prompt tokens or gets echoed by the model — and it is not counted as part of this reply's own output tokens.
-- Setting: `github.copilot.llm-gateway.showReplyTokenUsage` (default: on). Turn it off to get the previous plain-reply behavior with no added line.
+- Setting: `github.copilot.llm-gateway.showReplyTokenUsage` (default: off). Turn it on to add the line.
 - **Compatibility note**: linking a reply's tool-call rounds together requires per-request identity fields that Copilot Chat passes internally but does not publish as a stable API. If your installed Copilot Chat build doesn't supply them, this feature silently does nothing — no line is added, and nothing else about the reply changes. This does not affect the [context-window usage widget](#what-it-does-that-a-plain-connection-doesnt), which uses a separate, stable mechanism.
 
 ## Privacy & Network Requests

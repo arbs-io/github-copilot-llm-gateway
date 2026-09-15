@@ -192,9 +192,74 @@ describe('streamResponse', () => {
     assert.equal(stats.totalToolCalls, 0);
     // Fallback message should be reported as text.
     const fallback = events.find(
-      (e) => e.kind === 'text' && e.value?.includes('ran out of output tokens')
+      (e) => e.kind === 'text' && e.value?.includes('used its whole')
     );
     assert.ok(fallback, 'expected fallback text to be emitted');
+  });
+
+  test('emits fallback when finish_reason=length ends a reasoning-only stream', async () => {
+    // vLLM/llama-server with a reasoning parser stream thinking as
+    // `reasoning_content`, so the ThinkingParser never sees a tag to
+    // force-close; the only signal that the budget ran out is finish_reason.
+    const { reporter, events } = makeReporter();
+    const stats = await streamResponse({
+      chunks: iter([
+        { reasoning_content: 'Let me think about bubble sort in Rust...' },
+        { reasoning_content: 'still thinking', finish_reason: 'length' },
+      ]),
+      reporter,
+      isCancelled: () => false,
+      resolveToolCallArgs: identityArgs,
+      maxOutputTokens: 4096,
+    });
+    assert.equal(stats.finishReason, 'length');
+    assert.equal(stats.outputTruncated, true);
+    assert.equal(stats.hadThinking, true);
+    assert.equal(stats.totalTextParts, 0);
+    assert.equal(isEmptyStreamResult(stats), false);
+    const fallback = events.find((e) => e.kind === 'text');
+    assert.ok(fallback?.value?.includes('4,096-token output budget on thinking'), fallback?.value ?? 'no text');
+    assert.ok(fallback?.value?.includes('Set Thinking Effort'));
+  });
+
+  test('finish_reason=length fallback without thinking omits the thinking hint', async () => {
+    const { reporter, events } = makeReporter();
+    const stats = await streamResponse({
+      chunks: iter([{ content: '', finish_reason: 'length' }]),
+      reporter,
+      isCancelled: () => false,
+      resolveToolCallArgs: identityArgs,
+    });
+    assert.equal(stats.outputTruncated, true);
+    const fallback = events.find((e) => e.kind === 'text');
+    assert.ok(fallback?.value?.includes('before producing any answer'), fallback?.value ?? 'no text');
+    assert.ok(!fallback?.value?.includes('Set Thinking Effort'));
+  });
+
+  test('finish_reason=length with visible text is not treated as truncated-empty', async () => {
+    const { reporter, events } = makeReporter();
+    const stats = await streamResponse({
+      chunks: iter([{ content: 'partial answer', finish_reason: 'length' }]),
+      reporter,
+      isCancelled: () => false,
+      resolveToolCallArgs: identityArgs,
+    });
+    assert.equal(stats.finishReason, 'length');
+    assert.notEqual(stats.outputTruncated, true);
+    assert.equal(events.filter((e) => e.kind === 'text').length, 1);
+  });
+
+  test('finish_reason=stop with nothing visible stays a plain empty result', async () => {
+    const { reporter, events } = makeReporter();
+    const stats = await streamResponse({
+      chunks: iter([{ content: '', finish_reason: 'stop' }]),
+      reporter,
+      isCancelled: () => false,
+      resolveToolCallArgs: identityArgs,
+    });
+    assert.equal(stats.outputTruncated, false);
+    assert.equal(isEmptyStreamResult(stats), true);
+    assert.equal(events.length, 0);
   });
 
   test('does not emit fallback when force-closed but text parts exist', async () => {
@@ -208,7 +273,7 @@ describe('streamResponse', () => {
     assert.equal(stats.thinkingForceClosed, true);
     assert.ok(stats.totalTextParts > 0);
     const fallback = events.find(
-      (e) => e.kind === 'text' && e.value?.includes('ran out of output tokens')
+      (e) => e.kind === 'text' && e.value?.includes('used its whole')
     );
     assert.equal(fallback, undefined);
   });

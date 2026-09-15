@@ -34,6 +34,8 @@ export interface StreamChunk {
   finished_tool_calls?: Array<{ id: string; name: string; arguments: string }>;
   usage?: OpenAIUsage;
   usageAvailability?: OpenAIUsageAvailability;
+  /** Server `finish_reason` for this chunk, when set (see `GatewayStreamChunk`). */
+  finish_reason?: string;
 }
 
 export interface StreamStats {
@@ -43,6 +45,16 @@ export interface StreamStats {
   totalTextParts: number;
   hadThinking: boolean;
   thinkingForceClosed: boolean;
+  /** Last `finish_reason` the server sent, if any (`stop`, `length`, `tool_calls`, …). */
+  finishReason?: string;
+  /**
+   * True when the server reported `finish_reason: length` and the stream
+   * carried no visible text or tool calls — the model spent its whole
+   * `max_tokens` budget (typically on `reasoning_content`) before it could
+   * answer. `streamResponse` emits its own explanatory fallback for this, so
+   * `isEmptyStreamResult` treats it as handled, like `thinkingForceClosed`.
+   */
+  outputTruncated?: boolean;
   /**
    * True once a usage frame has been dispatched to the reporter. Internal
    * book-keeping to dedupe re-emitted totals from chatty servers; optional
@@ -63,12 +75,32 @@ export interface StreamResponseParams {
    * from the tool's schema.
    */
   resolveToolCallArgs: (toolCall: { id: string; name: string; arguments: string }) => Record<string, unknown>;
+  /**
+   * The `max_tokens` sent with the request, quoted in the fallback text when
+   * the model exhausts it without producing an answer.
+   */
+  maxOutputTokens?: number;
 }
 
-const FORCE_CLOSED_THINKING_FALLBACK =
-  '*(The model ran out of output tokens while thinking and could not produce a response. ' +
-  'Try increasing the context length or max output tokens in LM Studio, ' +
-  'or disable thinking for this model.)*';
+const THOUSANDS_FORMAT = new Intl.NumberFormat('en-US', { useGrouping: true });
+
+/**
+ * Explain an empty reply caused by the output budget running out. Thinking
+ * models (Qwen3, DeepSeek-R1, …) routinely burn several thousand tokens of
+ * `reasoning_content` on a modest coding request, so a small `max_tokens`
+ * ends the stream before any answer text exists — which otherwise surfaces
+ * as a generic "empty response" diagnostic that blames tool calling.
+ */
+function buildOutputBudgetFallback(hadThinking: boolean, maxOutputTokens: number | undefined): string {
+  const budget = maxOutputTokens === undefined ? 'output-token' : `${THOUSANDS_FORMAT.format(maxOutputTokens)}-token output`;
+  const spentOn = hadThinking ? 'on thinking' : 'before producing any answer';
+  return (
+    `*(The model used its whole ${budget} budget ${spentOn} and produced no response. ` +
+    'Raise `github.copilot.llm-gateway.defaultMaxOutputTokens`' +
+    (hadThinking ? ', lower the model\'s thinking effort (GitHub Copilot LLM Gateway: Set Thinking Effort), ' : ' ') +
+    'or check the server\'s own max output limit.)*'
+  );
+}
 
 /**
  * Dispatch a single ThinkingParser piece to the reporter, updating stats.
@@ -139,6 +171,10 @@ function processStreamChunk(
     }
   }
 
+  if (chunk.finish_reason) {
+    stats.finishReason = chunk.finish_reason;
+  }
+
   if (chunk.usage && !stats.reportedUsage) {
     // Latch on the first usage frame; some servers re-emit the same totals
     // across the trailing few chunks. Reporting twice would briefly double
@@ -156,7 +192,7 @@ function processStreamChunk(
  * use to decide whether the response was empty and needs an error fallback.
  */
 export async function streamResponse(params: StreamResponseParams): Promise<StreamStats> {
-  const { chunks, reporter, isCancelled, resolveToolCallArgs } = params;
+  const { chunks, reporter, isCancelled, resolveToolCallArgs, maxOutputTokens } = params;
 
   const stats: StreamStats = {
     totalContentLength: 0,
@@ -189,11 +225,18 @@ export async function streamResponse(params: StreamResponseParams): Promise<Stre
     reporter.reportThinkingDone();
   }
 
-  // If the model spent all its output budget inside a thinking block and
-  // produced no visible text or tool calls, emit a fallback message so the
-  // Copilot Chat UI has something to render.
-  if (stats.thinkingForceClosed && stats.totalTextParts === 0 && stats.totalToolCalls === 0) {
-    reporter.reportText(FORCE_CLOSED_THINKING_FALLBACK);
+  // If the model spent all its output budget before producing any visible
+  // text or tool calls, emit a fallback message so the Copilot Chat UI has
+  // something to render. Two signals: an unclosed `<think>` block at
+  // end-of-stream (servers that inline thinking in `content`), or an explicit
+  // `finish_reason: length` (servers that split it into `reasoning_content`,
+  // where the parser never sees a tag to force-close).
+  const nothingVisible = stats.totalTextParts === 0 && stats.totalToolCalls === 0;
+  if (nothingVisible && !isCancelled()) {
+    stats.outputTruncated = stats.finishReason === 'length';
+    if (stats.thinkingForceClosed || stats.outputTruncated) {
+      reporter.reportText(buildOutputBudgetFallback(stats.hadThinking, maxOutputTokens));
+    }
   }
 
   return stats;
@@ -202,13 +245,15 @@ export async function streamResponse(params: StreamResponseParams): Promise<Stre
 /**
  * Determine whether a completed stream should be treated as empty (and thus
  * needs an error fallback message). Thinking content is not a visible response
- * for VS Code's purposes. Force-closed thinking is excluded because
- * streamResponse already emits its dedicated fallback text.
+ * for VS Code's purposes. Force-closed thinking and an exhausted output
+ * budget are excluded because streamResponse already emits its dedicated
+ * fallback text for them.
  */
 export function isEmptyStreamResult(stats: StreamStats): boolean {
   return (
     stats.totalTextParts === 0 &&
     stats.totalToolCalls === 0 &&
-    !stats.thinkingForceClosed
+    !stats.thinkingForceClosed &&
+    !stats.outputTruncated
   );
 }

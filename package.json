@@ -132,8 +132,8 @@
         },
         "github.copilot.llm-gateway.defaultMaxOutputTokens": {
           "type": "number",
-          "default": 4096,
-          "description": "Fallback maximum output tokens when the server does not report max_output_tokens",
+          "default": 16384,
+          "description": "Fallback maximum output tokens when the server does not report max_output_tokens. Thinking models spend part of this budget on reasoning before answering, so keep it generous; it is always clamped to fit the model's context window.",
           "order": 5
         },
         "github.copilot.llm-gateway.enableImageInput": {
@@ -259,8 +259,8 @@
         },
         "github.copilot.llm-gateway.showReplyTokenUsage": {
           "type": "boolean",
-          "default": true,
-          "markdownDescription": "Append a `Tokens: input … | output … | total …` line to the end of each reply, summing this gateway's server-reported usage across that reply's internal tool-call rounds (a completed reply, not the whole chat). This is separate from GitHub Copilot's own credits/quota display, which this extension cannot change. Requires the installed Copilot Chat build to supply private, unstable per-request identity fields; if it doesn't, no line is added and nothing else changes. Disable to restore the previous plain-text behavior.",
+          "default": false,
+          "markdownDescription": "Append a `Tokens: input … | output … | total …` line to the end of each reply, summing this gateway's server-reported usage across that reply's internal tool-call rounds (a completed reply, not the whole chat). Off by default so replies look like native Copilot output — the same numbers are available from the status bar menu and VS Code's context-window widget. Requires the installed Copilot Chat build to supply private, unstable per-request identity fields; if it doesn't, no line is added and nothing else changes.",
           "order": 22
         }
       }
