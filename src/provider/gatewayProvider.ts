@@ -238,6 +238,16 @@ export class GatewayProvider
     return this.secretsManager.getCustomHeadersSnapshot();
   }
 
+  /** Read-only view of the loaded config — used by command flows. */
+  public getConfigSnapshot(): Readonly<GatewayConfig> {
+    return this.config;
+  }
+
+  /** Models from the last successful fetch, without triggering a new one. */
+  public getCachedModels(): vscode.LanguageModelChatInformation[] {
+    return this.catalog.getCachedModels();
+  }
+
   // ---------- model list ----------
 
   /**

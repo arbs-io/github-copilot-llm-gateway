@@ -238,6 +238,12 @@ Different model families often need different sampling parameters for the same t
 
 The merge order, lowest to highest priority, is: `extraModelOptions` → matching `perModelOptions` → per-request options supplied by Copilot itself.
 
+### Thinking Effort
+
+Copilot Chat's native **Thinking Effort** submenu only appears for the reasoning models Copilot itself knows about; VS Code's provider API gives third-party models no way to join it. The **GitHub Copilot LLM Gateway: Set Thinking Effort** command (also linked from the status-bar popup) fills the gap: pick a model, then **Off / Low / Medium / High** or a custom value, and the choice is written to `perModelOptions` as `reasoning_effort` for that model id. **Off** removes the key so the server's own default applies.
+
+`reasoning_effort` is understood by vLLM, LiteLLM, and most OpenAI-compatible servers. For backends that name the parameter differently, set `github.copilot.llm-gateway.thinkingEffortParameter` (e.g. `reasoning_budget` for llama.cpp) and use **Custom…** to enter the value. Anything more exotic — llama.cpp's `chat_template_kwargs: { "enable_thinking": false }` for Qwen3, or Ollama's `think: false` — can still be set directly in `perModelOptions`.
+
 ### Tool Calling Settings
 
 These settings control how the extension handles agentic features like code editing and file operations.
@@ -420,6 +426,7 @@ Access from the Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`):
 | **GitHub Copilot LLM Gateway: Refresh Models**         | Re-probe the inference server and refresh the picker                |
 | **GitHub Copilot LLM Gateway: Edit Custom Headers**    | Add, edit, or remove custom HTTP headers (stored in secret storage) |
 | **GitHub Copilot LLM Gateway: Show Output Log**        | Open the extension's output channel                                 |
+| **GitHub Copilot LLM Gateway: Set Thinking Effort**    | Pick a model and a reasoning-effort level to send with every request |
 
 ## Reply Token Summary
 

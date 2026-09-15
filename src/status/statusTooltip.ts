@@ -47,6 +47,7 @@ export const TOOLTIP_COMMANDS = {
   Output: 'github.copilot.llm-gateway.showOutput',
   TestConnection: 'github.copilot.llm-gateway.testConnection',
   EditHeaders: 'github.copilot.llm-gateway.editCustomHeaders',
+  ThinkingEffort: 'github.copilot.llm-gateway.setThinkingEffort',
   OpenSettings: 'workbench.action.openSettings',
 } as const;
 
@@ -383,7 +384,8 @@ function renderFooter(): string {
     '\n\n',
     `[$(beaker) Test connection](command:${c.TestConnection}) · `,
     `[$(gear) Configure](command:${c.Configure}) · `,
-    `[$(edit) Edit headers](command:${c.EditHeaders})`,
+    `[$(edit) Edit headers](command:${c.EditHeaders}) · `,
+    `[$(lightbulb) Thinking effort](command:${c.ThinkingEffort})`,
     '\n\n',
     `[$(settings-gear) Open settings](command:${c.OpenSettings}?${settingsArg}) · `,
     `[$(output) Show output log](command:${c.Output})`,

@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { GatewayConfig } from '../config/gatewayConfig';
 import { TOKEN_CONSTANTS } from '../chat/tokenBudget';
+import { DEFAULT_THINKING_EFFORT_PARAMETER } from '../config/thinkingEffort';
 import {
   ConfigIssue,
   DEFAULT_REQUEST_TIMEOUT_MS,
@@ -63,6 +64,9 @@ export class ConfigService {
       customHeaders: { ...this.deps.getCustomHeaders() },
       extraModelOptions: config.get<Record<string, unknown>>('extraModelOptions', {}) ?? {},
       perModelOptions: config.get<Record<string, unknown>>('perModelOptions', {}) ?? {},
+      thinkingEffortParameter:
+        config.get<string>('thinkingEffortParameter', DEFAULT_THINKING_EFFORT_PARAMETER)?.trim() ||
+        DEFAULT_THINKING_EFFORT_PARAMETER,
       modelContextWindows: config.get<Record<string, number>>('modelContextWindows', {}) ?? {},
       enableInlineCompletion: config.get<boolean>('enableInlineCompletion', false),
       inlineCompletionModel: config.get<string>('inlineCompletionModel', ''),

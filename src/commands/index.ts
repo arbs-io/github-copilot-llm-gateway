@@ -3,6 +3,7 @@ import { GatewayProvider } from '../provider/gatewayProvider';
 import { StatusBarManager } from '../status/statusBarManager';
 import { configureServerFlow } from './configureServer';
 import { editCustomHeadersFlow } from './customHeaders';
+import { setThinkingEffortFlow } from './thinkingEffort';
 
 /**
  * Register every user-facing command the extension contributes. Kept out of
@@ -73,6 +74,13 @@ export function registerCommands(
         provider.refreshModels();
         await refreshStatusBar();
       }
+    ),
+
+    // "Set Thinking Effort" command — Copilot's native per-model submenu is
+    // not available to third-party providers, so this writes the chosen
+    // reasoning_effort (or a custom value) into perModelOptions (issue #82).
+    vscode.commands.registerCommand('github.copilot.llm-gateway.setThinkingEffort', () =>
+      setThinkingEffortFlow(provider)
     ),
 
     // Explicit "Refresh Models" command — previously users could only trigger

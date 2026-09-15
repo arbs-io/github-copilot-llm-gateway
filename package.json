@@ -90,6 +90,11 @@
         "command": "github.copilot.llm-gateway.showOutput",
         "title": "Show Output Log",
         "category": "GitHub Copilot LLM Gateway"
+      },
+      {
+        "command": "github.copilot.llm-gateway.setThinkingEffort",
+        "title": "Set Thinking Effort",
+        "category": "GitHub Copilot LLM Gateway"
       }
     ],
     "configuration": {
@@ -184,6 +189,12 @@
           },
           "description": "Per-model chat-completion parameters, keyed by model id. Merged on top of 'extraModelOptions' for matching models; per-request modelOptions from the caller still take precedence. Keys match the model id exactly, or use a '*' wildcard for a whole family (case-insensitive, e.g. 'qwen*'). Exact-id entries win over wildcard entries. Example: { \"qwen*\": { \"temperature\": 0.7, \"top_p\": 0.8 }, \"deepseek-r1\": { \"temperature\": 0.6 } }. Edit in settings.json.",
           "order": 13
+        },
+        "github.copilot.llm-gateway.thinkingEffortParameter": {
+          "type": "string",
+          "default": "reasoning_effort",
+          "markdownDescription": "Request-body key written by the **Set Thinking Effort** command into `perModelOptions`. The default `reasoning_effort` (values `low` / `medium` / `high`) is understood by vLLM, LiteLLM, and most OpenAI-compatible servers; change it for backends that use a different name, e.g. `reasoning_budget` for llama.cpp.",
+          "order": 14
         },
         "github.copilot.llm-gateway.modelContextWindows": {
           "type": "object",

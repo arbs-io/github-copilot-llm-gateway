@@ -209,6 +209,7 @@ describe('streamChatCompletion reasoning field handling (issue #59)', () => {
     inlineCompletionMaxPrefixChars: 4000,
     inlineCompletionMaxSuffixChars: 2000,
     showReplyTokenUsage: true,
+    thinkingEffortParameter: 'reasoning_effort',
   };
 
   const token = {

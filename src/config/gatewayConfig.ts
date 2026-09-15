@@ -20,6 +20,12 @@ export interface GatewayConfig {
   /** Per-model chat-completion overrides keyed by model id / wildcard (issue #43). */
   perModelOptions: Record<string, unknown>;
   /**
+   * Request-body key the "Set Thinking Effort" command writes into
+   * `perModelOptions` (issue #82). Defaults to OpenAI's `reasoning_effort`;
+   * change it for backends that name the parameter differently.
+   */
+  thinkingEffortParameter: string;
+  /**
    * Per-model context-window overrides (total tokens) keyed by model id /
    * wildcard. Wins over server-reported values — for servers that report the
    * wrong size or none at all, e.g. llama-server router mode (issue #55).
