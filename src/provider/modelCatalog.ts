@@ -41,9 +41,9 @@ export class ModelCatalog {
   private fetchLast?: { at: number; result: LanguageModelChatInformation[] };
   /**
    * Real server-reported context per model id (`max_model_len` / etc.).
-   * Needed because the picker-facing `maxInputTokens` is the full context
-   * on purpose — the chat-response code path needs the separate true value
-   * so it doesn't double-count when budgeting output tokens.
+   * The picker-facing `maxInputTokens` is only the prompt's share of a
+   * shared window (issue #84), so the chat-response code path keeps the
+   * true total here for budgeting.
    */
   private readonly contextByModelId: Map<string, number> = new Map();
   /**
@@ -283,10 +283,8 @@ export class ModelCatalog {
   }
 
   /**
-   * Resolve the real server-reported context size for a model. The
-   * picker-facing `maxInputTokens` equals `totalContext`, so naive
-   * `maxInputTokens + maxOutputTokens` would overshoot by `maxOutputTokens`
-   * and cause context-length errors at the server.
+   * Resolve the real context size for a model: the server-reported total
+   * cached at fetch time, else reconstructed from the picker-facing fields.
    */
   public resolveModelMaxContext(model: LanguageModelChatInformation): number {
     let context: number;
@@ -295,10 +293,13 @@ export class ModelCatalog {
       context = cached;
     } else if (model.maxInputTokens && model.maxInputTokens > 0) {
       // Fallback path: the model list hasn't been fetched yet in this session
-      // (e.g. VS Code routed a cached chat directly to the provider). Use the
-      // picker-facing input window, which equals totalContext after the
-      // provideLanguageModelChatInformation change.
-      context = model.maxInputTokens;
+      // (e.g. VS Code routed a cached chat directly to the provider). The
+      // picker-facing `maxInputTokens` is the prompt's share of the window,
+      // so add the output allowance back to recover the total that
+      // buildModelInfo() split (issue #84). For a separate LiteLLM output
+      // window the sum overstates the prompt ceiling, but the chat path
+      // reserves output out of it again in that case, so it nets out.
+      context = model.maxInputTokens + Math.max(0, model.maxOutputTokens || 0);
     } else {
       context = TOKEN_CONSTANTS.DEFAULT_CONTEXT_TOKENS;
     }

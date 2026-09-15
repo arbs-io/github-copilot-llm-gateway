@@ -183,7 +183,7 @@ Configure the extension through VS Code Settings (`Ctrl+,` / `Cmd+,`) → search
 
 | Setting                       | Default  | Description                                                                                                  |
 | ----------------------------- | -------- | ------------------------------------------------------------------------------------------------------------ |
-| **Default Max Tokens**        | `262144` | Fallback context window size (input tokens) used only when the inference server does not report one itself.  |
+| **Default Max Tokens**        | `262144` | Fallback context window size (total tokens) used only when the inference server does not report one itself. Never overrides a server-reported value — use **Model Context Windows** for that. |
 | **Default Max Output Tokens** | `4096`   | Fallback maximum output tokens used when the server does not report `max_output_tokens`.                     |
 | **Model Context Windows**     | `{}`     | Per-model context window override (total tokens), keyed by model id or `*` wildcard. Wins over server-reported values. |
 | **Enable Image Input**        | `true`   | Advertise image-input capability for multimodal models and forward image parts as base64 `image_url`s.       |
@@ -194,7 +194,9 @@ For each model the gateway uses, in priority order:
 
 1. **Your `modelContextWindows` override**, if one matches the model id (exactly or via a `*` wildcard — same matching rules as `perModelOptions`).
 2. **What the server reports** in `/v1/models`: `max_model_len` (vLLM, and LiteLLM when it fronts one), `max_input_tokens` (LiteLLM), `context_length` (Ollama, LocalAI, LM Studio), `context_window`, or llama.cpp's `meta.n_ctx` / `meta.n_ctx_train`. LiteLLM's separate `max_output_tokens` is also used as the model's output ceiling.
-3. **`defaultMaxTokens`** as the last resort.
+3. **`defaultMaxTokens`** as the last resort — it is a fallback, not an override, so it has no effect on models whose server already reports a size.
+
+Copilot Chat displays a model's context as `maxInputTokens + maxOutputTokens` (the picker's **Max context** label and the Session Info popup), and uses that sum to decide when to compact the conversation. The gateway therefore reports the input side as the resolved window *minus* the output allowance, so the number Copilot shows matches what the server enforces. The model picker subtitle (e.g. `248K ctx`) always shows the raw server-reported window.
 
 Most servers report one **shared** window that the prompt and the completion both come out of (vLLM's `max_model_len`, llama.cpp's `n_ctx`, Ollama's `context_length`), so the gateway reserves room for output before deciding how much conversation fits. LiteLLM is the exception: its `max_input_tokens` is a prompt-only ceiling with `max_output_tokens` as a **separate** allowance, so a model advertised as 200K in / 64K out gets the full 200K for the prompt rather than 136K. The gateway only treats the two as separate when `max_model_len` is absent and the output ceiling is genuinely smaller than the input one — anything else is budgeted as a single shared window, and a context-overflow error from the server flips a model back to shared for the rest of the session.
 

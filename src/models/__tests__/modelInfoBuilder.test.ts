@@ -99,7 +99,7 @@ describe('buildModelInfo context resolution', () => {
       capabilities: {},
     });
     assert.equal(totalContext, 131072);
-    assert.equal(info.maxInputTokens, 131072);
+    assert.equal(info.maxInputTokens, 131072 - info.maxOutputTokens);
     assert.equal(hasServerReportedContext, true);
   });
 
@@ -169,7 +169,7 @@ describe('buildModelInfo context resolution', () => {
       contextOverride: 32768,
     });
     assert.equal(totalContext, 32768);
-    assert.equal(info.maxInputTokens, 32768);
+    assert.equal(info.maxInputTokens, 32768 - info.maxOutputTokens);
     // Server still reported a value; the override just outranked it.
     assert.equal(hasServerReportedContext, true);
   });
@@ -183,6 +183,57 @@ describe('buildModelInfo context resolution', () => {
       contextOverride: 16384,
     });
     assert.equal(totalContext, 16384);
+  });
+});
+
+describe('buildModelInfo picker-facing window (issue #84)', () => {
+  test('a shared window is split so Copilot\'s input + output sum equals the server limit', () => {
+    // llama-server started with -c 248320 and a 40K output allowance: Copilot
+    // used to display 248320 + 40000 ≈ 288K and compact too late.
+    const { info, totalContext } = buildModelInfo({
+      model: baseModel({ meta: { n_ctx: 248320 } }),
+      defaultMaxTokens: 262144,
+      defaultMaxOutputTokens: 40000,
+      capabilities: {},
+    });
+    assert.equal(totalContext, 248320);
+    assert.equal(info.maxOutputTokens, 40000);
+    assert.equal(info.maxInputTokens, 248320 - 40000);
+    assert.equal(info.maxInputTokens + info.maxOutputTokens, 248320);
+  });
+
+  test('the split never drives maxInputTokens to zero on a tiny window', () => {
+    const { info } = buildModelInfo({
+      model: baseModel({ max_model_len: 1024 }),
+      defaultMaxTokens: 262144,
+      defaultMaxOutputTokens: 65536,
+      capabilities: {},
+    });
+    assert.equal(info.maxOutputTokens, 1024 - TOKEN_CONSTANTS.ADJUST_TOKEN_BUFFER);
+    assert.equal(info.maxInputTokens, TOKEN_CONSTANTS.ADJUST_TOKEN_BUFFER);
+  });
+
+  test('defaultMaxTokens is only a fallback and is also split', () => {
+    const { info, totalContext, hasServerReportedContext } = buildModelInfo({
+      model: baseModel(),
+      defaultMaxTokens: 212000,
+      defaultMaxOutputTokens: 4096,
+      capabilities: {},
+    });
+    assert.equal(hasServerReportedContext, false);
+    assert.equal(totalContext, 212000);
+    assert.equal(info.maxInputTokens + info.maxOutputTokens, 212000);
+  });
+
+  test('a separate LiteLLM output window keeps the full input ceiling', () => {
+    const { info, outputWindowIsSeparate } = buildModelInfo({
+      model: baseModel({ max_input_tokens: 200000, max_output_tokens: 64000 }),
+      defaultMaxTokens: 32768,
+      defaultMaxOutputTokens: 2048,
+      capabilities: {},
+    });
+    assert.equal(outputWindowIsSeparate, true);
+    assert.equal(info.maxInputTokens, 200000);
   });
 });
 

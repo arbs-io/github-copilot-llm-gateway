@@ -94,8 +94,8 @@ function makeCatalog(options: {
   return harness;
 }
 
-function chatInfo(id: string, maxInputTokens = 0): LanguageModelChatInformation {
-  return { id, maxInputTokens } as unknown as LanguageModelChatInformation;
+function chatInfo(id: string, maxInputTokens = 0, maxOutputTokens = 0): LanguageModelChatInformation {
+  return { id, maxInputTokens, maxOutputTokens } as unknown as LanguageModelChatInformation;
 }
 
 describe('ModelCatalog.getOrFetchModels', () => {
@@ -198,7 +198,7 @@ describe('ModelCatalog discovery integration', () => {
       }),
     });
     const { models } = await h.catalog.getOrFetchModels(fakeToken());
-    assert.equal(models[0].maxInputTokens, 65536);
+    assert.equal(models[0].maxInputTokens + models[0].maxOutputTokens, 65536);
     assert.equal(h.catalog.getContextForModel('a'), 65536);
   });
 
@@ -267,6 +267,12 @@ describe('ModelCatalog.resolveModelMaxContext', () => {
   test('falls back to the picker-facing maxInputTokens before any fetch', () => {
     const h = makeCatalog({ fetchModels: () => Promise.resolve(modelsResponse()) });
     assert.equal(h.catalog.resolveModelMaxContext(chatInfo('a', 4096)), 4096);
+  });
+
+  test('the pre-fetch fallback adds the output allowance back to recover the total (issue #84)', () => {
+    const h = makeCatalog({ fetchModels: () => Promise.resolve(modelsResponse()) });
+    // buildModelInfo() exposes 248320 as input=208320 + output=40000.
+    assert.equal(h.catalog.resolveModelMaxContext(chatInfo('a', 208320, 40000)), 248320);
   });
 
   test('falls back to the default context when nothing is known', () => {

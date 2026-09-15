@@ -52,8 +52,8 @@ export interface BuildModelInfoInput {
 
 /**
  * Picker-facing fields plus the resolved total context size. Total context is
- * returned separately because the chat-response path uses it to budget output
- * tokens — relying on `maxInputTokens` alone would double-count.
+ * returned separately because the chat-response path budgets against the
+ * whole window, not the input-only figure handed to VS Code.
  */
 export interface BuildModelInfoResult {
   readonly info: {
@@ -85,11 +85,16 @@ export interface BuildModelInfoResult {
  * Translate a raw `/v1/models` entry into the picker-facing model info plus
  * the resolved total context.
  *
- * `maxInputTokens` is intentionally set to the full server-reported context so
- * the picker shows the true window size. Output-token budgeting uses
- * `totalContext` separately so the math doesn't double-count. When LiteLLM
- * reports `max_output_tokens`, that model-specific ceiling replaces the
- * configured fallback.
+ * Copilot Chat treats `maxInputTokens + maxOutputTokens` as the model's
+ * context window — that sum is what the picker's "Max context" label and the
+ * Session Info widget display, and what drives Copilot's own compaction. For
+ * a shared window `maxInputTokens` is therefore the total *minus* the output
+ * allowance, so the sum lands on the real limit (issue #84: exposing the full
+ * window as input made a 248K llama-server model show as 288K and let Copilot
+ * compact too late). A separate LiteLLM output window really is additive, so
+ * that case keeps the full input ceiling. When LiteLLM reports
+ * `max_output_tokens`, that model-specific ceiling replaces the configured
+ * fallback.
  */
 export function buildModelInfo({
   model,
@@ -125,6 +130,11 @@ export function buildModelInfo({
         )
       );
 
+  // Shared window: hand VS Code the prompt-only share so its input + output
+  // sum equals the window the server enforces. `maxOutputTokens` is already
+  // clamped to leave ADJUST_TOKEN_BUFFER, so this can't collapse to zero.
+  const maxInputTokens = outputWindowIsSeparate ? totalContext : totalContext - maxOutputTokens;
+
   const description = describeModel(model);
   const tooltip = description ? `${model.id} — ${description}` : model.id;
   const friendlyName = friendlyModelName(model.id);
@@ -134,7 +144,7 @@ export function buildModelInfo({
     name: friendlyName,
     family: inferModelFamily(model.id),
     version: friendlyName,
-    maxInputTokens: totalContext,
+    maxInputTokens,
     maxOutputTokens,
     capabilities,
     detail: PROVIDER_DETAIL_LABEL,

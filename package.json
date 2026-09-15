@@ -117,7 +117,7 @@
         "github.copilot.llm-gateway.defaultMaxTokens": {
           "type": "number",
           "default": 262144,
-          "description": "Fallback context window size (input tokens) when the server does not report it",
+          "markdownDescription": "Fallback context window size (total tokens) used **only** when the server does not report one in `/v1/models`. It never overrides a server-reported value — to force a specific size for a model, use `modelContextWindows` instead.",
           "order": 4
         },
         "github.copilot.llm-gateway.defaultMaxOutputTokens": {
