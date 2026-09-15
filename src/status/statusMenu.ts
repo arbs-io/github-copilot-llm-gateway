@@ -218,13 +218,19 @@ function actionItems(): StatusMenuItem[] {
  * two surfaces read the same: connection, session, models, features, actions.
  */
 export function buildStatusMenu(snapshot: StatusSnapshot): StatusMenuItem[] {
-  const items: StatusMenuItem[] = [];
-  items.push(separator(snapshot.host || 'LLM Gateway'), ...connectionItems(snapshot));
-  items.push(separator('Session'), ...sessionItems(snapshot));
-  if (snapshot.models.length > 0) {
-    items.push(separator(`Models (${snapshot.models.length})`), ...modelItems(snapshot));
-  }
-  items.push(separator('Features'), ...featureItems(snapshot));
-  items.push(separator('Actions'), ...actionItems());
-  return items;
+  const modelSection =
+    snapshot.models.length > 0
+      ? [separator(`Models (${snapshot.models.length})`), ...modelItems(snapshot)]
+      : [];
+  return [
+    separator(snapshot.host || 'LLM Gateway'),
+    ...connectionItems(snapshot),
+    separator('Session'),
+    ...sessionItems(snapshot),
+    ...modelSection,
+    separator('Features'),
+    ...featureItems(snapshot),
+    separator('Actions'),
+    ...actionItems(),
+  ];
 }

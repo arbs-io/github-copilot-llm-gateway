@@ -6,36 +6,12 @@ import {
   renderStatusTooltipHtml,
 } from '../statusTooltip';
 import { StatusSnapshot } from '../statusSnapshot';
-import { emptySessionStats } from '../sessionStats';
+import { makeStatusSnapshot } from './snapshotFixture';
 
 const FIXED_NOW = 2_000_000_000_000;
 
 function makeSnapshot(overrides: Partial<StatusSnapshot> = {}): StatusSnapshot {
-  return {
-    host: 'localhost:8000',
-    connection: { state: 'ok' },
-    lastSuccessfulFetchAt: FIXED_NOW - 120_000,
-    models: [
-      {
-        id: 'qwen/Qwen3-8B',
-        name: 'Qwen3-8B',
-        contextLabel: '131k ctx',
-        totalContext: 131_072,
-        capabilityLabels: ['tools', 'vision'],
-      },
-    ],
-    sessionStats: emptySessionStats(),
-    features: {
-      toolCalling: true,
-      imageInput: true,
-      parallelToolCalling: true,
-      inlineCompletion: false,
-      inlineCompletionModel: '',
-      agentTemperature: 0,
-    },
-    now: FIXED_NOW,
-    ...overrides,
-  };
+  return makeStatusSnapshot(FIXED_NOW, overrides);
 }
 
 /**
