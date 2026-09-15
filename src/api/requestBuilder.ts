@@ -48,9 +48,12 @@ export function buildChatRequest(options: ChatRequestOptions): OpenAIChatComplet
   }
 
   if (options.extraOptions) {
+    // Pass-through parameters (top_k, reasoning_effort, …) aren't part of the
+    // typed request shape, so they're written via an index signature view.
+    const passthrough = request as OpenAIChatCompletionRequest & Record<string, unknown>;
     for (const [key, value] of Object.entries(options.extraOptions)) {
       if (!key.startsWith('_')) {
-        (request as any)[key] = value;
+        passthrough[key] = value;
       }
     }
   }

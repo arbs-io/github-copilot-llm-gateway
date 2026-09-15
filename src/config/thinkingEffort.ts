@@ -73,7 +73,7 @@ export function applyThinkingEffort(
   value: string | undefined,
   parameter: string = DEFAULT_THINKING_EFFORT_PARAMETER
 ): Record<string, unknown> {
-  const next: Record<string, unknown> = { ...(perModelOptions ?? {}) };
+  const next: Record<string, unknown> = { ...perModelOptions };
   const existing = next[modelId];
   const entry: Record<string, unknown> = isOptionsObject(existing) ? { ...existing } : {};
 

@@ -2,7 +2,7 @@
   "name": "github-copilot-llm-gateway",
   "displayName": "GitHub Copilot LLM Gateway",
   "description": "Connect GitHub Copilot to open-source models via vLLM or any OpenAI-compatible server",
-  "version": "1.7.1",
+  "version": "1.8.0",
   "publisher": "AndrewButson",
   "icon": "assets/copilot-llm-gateway.png",
   "private": true,
@@ -255,7 +255,7 @@
         "github.copilot.llm-gateway.showReplyTokenUsage": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "Append a `Tokens: input \u2026 | output \u2026 | total \u2026` line to the end of each reply, summing this gateway's server-reported usage across that reply's internal tool-call rounds (a completed reply, not the whole chat). This is separate from GitHub Copilot's own credits/quota display, which this extension cannot change. Requires the installed Copilot Chat build to supply private, unstable per-request identity fields; if it doesn't, no line is added and nothing else changes. Disable to restore the previous plain-text behavior.",
+          "markdownDescription": "Append a `Tokens: input … | output … | total …` line to the end of each reply, summing this gateway's server-reported usage across that reply's internal tool-call rounds (a completed reply, not the whole chat). This is separate from GitHub Copilot's own credits/quota display, which this extension cannot change. Requires the installed Copilot Chat build to supply private, unstable per-request identity fields; if it doesn't, no line is added and nothing else changes. Disable to restore the previous plain-text behavior.",
           "order": 22
         }
       }

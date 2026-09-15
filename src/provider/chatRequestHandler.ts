@@ -18,10 +18,12 @@ import { fillMissingRequiredProperties } from '../chat/toolSchema';
 import {
   StreamChunk,
   StreamReporter,
+  StreamStats,
   isEmptyStreamResult,
   streamResponse,
 } from '../chat/responseStreamer';
 import {
+  ReplyIdentity,
   ReplyTokenUsageTracker,
   RoundUsage,
   extractReplyIdentity,
@@ -321,24 +323,7 @@ export class ChatRequestHandler {
       );
 
       if (replyIdentity) {
-        this.tokenUsageTracker.recordRound(replyIdentity, {
-          usage: roundUsage,
-          outgoingToolCallIds: emittedToolCallIds,
-        });
-        const isTerminalRound = stats.totalToolCalls === 0;
-        if (isTerminalRound) {
-          // Only a genuine visible reply gets the summary appended — not a
-          // cancelled request, an empty-response diagnostic, or a
-          // thinking-force-closed fallback (none of those increment
-          // totalTextParts through the normal text path).
-          if (stats.totalTextParts > 0 && !token.isCancellationRequested) {
-            const summary = this.tokenUsageTracker.summarize(replyIdentity);
-            trackingProgress.report(
-              new vscode.LanguageModelTextPart(`\n\n${formatReplyTokenSummaryLine(summary)}`)
-            );
-          }
-          this.tokenUsageTracker.finish(replyIdentity);
-        }
+        this.completeReplyRound(replyIdentity, stats, roundUsage, emittedToolCallIds, token, trackingProgress);
       }
 
       if (isEmptyStreamResult(stats)) {
@@ -555,6 +540,37 @@ export class ChatRequestHandler {
         ? `Request (truncated): ${debugRequest.substring(0, DEBUG_REQUEST_MAX_LOG_LENGTH)}...`
         : `Request: ${debugRequest}`
     );
+  }
+
+  /**
+   * Record one round's usage against its reply and, when this was the
+   * reply's terminal (tool-call-free) round, append the per-reply token
+   * summary and release the tracker state (issue #88).
+   */
+  private completeReplyRound(
+    replyIdentity: ReplyIdentity,
+    stats: StreamStats,
+    roundUsage: RoundUsage | undefined,
+    emittedToolCallIds: readonly string[],
+    token: vscode.CancellationToken,
+    progress: vscode.Progress<vscode.LanguageModelResponsePart>
+  ): void {
+    this.tokenUsageTracker.recordRound(replyIdentity, {
+      usage: roundUsage,
+      outgoingToolCallIds: emittedToolCallIds,
+    });
+    if (stats.totalToolCalls > 0) {
+      return;
+    }
+    // Only a genuine visible reply gets the summary appended — not a
+    // cancelled request, an empty-response diagnostic, or a
+    // thinking-force-closed fallback (none of those increment
+    // totalTextParts through the normal text path).
+    if (stats.totalTextParts > 0 && !token.isCancellationRequested) {
+      const summary = this.tokenUsageTracker.summarize(replyIdentity);
+      progress.report(new vscode.LanguageModelTextPart(`\n\n${formatReplyTokenSummaryLine(summary)}`));
+    }
+    this.tokenUsageTracker.finish(replyIdentity);
   }
 
   private handleEmptyResponse(

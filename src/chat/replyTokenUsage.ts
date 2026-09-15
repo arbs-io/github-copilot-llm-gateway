@@ -161,7 +161,7 @@ export class ReplyTokenUsageTracker {
   /** Read the reply's current accumulated totals without clearing state. */
   summarize(identity: ReplyIdentity): ReplyTokenSummary {
     const chain = this.chains.get(chainKey(identity));
-    if (!chain || !chain.hadAnyUsage) { return { kind: 'unavailable' }; }
+    if (!chain?.hadAnyUsage) { return { kind: 'unavailable' }; }
     const totalTokens = chain.promptTokens + chain.completionTokens;
     return chain.hadMissingUsage
       ? { kind: 'partial', promptTokens: chain.promptTokens, completionTokens: chain.completionTokens, totalTokens }
@@ -190,8 +190,14 @@ export class ReplyTokenUsageTracker {
   }
 }
 
+/**
+ * Locale is pinned to en-US so the line renders identically on every machine
+ * (the OS locale would otherwise pick the grouping character).
+ */
+const THOUSANDS_FORMAT = new Intl.NumberFormat('en-US', { useGrouping: true });
+
 function formatWithCommas(n: number): string {
-  return n.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+  return THOUSANDS_FORMAT.format(n);
 }
 
 /** Render the final-line summary text for a reply's accumulated usage. */
@@ -207,13 +213,21 @@ export function formatReplyTokenSummaryLine(summary: ReplyTokenSummary): string 
   );
 }
 
+const SUMMARY_LINE_PREFIXES = ['Tokens: input ', 'Tokens (partial): input '] as const;
+
 /**
- * Matches a trailing summary line produced by {@link formatReplyTokenSummaryLine}
- * (plus the blank line inserted before it) at the end of a block of text.
+ * True when `line` has the shape produced by {@link formatReplyTokenSummaryLine}.
  * Values are matched loosely so a line rendered under a different locale, or
- * with `unavailable` in place of a number, is still recognised.
+ * with `unavailable` in place of a number, is still recognised. Implemented
+ * with plain string checks rather than a regex so there is no backtracking
+ * on long assistant replies.
  */
-const TRAILING_SUMMARY_LINE = /\s*Tokens(?: \(partial\))?: input [^\n|]+ \| output [^\n|]+ \| total [^\n|]+\s*$/;
+function isSummaryLine(line: string): boolean {
+  const prefix = SUMMARY_LINE_PREFIXES.find((candidate) => line.startsWith(candidate));
+  if (!prefix) { return false; }
+  const fields = line.slice(prefix.length).split(' | ');
+  return fields.length === 3 && fields[1].startsWith('output ') && fields[2].startsWith('total ');
+}
 
 /**
  * Remove a trailing token-summary line from assistant text before it is sent
@@ -224,5 +238,10 @@ const TRAILING_SUMMARY_LINE = /\s*Tokens(?: \(partial\))?: input [^\n|]+ \| outp
  * line is returned unchanged.
  */
 export function stripReplyTokenSummary(text: string): string {
-  return text.replace(TRAILING_SUMMARY_LINE, '');
+  const trimmed = text.trimEnd();
+  const lineStart = trimmed.lastIndexOf('\n') + 1;
+  if (!isSummaryLine(trimmed.slice(lineStart))) {
+    return text;
+  }
+  return trimmed.slice(0, lineStart).trimEnd();
 }

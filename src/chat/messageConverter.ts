@@ -111,6 +111,80 @@ export function encodeImageAsDataUrl(part: { mimeType: string; data: Uint8Array 
   return `data:${part.mimeType};base64,${base64Data}`;
 }
 
+/** Wire-level pieces accumulated while walking one message's parts. */
+interface ConvertedParts {
+  readonly toolResults: OpenAIMessage[];
+  readonly toolCalls: OpenAIMessage[];
+  readonly userContent: UserContentPart[];
+  textContent: string;
+}
+
+function appendTextPart(
+  acc: ConvertedParts,
+  role: NormalizedRole,
+  part: Extract<NormalizedPart, { kind: 'text' }>
+): void {
+  // The per-reply token summary is appended to assistant replies as
+  // ordinary text (issue #88); keep it out of the history we replay.
+  const value = role === 'assistant' ? stripReplyTokenSummary(part.value) : part.value;
+  if (value.length === 0) {
+    return;
+  }
+  acc.userContent.push({ type: 'text', text: value });
+  acc.textContent += value;
+}
+
+function appendToolResultPart(
+  acc: ConvertedParts,
+  part: Extract<NormalizedPart, { kind: 'toolResult' }>,
+  log: ConverterLogger
+): void {
+  log(`  Found tool result: callId=${part.callId}`);
+  acc.toolResults.push({
+    tool_call_id: part.callId,
+    role: 'tool',
+    content: part.content,
+  });
+}
+
+function appendToolCallPart(
+  acc: ConvertedParts,
+  part: Extract<NormalizedPart, { kind: 'toolCall' }>,
+  log: ConverterLogger
+): void {
+  log(`  Found tool call: callId=${part.callId}, name=${part.name}`);
+  acc.toolCalls.push({
+    id: part.callId,
+    type: 'function',
+    function: {
+      name: part.name,
+      arguments: JSON.stringify(part.input),
+    },
+  });
+}
+
+function appendImagePart(
+  acc: ConvertedParts,
+  part: Extract<NormalizedPart, { kind: 'image' }>,
+  options: MessageConverterOptions,
+  log: ConverterLogger
+): void {
+  if (!options.enableImageInput) {
+    log(
+      `  Skipping data part: mimeType=${part.mimeType}, size=${part.data.length} bytes. (Please enable github.copilot.llm-gateway.enableImageInput in settings)`
+    );
+    return;
+  }
+  if (!part.mimeType.startsWith('image/')) {
+    return;
+  }
+  const url = encodeImageAsDataUrl(part);
+  acc.userContent.push({ type: 'image_url', image_url: { url } });
+  log(
+    `  Added image data part as base64 URL: mimeType=${part.mimeType}, size=${part.data.length} bytes, urlLength=${url.length}`
+  );
+}
+
 /**
  * Convert a normalized message into zero or more OpenAI wire messages.
  *
@@ -127,66 +201,25 @@ export function convertMessage(
   options: MessageConverterOptions,
   log: ConverterLogger = NOOP_LOGGER
 ): OpenAIMessage[] {
-  const toolResults: OpenAIMessage[] = [];
-  const toolCalls: OpenAIMessage[] = [];
-  const userContent: UserContentPart[] = [];
-  let textContent = '';
+  const acc: ConvertedParts = { toolResults: [], toolCalls: [], userContent: [], textContent: '' };
 
   for (const part of message.parts) {
     switch (part.kind) {
-      case 'text': {
-        // The per-reply token summary is appended to assistant replies as
-        // ordinary text (issue #88); keep it out of the history we replay.
-        const value = message.role === 'assistant' ? stripReplyTokenSummary(part.value) : part.value;
-        if (value.length === 0) {
-          break;
-        }
-        userContent.push({ type: 'text', text: value });
-        textContent += value;
+      case 'text':
+        appendTextPart(acc, message.role, part);
         break;
-      }
-
       case 'toolResult':
-        log(`  Found tool result: callId=${part.callId}`);
-        toolResults.push({
-          tool_call_id: part.callId,
-          role: 'tool',
-          content: part.content,
-        });
+        appendToolResultPart(acc, part, log);
         break;
-
       case 'toolCall':
-        log(`  Found tool call: callId=${part.callId}, name=${part.name}`);
-        toolCalls.push({
-          id: part.callId,
-          type: 'function',
-          function: {
-            name: part.name,
-            arguments: JSON.stringify(part.input),
-          },
-        });
+        appendToolCallPart(acc, part, log);
         break;
-
       case 'image':
-        if (!options.enableImageInput) {
-          log(
-            `  Skipping data part: mimeType=${part.mimeType}, size=${part.data.length} bytes. (Please enable github.copilot.llm-gateway.enableImageInput in settings)`
-          );
-          break;
-        }
-        if (part.mimeType.startsWith('image/')) {
-          const url = encodeImageAsDataUrl(part);
-          userContent.push({ type: 'image_url', image_url: { url } });
-          log(
-            `  Added image data part as base64 URL: mimeType=${part.mimeType}, size=${part.data.length} bytes, urlLength=${url.length}`
-          );
-        }
+        appendImagePart(acc, part, options, log);
         break;
-
       case 'unknown':
         // Unknown parts are silently dropped; the classifier has already logged.
         break;
-
       default: {
         const _never: never = part;
         throw new Error(`Unexpected part kind: ${String(_never)}`);
@@ -194,6 +227,7 @@ export function convertMessage(
     }
   }
 
+  const { toolCalls, toolResults, userContent, textContent } = acc;
   const result: OpenAIMessage[] = [];
   if (toolCalls.length > 0) {
     result.push({ role: 'assistant', content: textContent || null, tool_calls: toolCalls });
