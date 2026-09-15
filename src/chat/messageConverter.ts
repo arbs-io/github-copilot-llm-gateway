@@ -12,6 +12,7 @@
  */
 
 import { OpenAIMessage } from '../api/types';
+import { stripReplyTokenSummary } from './replyTokenUsage';
 
 export type NormalizedRole = 'user' | 'assistant' | 'system' | 'tool';
 
@@ -133,10 +134,17 @@ export function convertMessage(
 
   for (const part of message.parts) {
     switch (part.kind) {
-      case 'text':
-        userContent.push({ type: 'text', text: part.value });
-        textContent += part.value;
+      case 'text': {
+        // The per-reply token summary is appended to assistant replies as
+        // ordinary text (issue #88); keep it out of the history we replay.
+        const value = message.role === 'assistant' ? stripReplyTokenSummary(part.value) : part.value;
+        if (value.length === 0) {
+          break;
+        }
+        userContent.push({ type: 'text', text: value });
+        textContent += value;
         break;
+      }
 
       case 'toolResult':
         log(`  Found tool result: callId=${part.callId}`);

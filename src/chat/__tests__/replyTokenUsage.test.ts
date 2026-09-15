@@ -5,6 +5,7 @@ import {
   extractReplyIdentity,
   extractToolResultIds,
   formatReplyTokenSummaryLine,
+  stripReplyTokenSummary,
   ReplyIdentity,
 } from '../replyTokenUsage';
 import { OpenAIMessage } from '../../api/types';
@@ -255,5 +256,43 @@ describe('formatReplyTokenSummaryLine', () => {
   test('formats small numbers without a separator', () => {
     const line = formatReplyTokenSummaryLine({ kind: 'complete', promptTokens: 5, completionTokens: 0, totalTokens: 5 });
     assert.equal(line, 'Tokens: input 5 | output 0 | total 5');
+  });
+});
+
+describe('stripReplyTokenSummary', () => {
+  test('removes a complete summary line and the blank line before it', () => {
+    const line = formatReplyTokenSummaryLine({
+      kind: 'complete', promptTokens: 12345, completionTokens: 1234, totalTokens: 13579,
+    });
+    assert.equal(stripReplyTokenSummary(`Here is the answer.\n\n${line}`), 'Here is the answer.');
+  });
+
+  test('removes partial and unavailable variants', () => {
+    const partial = formatReplyTokenSummaryLine({
+      kind: 'partial', promptTokens: 10, completionTokens: 0, totalTokens: 10,
+    });
+    const unavailable = formatReplyTokenSummaryLine({ kind: 'unavailable' });
+    assert.equal(stripReplyTokenSummary(`Done.\n\n${partial}`), 'Done.');
+    assert.equal(stripReplyTokenSummary(`Done.\n\n${unavailable}`), 'Done.');
+  });
+
+  test('returns an empty string when the text is only the summary part', () => {
+    const line = formatReplyTokenSummaryLine({
+      kind: 'complete', promptTokens: 1, completionTokens: 1, totalTokens: 2,
+    });
+    assert.equal(stripReplyTokenSummary(`\n\n${line}`), '');
+  });
+
+  test('leaves text without a trailing summary untouched', () => {
+    const text = 'Tokens: are counted by the server.\nSee the docs.';
+    assert.equal(stripReplyTokenSummary(text), text);
+  });
+
+  test('does not strip a summary line that is not at the end', () => {
+    const line = formatReplyTokenSummaryLine({
+      kind: 'complete', promptTokens: 1, completionTokens: 1, totalTokens: 2,
+    });
+    const text = `${line}\n\nMore text after it.`;
+    assert.equal(stripReplyTokenSummary(text), text);
   });
 });

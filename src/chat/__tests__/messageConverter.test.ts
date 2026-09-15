@@ -105,6 +105,28 @@ describe('convertMessage', () => {
     assert.equal(parts[0].text, 'sure');
   });
 
+  test('strips a trailing token summary from assistant history (issue #88)', () => {
+    const msg: NormalizedMessage = {
+      role: 'assistant',
+      parts: [
+        { kind: 'text', value: 'The answer is 42.' },
+        { kind: 'text', value: '\n\nTokens: input 1,234 | output 56 | total 1,290' },
+      ],
+    };
+    const result = convertMessage(msg, WITHOUT_IMAGES);
+    assert.equal(result.length, 1);
+    const parts = result[0].content as Array<Record<string, unknown>>;
+    assert.equal(parts.length, 1);
+    assert.equal(parts[0].text, 'The answer is 42.');
+  });
+
+  test('leaves a Tokens line in user text alone', () => {
+    const text = 'Tokens: input 1 | output 2 | total 3';
+    const result = convertMessage(textMsg('user', text), WITHOUT_IMAGES);
+    const parts = result[0].content as Array<Record<string, unknown>>;
+    assert.equal(parts[0].text, text);
+  });
+
   test('emits array content when images are enabled and included', () => {
     const data = new Uint8Array([10, 20, 30]);
     const msg: NormalizedMessage = {

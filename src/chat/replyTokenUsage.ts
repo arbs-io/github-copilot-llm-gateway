@@ -4,9 +4,8 @@
  * tokens for that reply instead of Copilot's native credits footer.
  *
  * VS Code's stable `LanguageModelChatProvider` API gives each round its own
- * `handle()` call with no public reply/turn identifier — see
- * `/memories/session/plan.md` for the full compatibility analysis. Rounds are
- * linked using two fields the installed Copilot Chat build passes through
+ * `handle()` call with no public reply/turn identifier. Rounds are linked
+ * using two fields the installed Copilot Chat build passes through
  * `options.modelOptions` (`_conversationId`, `_telemetryTurn`); these are
  * private and unstable. Callers MUST fail closed: if either field is absent
  * or malformed, treat the reply as unidentifiable rather than guess.
@@ -206,4 +205,24 @@ export function formatReplyTokenSummaryLine(summary: ReplyTokenSummary): string 
     `output ${formatWithCommas(summary.completionTokens)} | ` +
     `total ${formatWithCommas(summary.totalTokens)}`
   );
+}
+
+/**
+ * Matches a trailing summary line produced by {@link formatReplyTokenSummaryLine}
+ * (plus the blank line inserted before it) at the end of a block of text.
+ * Values are matched loosely so a line rendered under a different locale, or
+ * with `unavailable` in place of a number, is still recognised.
+ */
+const TRAILING_SUMMARY_LINE = /\s*Tokens(?: \(partial\))?: input [^\n|]+ \| output [^\n|]+ \| total [^\n|]+\s*$/;
+
+/**
+ * Remove a trailing token-summary line from assistant text before it is sent
+ * back to the server as conversation history. The line is appended as visible
+ * chat text, so Copilot stores it on the assistant message and replays it on
+ * every later turn — costing tokens each time and, with smaller models,
+ * occasionally being imitated in their own output. Text without a summary
+ * line is returned unchanged.
+ */
+export function stripReplyTokenSummary(text: string): string {
+  return text.replace(TRAILING_SUMMARY_LINE, '');
 }
