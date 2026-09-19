@@ -183,6 +183,28 @@ describe('ModelCatalog.getOrFetchModels', () => {
   });
 });
 
+describe('ModelCatalog picker names (issue #99)', () => {
+  test('same-name models from different upstreams keep their full id as name', async () => {
+    const h = makeCatalog({
+      fetchModels: () =>
+        Promise.resolve(
+          modelsResponse(
+            { id: 'deepseek/deepseek-chat' },
+            { id: 'openrouter/deepseek-chat' },
+            { id: 'ollama/llama3' }
+          )
+        ),
+    });
+    const { models } = await h.catalog.getOrFetchModels(fakeToken());
+    const byId = new Map(models.map((m) => [m.id, m]));
+    assert.equal(byId.get('deepseek/deepseek-chat')?.name, 'deepseek/deepseek-chat');
+    assert.equal(byId.get('openrouter/deepseek-chat')?.name, 'openrouter/deepseek-chat');
+    assert.equal(byId.get('ollama/llama3')?.name, 'llama3');
+    assert.equal(byId.get('openrouter/deepseek-chat')?.detail, 'LLM Gateway · openrouter');
+    assert.equal(byId.get('ollama/llama3')?.detail, 'LLM Gateway · ollama');
+  });
+});
+
 describe('ModelCatalog discovery integration', () => {
   function fixedDiscovery(byId: Record<string, DiscoveredModelInfo>): ModelDiscovery {
     return {

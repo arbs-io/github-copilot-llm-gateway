@@ -121,7 +121,7 @@ curl http://localhost:42069/v1/models
 
 ![Selecting Qwen3-8B from the model list](assets/screenshot-use-qwen3.png)
 
-Models are listed by their short name — the Hugging-Face org (`Qwen/Qwen3-8B` → `Qwen3-8B`) or an aggregator's upstream prefix (`openrouter/deepseek-chat` → `deepseek-chat`) is moved into the grey label next to the model (`LLM Gateway · openrouter`). When two upstreams serve the same model name, both keep their full id so they stay distinguishable in the chat input as well.
+Models are listed by their short name — the Hugging-Face org (`Qwen/Qwen3-8B` → `Qwen3-8B`) or an aggregator's upstream prefix (`openrouter/deepseek-chat` → `deepseek-chat`) is kept in the model's tooltip and in its grey label (`LLM Gateway · openrouter`) where VS Code renders one. When two upstreams serve the same model name, both keep their full id as the name so they stay distinguishable everywhere, including the chat input.
 
 ### Step 5: Start Chatting
 

@@ -20,7 +20,7 @@ function baseModel(overrides: Partial<OpenAIModel> = {}): OpenAIModel {
 }
 
 describe('buildModelInfo first-party look-and-feel fields', () => {
-  test('sets detail to the provider label so the picker groups models', () => {
+  test('sets detail to the provider label for unprefixed ids', () => {
     const { info } = buildModelInfo({
       model: baseModel({ id: 'gpt-4o-mini' }),
       defaultMaxTokens: 8192,
@@ -82,7 +82,7 @@ describe('buildModelInfo id-derived fields', () => {
     assert.equal(info.id, 'meta-llama/Llama-3.1-8B-Instruct');
   });
 
-  test('uses displayName for name and version when the catalog supplies one (issue #99)', () => {
+  test('uses displayName for name but keeps version stable when the catalog supplies one (issue #99)', () => {
     const { info } = buildModelInfo({
       model: baseModel({ id: 'openrouter/deepseek-chat' }),
       defaultMaxTokens: 8192,
@@ -91,8 +91,9 @@ describe('buildModelInfo id-derived fields', () => {
       displayName: 'openrouter/deepseek-chat',
     });
     assert.equal(info.name, 'openrouter/deepseek-chat');
-    assert.equal(info.version, 'openrouter/deepseek-chat');
     assert.equal(info.id, 'openrouter/deepseek-chat');
+    // `version` is a selector lookup value and must not follow the display name.
+    assert.equal(info.version, 'deepseek-chat');
   });
 
   test('infers a known family when the id matches', () => {

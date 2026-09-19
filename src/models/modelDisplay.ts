@@ -45,7 +45,8 @@ export function modelIdPrefix(id: string): string | undefined {
  * name — `deepseek/deepseek-chat` and `openrouter/deepseek-chat` behind
  * LiteLLM — in which case those models keep their full id so the chat
  * input's model button, which shows only `name`, still tells them apart
- * (issue #99).
+ * (issue #99). Comparison is case-sensitive, matching VS Code's treatment
+ * of model ids.
  */
 export function resolveDisplayNames(ids: readonly string[]): Map<string, string> {
   const idsByFriendlyName = new Map<string, string[]>();
