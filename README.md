@@ -57,7 +57,10 @@ It also keeps the familiar benefits of self-hosting: inference stays on your net
 - [Text Generation Inference](https://github.com/huggingface/text-generation-inference) — Hugging Face's server
 - [LocalAI](https://localai.io/) — OpenAI API drop-in replacement
 - [LiteLLM](https://github.com/BerriAI/litellm) — Proxy gateway to 100+ LLM providers behind one OpenAI-compatible API
+- [Open WebUI](https://github.com/open-webui/open-webui) — Self-hosted UI whose OpenAI-compatible API fronts every connection it knows about
 - Any OpenAI Chat Completions API-compatible endpoint
+
+The extension connects to **one** server. To reach several providers at once — a cloud API, a local model and a hosted endpoint in the same picker — put an aggregator in front of them; see [Multiple Providers Behind One Server](#multiple-providers-behind-one-server).
 
 ## Getting Started
 
@@ -178,6 +181,8 @@ Configure the extension through VS Code Settings (`Ctrl+,` / `Cmd+,`) → search
 | **Server URL**      | `http://localhost:8000` | Base URL of your OpenAI-compatible inference server |
 | **API Key**         | _(empty)_               | Authentication key if your server requires one      |
 | **Request Timeout** | `60000`                 | Request timeout in milliseconds                     |
+
+**Server URL** can be saved to either **User** or **Workspace** settings from the *Configure Server* command, so different VS Code windows can point at different servers. The API key is always stored globally (VS Code's secret storage is not workspace-aware). To use more than one provider from a single window, see [Multiple Providers Behind One Server](#multiple-providers-behind-one-server).
 
 ### Model Settings
 
@@ -371,6 +376,73 @@ vllm serve Qwen/Qwen2.5-14B-Instruct-AWQ \
     --host 0.0.0.0 \
     --port 42069
 ```
+
+## Multiple Providers Behind One Server
+
+The extension talks to a single OpenAI-compatible endpoint, and re-running *Configure Server* replaces the previous URL and key. If you regularly use several providers — say a cloud API, a hosted endpoint and a model on your own GPU — run an **aggregator** that speaks the OpenAI API on one port and fans out to each upstream, then point the extension at the aggregator. All of the upstream models appear together in the Copilot picker, and each provider's credentials live in one place outside VS Code.
+
+### Option A: LiteLLM proxy
+
+[LiteLLM](https://docs.litellm.ai/docs/proxy/configs) routes one OpenAI-compatible API to 100+ providers. A minimal `config.yaml` with a cloud provider, a local Ollama model and a self-hosted OpenAI-compatible server:
+
+```yaml
+model_list:
+  # Cloud provider — the key is read from the environment, never from VS Code
+  - model_name: deepseek-chat
+    litellm_params:
+      model: deepseek/deepseek-chat
+      api_key: os.environ/DEEPSEEK_API_KEY
+
+  # Local Ollama
+  - model_name: qwen3-local
+    litellm_params:
+      model: ollama_chat/qwen3:8b
+      api_base: http://localhost:11434
+
+  # Any other OpenAI-compatible server (vLLM, llama.cpp, LM Studio, an Unsloth export…)
+  - model_name: unsloth-local
+    litellm_params:
+      model: openai/unsloth-model      # the id the server lists in /v1/models
+      api_base: http://localhost:8000/v1
+      api_key: none
+    model_info:
+      max_input_tokens: 32768          # tell LiteLLM the limits of servers it doesn't know
+      max_output_tokens: 8192
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY   # e.g. sk-change-me
+```
+
+Start it and check the merged model list:
+
+```bash
+export DEEPSEEK_API_KEY=… LITELLM_MASTER_KEY=sk-change-me
+litellm --config config.yaml --port 4000
+curl -H "Authorization: Bearer sk-change-me" http://localhost:4000/v1/models
+```
+
+Then run **GitHub Copilot LLM Gateway: Configure Server** with:
+
+- **Server URL**: `http://localhost:4000`
+- **API Key**: the master key, or a [virtual key](https://docs.litellm.ai/docs/proxy/virtual_keys) scoped to the models you want VS Code to see
+
+`model_name` is what shows up in the picker, so pick names that tell the upstreams apart (`deepseek-chat`, `qwen3-local`). If a model's context size looks wrong in the picker, pin it with [`modelContextWindows`](#how-the-context-window-is-determined).
+
+### Option B: Open WebUI
+
+If you already run [Open WebUI](https://github.com/open-webui/open-webui), its API fronts every connection it knows about:
+
+1. **Admin Panel → Settings → Connections** — add each upstream (OpenAI-compatible URLs with their keys, plus your Ollama host).
+2. **Admin Panel → Settings → General** — make sure *API Keys* is enabled, then create one under **Settings → Account → API keys**.
+3. Configure the extension with:
+   - **Server URL**: `http://localhost:3000/api` — Open WebUI serves its OpenAI-compatible routes under `/api/v1/…`, and the extension appends the `/v1/models` and `/v1/chat/completions` parts itself
+   - **API Key**: the key from step 2
+
+Verify with `curl -H "Authorization: Bearer <key>" http://localhost:3000/api/v1/models` before configuring the extension. Open WebUI does not report context sizes on this API, so set [`modelContextWindows`](#how-the-context-window-is-determined) for the models you use (wildcards such as `"*": 32768` work).
+
+### Switching servers per project
+
+If you only need *different* servers in *different* projects rather than several at once, save **Server URL** to **Workspace** settings from *Configure Server* — each VS Code window then talks to its own server. Note that the API key is shared across workspaces, so this works best when the servers share a key or need none.
 
 ## Troubleshooting
 
