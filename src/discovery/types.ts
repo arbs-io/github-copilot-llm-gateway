@@ -23,6 +23,19 @@ export interface DiscoveredModelInfo {
   readonly contextLength?: number;
   /** Human-readable origin of `contextLength` for the output-channel log. */
   readonly contextSource?: string;
+  /**
+   * Completion-token ceiling the backend reports independently of
+   * `contextLength` (LiteLLM `max_output_tokens`). Replaces the configured
+   * default output budget for this model.
+   */
+  readonly maxOutputTokens?: number;
+  /**
+   * True when `contextLength` is a prompt-only ceiling and `maxOutputTokens`
+   * is a separate allowance (LiteLLM's two-window story), so output must not
+   * be reserved out of the context. Absent/false means one shared window —
+   * what Ollama's `num_ctx` describes.
+   */
+  readonly separateOutputWindow?: boolean;
   /** Numeric sampler params baked into the model's server-side config. */
   readonly samplerParams: Readonly<Record<string, number>>;
   /** Whether the model accepts image input; `undefined` = server didn't say. */

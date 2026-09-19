@@ -200,11 +200,12 @@ export class ModelCatalog {
           config.modelContextWindows
         );
 
-        // Backend-native discovery (currently Ollama /api/show): context,
-        // capabilities, and sampler params the OpenAI /v1/models list doesn't
-        // carry. Answers `undefined` instantly for backends it doesn't
-        // recognise — detection is a single cached short-timeout probe. A
-        // failing probe must degrade to "no metadata", never fail the list.
+        // Backend-native discovery (Ollama /api/show, LiteLLM /model/info):
+        // context, capabilities, and sampler params the OpenAI /v1/models
+        // list doesn't carry. Answers `undefined` instantly for backends it
+        // doesn't recognise — detection is a single cached short-timeout
+        // probe. A failing probe must degrade to "no metadata", never fail
+        // the list.
         const discovered = await this.deps.discovery
           .enrichModel(model.id, token)
           .catch(() => undefined);
@@ -224,6 +225,8 @@ export class ModelCatalog {
           },
           contextOverride,
           discoveredContext: discovered?.contextLength,
+          discoveredMaxOutput: discovered?.maxOutputTokens,
+          discoveredOutputWindowIsSeparate: discovered?.separateOutputWindow,
         });
         nextContextByModelId.set(model.id, totalContext);
         if (outputWindowIsSeparate) {

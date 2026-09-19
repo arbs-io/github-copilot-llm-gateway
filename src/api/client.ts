@@ -134,9 +134,11 @@ export type GatewayLogger = (message: string) => void;
 const DISCOVERY_PROBE_TIMEOUT_MS = 3000;
 
 /**
- * Timeout for a `POST /api/show` metadata fetch. Only issued after the server
- * is confirmed to be Ollama, where `/api/show` is a fast metadata read — but
- * these calls gate the model list, so they must not inherit the 60s default.
+ * Timeout for a `POST /api/show` metadata fetch, and for LiteLLM's one-shot
+ * `GET /model/info`. `/api/show` is only issued after the server is confirmed
+ * to be Ollama, where it's a fast metadata read; `/model/info` doubles as the
+ * LiteLLM detection probe. Both gate the model list, so they must not inherit
+ * the 60s default.
  */
 const DISCOVERY_SHOW_TIMEOUT_MS = 5000;
 
@@ -628,6 +630,32 @@ export class GatewayClient {
           headers: { ...this.getHeaders(), 'Content-Type': 'application/json' },
           body: JSON.stringify({ model: modelId }),
         },
+        cancellationToken,
+        DISCOVERY_SHOW_TIMEOUT_MS
+      );
+      if (!response.ok) { return undefined; }
+      return await response.json();
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Fetch LiteLLM's per-deployment metadata via the proxy's native
+   * `GET /model/info` endpoint (issue #100). One request describes every
+   * model, so `LiteLLMDiscovery` calls this once per config generation.
+   * Returns the raw JSON body — parsing lives in `discovery/litellmDiscovery`
+   * — or `undefined` on any failure, including the 404 every other backend
+   * answers with.
+   */
+  public async fetchLiteLLMModelInfo(
+    cancellationToken?: vscode.CancellationToken
+  ): Promise<unknown> {
+    const base = normalizeBaseUrl(this.config.serverUrl);
+    try {
+      const response = await this.fetchWithTimeout(
+        `${base}/model/info`,
+        { method: 'GET', headers: this.getHeaders() },
         cancellationToken,
         DISCOVERY_SHOW_TIMEOUT_MS
       );

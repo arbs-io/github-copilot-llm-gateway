@@ -28,7 +28,10 @@ import { ChatRequestHandler, RequestStateEvent } from './chatRequestHandler';
 import { ConfigService } from './configService';
 import { InlineCompletionService } from './inlineCompletionService';
 import { ModelCatalog } from './modelCatalog';
+import { CompositeDiscovery } from '../discovery/compositeDiscovery';
+import { LiteLLMDiscovery } from '../discovery/litellmDiscovery';
 import { OllamaDiscovery } from '../discovery/ollamaDiscovery';
+import { ModelDiscovery } from '../discovery/types';
 import { SecretsManager } from './secretsManager';
 import { promptOpenSettings } from './notifications';
 import { countMessageTokens } from './vscodeParts';
@@ -89,7 +92,7 @@ export class GatewayProvider
   private readonly configService: ConfigService;
   private readonly secretsManager: SecretsManager;
   private readonly catalog: ModelCatalog;
-  private readonly discovery: OllamaDiscovery;
+  private readonly discovery: ModelDiscovery;
   private readonly chatHandler: ChatRequestHandler;
   private readonly inlineCompletions: InlineCompletionService;
   /**
@@ -148,7 +151,12 @@ export class GatewayProvider
     });
     this.config = this.configService.load();
     this.client = new GatewayClient(this.config, log);
-    this.discovery = new OllamaDiscovery({ client: this.client, log });
+    // Ollama first: its `/api/version` probe is the cheaper of the two, and
+    // an Ollama server never answers LiteLLM's `/model/info`.
+    this.discovery = new CompositeDiscovery([
+      new OllamaDiscovery({ client: this.client, log }),
+      new LiteLLMDiscovery({ client: this.client, log }),
+    ]);
     this.catalog = new ModelCatalog({
       client: this.client,
       discovery: this.discovery,

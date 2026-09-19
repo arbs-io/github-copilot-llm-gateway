@@ -44,10 +44,22 @@ export interface BuildModelInfoInput {
   readonly contextOverride?: number;
   /**
    * Context discovered from the backend (Ollama `/api/show`: runtime
-   * `num_ctx`, else the model's trained context length). Sits below the user
-   * override but above the OpenAI `/v1/models` value, which Ollama omits.
+   * `num_ctx`, else the model's trained context length; LiteLLM
+   * `/model/info`: `max_input_tokens`). Sits below the user override but
+   * above the OpenAI `/v1/models` value, which those backends omit.
    */
   readonly discoveredContext?: number;
+  /**
+   * Completion ceiling discovered alongside `discoveredContext` (LiteLLM
+   * `max_output_tokens`). Only consulted when `discoveredContext` is in use.
+   */
+  readonly discoveredMaxOutput?: number;
+  /**
+   * Whether `discoveredContext` is prompt-only with `discoveredMaxOutput` as a
+   * separate window (LiteLLM), rather than one shared window (Ollama). Only
+   * consulted when `discoveredContext` is in use.
+   */
+  readonly discoveredOutputWindowIsSeparate?: boolean;
 }
 
 /**
@@ -103,27 +115,36 @@ export function buildModelInfo({
   capabilities,
   contextOverride,
   discoveredContext,
+  discoveredMaxOutput,
+  discoveredOutputWindowIsSeparate,
 }: BuildModelInfoInput): BuildModelInfoResult {
   const serverContext = serverReportedContext(model);
   const serverMaxOutput = serverReportedMaxOutput(model);
   const totalContext =
     contextOverride ?? discoveredContext ?? serverContext ?? defaultMaxTokens;
 
-  // Only believe the server's two-window story when the server's own context
-  // value is the one we ended up using. A `modelContextWindows` override or an
-  // Ollama-discovered size describes a single shared window, so output still
-  // has to be carved out of it.
-  const outputWindowIsSeparate =
-    contextOverride === undefined &&
-    discoveredContext === undefined &&
-    serverContext !== undefined &&
-    hasSeparateOutputWindow(model);
+  // Only believe a two-window story from whichever source supplied the
+  // context we ended up using. A `modelContextWindows` override describes a
+  // single shared window; so does an Ollama-discovered size, whereas LiteLLM
+  // discovery says explicitly whether its output ceiling is separate. Server
+  // fields are only consulted when neither of those is in play.
+  let outputWindowIsSeparate = false;
+  if (contextOverride === undefined) {
+    if (discoveredContext !== undefined) {
+      outputWindowIsSeparate = discoveredOutputWindowIsSeparate === true;
+    } else if (serverContext !== undefined) {
+      outputWindowIsSeparate = hasSeparateOutputWindow(model);
+    }
+  }
 
   // A shared window never gives output more than half the context, matching
   // `calculateMaxInputTokens` — otherwise a generous default output budget
   // (sized for thinking models) would leave a small-context model almost no
   // room for its prompt.
-  const outputCeiling = serverMaxOutput ?? defaultMaxOutputTokens;
+  const outputCeiling =
+    (discoveredContext !== undefined ? discoveredMaxOutput : undefined) ??
+    serverMaxOutput ??
+    defaultMaxOutputTokens;
   const maxOutputTokens = outputWindowIsSeparate
     ? outputCeiling
     : Math.min(

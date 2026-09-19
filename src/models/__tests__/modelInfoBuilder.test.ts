@@ -308,6 +308,51 @@ describe('buildModelInfo output token math', () => {
     assert.equal(outputWindowIsSeparate, false);
   });
 
+  test('a LiteLLM-discovered separate output window keeps the full input ceiling (issue #100)', () => {
+    const { info, totalContext, outputWindowIsSeparate } = buildModelInfo({
+      model: baseModel(),
+      defaultMaxTokens: 8192,
+      defaultMaxOutputTokens: 4096,
+      capabilities: {},
+      discoveredContext: 200000,
+      discoveredMaxOutput: 64000,
+      discoveredOutputWindowIsSeparate: true,
+    });
+    assert.equal(totalContext, 200000);
+    assert.equal(outputWindowIsSeparate, true);
+    assert.equal(info.maxInputTokens, 200000);
+    assert.equal(info.maxOutputTokens, 64000);
+  });
+
+  test('a discovered shared window still clamps the discovered output ceiling', () => {
+    const { info, outputWindowIsSeparate } = buildModelInfo({
+      model: baseModel(),
+      defaultMaxTokens: 8192,
+      defaultMaxOutputTokens: 4096,
+      capabilities: {},
+      discoveredContext: 32768,
+      discoveredMaxOutput: 32768,
+      discoveredOutputWindowIsSeparate: false,
+    });
+    assert.equal(outputWindowIsSeparate, false);
+    assert.equal(info.maxOutputTokens, 16384);
+    assert.equal(info.maxInputTokens, 16384);
+  });
+
+  test('discovered limits win over LiteLLM fields the server also listed', () => {
+    const { totalContext, info } = buildModelInfo({
+      model: baseModel({ max_input_tokens: 100000, max_output_tokens: 8000 }),
+      defaultMaxTokens: 8192,
+      defaultMaxOutputTokens: 4096,
+      capabilities: {},
+      discoveredContext: 200000,
+      discoveredMaxOutput: 64000,
+      discoveredOutputWindowIsSeparate: true,
+    });
+    assert.equal(totalContext, 200000);
+    assert.equal(info.maxOutputTokens, 64000);
+  });
+
   test('a shared vLLM window is never treated as separate', () => {
     const { outputWindowIsSeparate } = buildModelInfo({
       model: baseModel({ max_model_len: 32768 }),
