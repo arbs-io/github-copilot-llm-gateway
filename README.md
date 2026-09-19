@@ -182,7 +182,7 @@ Configure the extension through VS Code Settings (`Ctrl+,` / `Cmd+,`) → search
 | **API Key**         | _(empty)_               | Authentication key if your server requires one      |
 | **Request Timeout** | `60000`                 | Request timeout in milliseconds                     |
 
-**Server URL** can be saved to either **User** or **Workspace** settings from the *Configure Server* command, so different VS Code windows can point at different servers. The API key is always stored globally (VS Code's secret storage is not workspace-aware). To use more than one provider from a single window, see [Multiple Providers Behind One Server](#multiple-providers-behind-one-server).
+**Server URL** can be saved to either **User** or **Workspace** settings from the *Configure Server* command, so different VS Code windows can point at different servers. The API key is always stored globally (VS Code's secret storage is not workspace-aware).
 
 ### Model Settings
 
@@ -416,7 +416,7 @@ general_settings:
 Start it and check the merged model list:
 
 ```bash
-export DEEPSEEK_API_KEY=… LITELLM_MASTER_KEY=sk-change-me
+export DEEPSEEK_API_KEY=<your-key> LITELLM_MASTER_KEY=sk-change-me
 litellm --config config.yaml --port 4000
 curl -H "Authorization: Bearer sk-change-me" http://localhost:4000/v1/models
 ```
@@ -424,7 +424,7 @@ curl -H "Authorization: Bearer sk-change-me" http://localhost:4000/v1/models
 Then run **GitHub Copilot LLM Gateway: Configure Server** with:
 
 - **Server URL**: `http://localhost:4000`
-- **API Key**: the master key, or a [virtual key](https://docs.litellm.ai/docs/proxy/virtual_keys) scoped to the models you want VS Code to see
+- **API Key**: the master key, or a [virtual key](https://docs.litellm.ai/docs/proxy/virtual_keys) scoped to the models you want VS Code to see (virtual keys need the proxy's database)
 
 `model_name` is what shows up in the picker, so pick names that tell the upstreams apart (`deepseek-chat`, `qwen3-local`). If a model's context size looks wrong in the picker, pin it with [`modelContextWindows`](#how-the-context-window-is-determined).
 
@@ -432,13 +432,14 @@ Then run **GitHub Copilot LLM Gateway: Configure Server** with:
 
 If you already run [Open WebUI](https://github.com/open-webui/open-webui), its API fronts every connection it knows about:
 
-1. **Admin Panel → Settings → Connections** — add each upstream (OpenAI-compatible URLs with their keys, plus your Ollama host).
-2. **Admin Panel → Settings → General** — make sure *API Keys* is enabled, then create one under **Settings → Account → API keys**.
-3. Configure the extension with:
-   - **Server URL**: `http://localhost:3000/api` — Open WebUI serves its OpenAI-compatible routes under `/api/v1/…`, and the extension appends the `/v1/models` and `/v1/chat/completions` parts itself
-   - **API Key**: the key from step 2
+1. **Settings → Admin → Connections** — add each upstream (OpenAI-compatible URLs with their keys, plus your Ollama host).
+2. **Settings → Admin → Authentication** — enable *API Keys* (off by default; older releases had the toggle under *General*). Non-admin users also need the *API Keys* permission in their user group. If *API Key Endpoint Restrictions* is on, allow `/api/v1/models,/api/v1/chat/completions`.
+3. **Settings → Account → API keys** — create a key.
+4. Configure the extension with:
+   - **Server URL**: `http://localhost:3000/api` — Open WebUI's OpenAI-compatible aliases live under `/api/v1/…` (marked experimental in Open WebUI, but stable in practice), and the extension appends the `/v1/models` and `/v1/chat/completions` parts itself
+   - **API Key**: the key from step 3
 
-Verify with `curl -H "Authorization: Bearer <key>" http://localhost:3000/api/v1/models` before configuring the extension. Open WebUI does not report context sizes on this API, so set [`modelContextWindows`](#how-the-context-window-is-determined) for the models you use (wildcards such as `"*": 32768` work).
+Verify with `curl -H "Authorization: Bearer <key>" http://localhost:3000/api/v1/models` before configuring the extension. Open WebUI only forwards whatever context metadata the upstream itself reports — a vLLM or LiteLLM upstream comes through, Ollama and most cloud providers report nothing — so set [`modelContextWindows`](#how-the-context-window-is-determined) for anything that shows the default size (wildcards such as `"*": 32768` work).
 
 ### Switching servers per project
 
