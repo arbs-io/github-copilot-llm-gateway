@@ -1,9 +1,11 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import type { CancellationToken } from 'vscode';
+import type { LiteLLMModelInfoProbe } from '../../api/client';
 import {
   LiteLLMDiscovery,
   LiteLLMDiscoveryClient,
+  describeProbeOutcome,
   parseLiteLLMModelInfoResponse,
   toDiscoveredModelInfo,
 } from '../litellmDiscovery';
@@ -47,26 +49,36 @@ describe('parseLiteLLMModelInfoResponse', () => {
     assert.equal(qwen?.supportsFunctionCalling, undefined);
   });
 
-  test('skips wildcard deployments and keeps the first of duplicate names', () => {
+  test('skips wildcard deployments', () => {
     const parsed = parseLiteLLMModelInfoResponse({
-      data: [
-        entry('*'),
-        entry('openai/*'),
-        entry('gpt', { max_input_tokens: 100 }),
-        entry('gpt', { max_input_tokens: 200 }),
-      ],
+      data: [entry('*'), entry('openai/*'), entry('gpt', { max_input_tokens: 100 })],
     });
     assert.ok(parsed);
-    assert.equal(parsed.size, 1);
-    assert.equal(parsed.get('gpt')?.maxInputTokens, 100);
+    assert.deepEqual([...parsed.keys()], ['gpt']);
   });
 
-  test('ignores non-positive or non-numeric limits', () => {
+  test('load-balanced deployments sharing a name fold to the smallest limits', () => {
     const parsed = parseLiteLLMModelInfoResponse({
-      data: [entry('m', { max_input_tokens: 0, max_output_tokens: '4096' })],
+      data: [
+        entry('gpt', { max_input_tokens: 200, max_output_tokens: 50, supports_vision: true }),
+        entry('gpt', { max_input_tokens: 100, supports_vision: false, supports_function_calling: true }),
+        entry('gpt', { max_output_tokens: 80 }),
+      ],
+    });
+    const gpt = parsed?.get('gpt');
+    assert.equal(gpt?.maxInputTokens, 100);
+    assert.equal(gpt?.maxOutputTokens, 50);
+    assert.equal(gpt?.supportsVision, false);
+    assert.equal(gpt?.supportsFunctionCalling, true);
+  });
+
+  test('ignores null, non-positive or non-numeric limits', () => {
+    const parsed = parseLiteLLMModelInfoResponse({
+      data: [entry('m', { max_input_tokens: null, max_output_tokens: '4096' }), entry('n', { max_input_tokens: 0 })],
     });
     assert.equal(parsed?.get('m')?.maxInputTokens, undefined);
     assert.equal(parsed?.get('m')?.maxOutputTokens, undefined);
+    assert.equal(parsed?.get('n')?.maxInputTokens, undefined);
   });
 
   test('tolerates a missing model_info block', () => {
@@ -79,6 +91,8 @@ describe('parseLiteLLMModelInfoResponse', () => {
     assert.equal(parseLiteLLMModelInfoResponse('nope'), undefined);
     assert.equal(parseLiteLLMModelInfoResponse({ data: [] }), undefined);
     assert.equal(parseLiteLLMModelInfoResponse({ data: 'x' }), undefined);
+    // `litellm --model X` mode answers a single dict, not a list.
+    assert.equal(parseLiteLLMModelInfoResponse({ data: entry('*') }), undefined);
     // An OpenAI `/v1/models` shape answered on the wrong path.
     assert.equal(
       parseLiteLLMModelInfoResponse({ object: 'list', data: [{ id: 'm', object: 'model' }] }),
@@ -122,27 +136,62 @@ function cancelledToken(): CancellationToken {
   } as unknown as CancellationToken;
 }
 
-function fakeClient(body: unknown): { client: LiteLLMDiscoveryClient; counters: { fetches: number } } {
+function fakeClient(
+  probe: LiteLLMModelInfoProbe
+): { client: LiteLLMDiscoveryClient; counters: { fetches: number } } {
   const counters = { fetches: 0 };
   const client: LiteLLMDiscoveryClient = {
     fetchLiteLLMModelInfo: () => {
       counters.fetches += 1;
-      return Promise.resolve(body);
+      return Promise.resolve(probe);
     },
   };
   return { client, counters };
 }
 
-const LITELLM_BODY = {
-  data: [
-    entry('claude-sonnet', { max_input_tokens: 200000, max_output_tokens: 64000 }),
-    entry('gpt-4o', { max_input_tokens: 128000, max_output_tokens: 16384 }),
-  ],
+const NOT_FOUND: LiteLLMModelInfoProbe = { kind: 'http', status: 404 };
+
+const LITELLM_BODY: LiteLLMModelInfoProbe = {
+  kind: 'ok',
+  body: {
+    data: [
+      entry('claude-sonnet', { max_input_tokens: 200000, max_output_tokens: 64000 }),
+      entry('gpt-4o', { max_input_tokens: 128000, max_output_tokens: 16384 }),
+    ],
+  },
 };
+
+describe('describeProbeOutcome', () => {
+  test('names the model count on success', () => {
+    const parsed = new Map([['a', { modelName: 'a' }]]);
+    assert.match(describeProbeOutcome(LITELLM_BODY, parsed), /1 model\(s\)/);
+  });
+
+  test('a 404 reads as a different backend', () => {
+    assert.match(describeProbeOutcome(NOT_FOUND, undefined), /not LiteLLM .*404/);
+  });
+
+  test('a 401/403 tells the user to check the key and refresh', () => {
+    const line = describeProbeOutcome({ kind: 'http', status: 401 }, undefined);
+    assert.match(line, /401/);
+    assert.match(line, /API key/);
+    assert.match(line, /Refresh Models/);
+  });
+
+  test('a timeout says the verdict is cached until refresh', () => {
+    const line = describeProbeOutcome({ kind: 'unreachable', reason: 'timed out' }, undefined);
+    assert.match(line, /timed out/);
+    assert.match(line, /Refresh Models/);
+  });
+
+  test('a 200 in the wrong shape is reported as such', () => {
+    assert.match(describeProbeOutcome({ kind: 'ok', body: {} }, undefined), /not in LiteLLM's shape/);
+  });
+});
 
 describe('LiteLLMDiscovery', () => {
   test('non-LiteLLM server: one fetch, no results for any model', async () => {
-    const { client, counters } = fakeClient(undefined);
+    const { client, counters } = fakeClient(NOT_FOUND);
     const discovery = new LiteLLMDiscovery({ client, log: () => undefined });
     assert.equal(await discovery.enrichModel('a'), undefined);
     assert.equal(await discovery.enrichModel('b'), undefined);
@@ -182,11 +231,42 @@ describe('LiteLLMDiscovery', () => {
   });
 
   test('a cancelled negative fetch is not cached as a verdict', async () => {
-    const { client, counters } = fakeClient(undefined);
+    const { client, counters } = fakeClient(NOT_FOUND);
     const discovery = new LiteLLMDiscovery({ client, log: () => undefined });
     await discovery.enrichModel('a', cancelledToken());
     await discovery.enrichModel('a');
     assert.equal(counters.fetches, 2);
+  });
+
+  test('a successful fetch under a cancelled token is still cached (it is a real answer)', async () => {
+    const { client, counters } = fakeClient(LITELLM_BODY);
+    const discovery = new LiteLLMDiscovery({ client, log: () => undefined });
+    assert.equal((await discovery.enrichModel('gpt-4o', cancelledToken()))?.contextLength, 128000);
+    await discovery.enrichModel('gpt-4o');
+    assert.equal(counters.fetches, 1);
+  });
+
+  test('reset() during an in-flight cancelled load does not clobber the new generation', async () => {
+    let resolveFirst: (probe: LiteLLMModelInfoProbe) => void = () => undefined;
+    let calls = 0;
+    const client: LiteLLMDiscoveryClient = {
+      fetchLiteLLMModelInfo: () => {
+        calls += 1;
+        return calls === 1
+          ? new Promise<LiteLLMModelInfoProbe>((resolve) => { resolveFirst = resolve; })
+          : Promise.resolve(LITELLM_BODY);
+      },
+    };
+    const discovery = new LiteLLMDiscovery({ client, log: () => undefined });
+    const first = discovery.enrichModel('gpt-4o', cancelledToken());
+    discovery.reset();
+    const second = discovery.enrichModel('gpt-4o');
+    resolveFirst(NOT_FOUND);
+    assert.equal(await first, undefined);
+    assert.equal((await second)?.contextLength, 128000);
+    // The second generation's verdict survived the first one's late abort.
+    await discovery.enrichModel('claude-sonnet');
+    assert.equal(calls, 2);
   });
 
   test('logs detection once per generation', async () => {

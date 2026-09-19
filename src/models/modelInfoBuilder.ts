@@ -87,8 +87,9 @@ export interface BuildModelInfoResult {
   /**
    * True when `totalContext` is an input-only ceiling and the model has its own
    * separate completion window, so the chat path must not reserve output space
-   * out of it. Always false once a user override or a backend-discovered size
-   * is in play — those describe one shared window.
+   * out of it. Always false under a user override (one shared window); for a
+   * backend-discovered size it's whatever that backend said — Ollama's
+   * `num_ctx` is shared, LiteLLM's `/model/info` limits may be separate.
    */
   readonly outputWindowIsSeparate: boolean;
 }

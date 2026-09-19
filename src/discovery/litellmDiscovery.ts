@@ -1,4 +1,5 @@
 import type { CancellationToken } from 'vscode';
+import type { LiteLLMModelInfoProbe } from '../api/client';
 import { DiscoveredModelInfo, ModelDiscovery } from './types';
 
 /**
@@ -35,13 +36,43 @@ function optionalBoolean(value: unknown): boolean | undefined {
   return typeof value === 'boolean' ? value : undefined;
 }
 
+function minDefined(a: number | undefined, b: number | undefined): number | undefined {
+  if (a === undefined) { return b; }
+  if (b === undefined) { return a; }
+  return Math.min(a, b);
+}
+
+/** `false` if either deployment says no; `true` if either says yes; else unknown. */
+function andDefined(a: boolean | undefined, b: boolean | undefined): boolean | undefined {
+  if (a === false || b === false) { return false; }
+  if (a === true || b === true) { return true; }
+  return undefined;
+}
+
+/**
+ * Fold two deployments that share a public `model_name` (LiteLLM
+ * load-balancing) into the limits every one of them honours: the smaller of
+ * each ceiling, and a capability only when no deployment denies it. A request
+ * may be routed to any of them, so advertising the most generous deployment
+ * would produce real overflow errors on the others.
+ */
+function mergeDeployments(a: LiteLLMModelInfo, b: LiteLLMModelInfo): LiteLLMModelInfo {
+  return {
+    modelName: a.modelName,
+    maxInputTokens: minDefined(a.maxInputTokens, b.maxInputTokens),
+    maxOutputTokens: minDefined(a.maxOutputTokens, b.maxOutputTokens),
+    supportsVision: andDefined(a.supportsVision, b.supportsVision),
+    supportsFunctionCalling: andDefined(a.supportsFunctionCalling, b.supportsFunctionCalling),
+  };
+}
+
 /**
  * Parse a raw `GET /model/info` JSON body into per-model metadata, or
  * `undefined` when the body doesn't look like a LiteLLM response (so a
  * foreign server that answers 200 on the path is ignored). Entries with a
  * wildcard `model_name` (`*`, `openai/*`) match nothing in the model list
- * and are skipped; when several deployments share a public name (LiteLLM
- * load-balancing), the first one wins.
+ * and are skipped; deployments sharing a public name are folded to their
+ * most conservative limits (see `mergeDeployments`).
  */
 export function parseLiteLLMModelInfoResponse(
   raw: unknown
@@ -60,17 +91,19 @@ export function parseLiteLLMModelInfoResponse(
     };
     if (typeof modelName !== 'string' || modelName.length === 0) { continue; }
     looksLikeLiteLLM = true;
-    if (modelName.includes('*') || byName.has(modelName)) { continue; }
+    if (modelName.includes('*')) { continue; }
 
     const info: Record<string, unknown> =
       modelInfo && typeof modelInfo === 'object' ? (modelInfo as Record<string, unknown>) : {};
-    byName.set(modelName, {
+    const parsed: LiteLLMModelInfo = {
       modelName,
       maxInputTokens: positiveNumber(info.max_input_tokens),
       maxOutputTokens: positiveNumber(info.max_output_tokens),
       supportsVision: optionalBoolean(info.supports_vision),
       supportsFunctionCalling: optionalBoolean(info.supports_function_calling),
-    });
+    };
+    const existing = byName.get(modelName);
+    byName.set(modelName, existing ? mergeDeployments(existing, parsed) : parsed);
   }
   return looksLikeLiteLLM ? byName : undefined;
 }
@@ -102,8 +135,38 @@ export function toDiscoveredModelInfo(info: LiteLLMModelInfo): DiscoveredModelIn
 
 /** The subset of the gateway client the discovery probe needs. */
 export interface LiteLLMDiscoveryClient {
-  /** `GET /model/info` raw JSON body, or `undefined` on any failure. */
-  fetchLiteLLMModelInfo(token?: CancellationToken): Promise<unknown>;
+  /** `GET /model/info` — the raw JSON body, or how the request failed. */
+  fetchLiteLLMModelInfo(token?: CancellationToken): Promise<LiteLLMModelInfoProbe>;
+}
+
+/**
+ * One output-channel line describing the probe verdict. A negative verdict
+ * is cached for the config generation, so the line has to tell the user what
+ * to do about it: a 401/403 or a timeout on a real LiteLLM proxy is fixed by
+ * correcting the key or running Refresh Models, whereas a 404 is just a
+ * different backend.
+ */
+export function describeProbeOutcome(
+  probe: LiteLLMModelInfoProbe,
+  parsed: Map<string, LiteLLMModelInfo> | undefined
+): string {
+  if (parsed) {
+    return `LiteLLM proxy detected (/model/info); using its metadata for ${parsed.size} model(s)`;
+  }
+  switch (probe.kind) {
+    case 'ok':
+      return 'Server answered /model/info but not in LiteLLM\'s shape; skipping LiteLLM model discovery';
+    case 'http':
+      return probe.status === 401 || probe.status === 403
+        ? `/model/info answered ${probe.status}; skipping LiteLLM model discovery. If this is a LiteLLM proxy, check the API key has access, then run Refresh Models.`
+        : `Server is not LiteLLM (/model/info answered ${probe.status}); skipping LiteLLM model discovery`;
+    case 'unreachable':
+      return `/model/info probe failed (${probe.reason}); skipping LiteLLM model discovery until Refresh Models or a config change`;
+    default: {
+      const _never: never = probe;
+      throw new Error(`Unexpected probe outcome: ${String(_never)}`);
+    }
+  }
 }
 
 interface LiteLLMDiscoveryDeps {
@@ -143,19 +206,18 @@ export class LiteLLMDiscovery implements ModelDiscovery {
     if (!this.infoByModelName) {
       const load = this.deps.client
         .fetchLiteLLMModelInfo(token)
-        .then(parseLiteLLMModelInfoResponse)
-        .catch(() => undefined)
-        .then((parsed) => {
+        .catch((error: unknown): LiteLLMModelInfoProbe => ({
+          kind: 'unreachable',
+          reason: error instanceof Error ? error.message : String(error),
+        }))
+        .then((probe) => {
+          const parsed = probe.kind === 'ok' ? parseLiteLLMModelInfoResponse(probe.body) : undefined;
           if (!parsed && token?.isCancellationRequested) {
             // The fetch was aborted, not answered — don't cache the verdict.
             if (this.infoByModelName === load) { this.infoByModelName = undefined; }
             return undefined;
           }
-          this.deps.log(
-            parsed
-              ? `LiteLLM proxy detected (/model/info); using its metadata for ${parsed.size} model(s)`
-              : 'Server is not LiteLLM (/model/info probe failed); skipping LiteLLM model discovery'
-          );
+          this.deps.log(describeProbeOutcome(probe, parsed));
           return parsed;
         });
       this.infoByModelName = load;

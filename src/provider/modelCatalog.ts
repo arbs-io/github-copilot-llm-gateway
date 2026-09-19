@@ -10,9 +10,9 @@ import { buildModelInfo } from '../models/modelInfoBuilder';
 interface ModelCatalogDeps {
   client: GatewayClient;
   /**
-   * Backend-native metadata probe (currently Ollama `/api/show`). Detects the
-   * backend once per config generation and answers instantly for servers it
-   * doesn't recognise.
+   * Backend-native metadata probe (Ollama `/api/show`, LiteLLM `/model/info`).
+   * Detects the backend once per config generation and answers instantly for
+   * servers it doesn't recognise.
    */
   discovery: ModelDiscovery;
   getConfig: () => GatewayConfig;

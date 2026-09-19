@@ -203,6 +203,26 @@ describe('ModelCatalog discovery integration', () => {
     assert.equal(h.catalog.getContextForModel('a'), 65536);
   });
 
+  test('a discovered separate output window keeps the full input ceiling (issue #100)', async () => {
+    const h = makeCatalog({
+      fetchModels: () => Promise.resolve(modelsResponse({ id: 'a' })),
+      discovery: fixedDiscovery({
+        a: {
+          contextLength: 200000,
+          contextSource: 'LiteLLM max_input_tokens (/model/info)',
+          maxOutputTokens: 64000,
+          separateOutputWindow: true,
+          samplerParams: {},
+        },
+      }),
+    });
+    const { models } = await h.catalog.getOrFetchModels(fakeToken());
+    assert.equal(models[0].maxInputTokens, 200000);
+    assert.equal(models[0].maxOutputTokens, 64000);
+    assert.equal(h.catalog.getContextForModel('a'), 200000);
+    assert.equal(h.catalog.hasSeparateOutputWindow(chatInfo('a')), true);
+  });
+
   test('exposes discovered sampler params to the chat path', async () => {
     const h = makeCatalog({
       fetchModels: () => Promise.resolve(modelsResponse({ id: 'a' })),

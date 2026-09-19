@@ -193,7 +193,7 @@ Configure the extension through VS Code Settings (`Ctrl+,` / `Cmd+,`) → search
 For each model the gateway uses, in priority order:
 
 1. **Your `modelContextWindows` override**, if one matches the model id (exactly or via a `*` wildcard — same matching rules as `perModelOptions`).
-2. **What the backend's native API reports**, for backends the gateway recognises: Ollama's `/api/show` (`num_ctx`, else the trained context length) and LiteLLM's `/model/info` (`max_input_tokens` / `max_output_tokens` per deployment). Detection is one short-timeout probe per server; other backends skip this step at no cost.
+2. **What the backend's native API reports**, for backends the gateway recognises: Ollama's `/api/show` (`num_ctx`, else the trained context length) and LiteLLM's `/model/info` (`max_input_tokens` / `max_output_tokens` per deployment). Detection costs one short-timeout probe per backend per server, cached until the next refresh; other backends simply skip this step.
 3. **What the server reports** in `/v1/models`: `max_model_len` (vLLM, and LiteLLM when it fronts one), `max_input_tokens` (LiteLLM), `context_length` (Ollama, LocalAI, LM Studio), `context_window`, or llama.cpp's `meta.n_ctx` / `meta.n_ctx_train`. LiteLLM's separate `max_output_tokens` is also used as the model's output ceiling.
 4. **`defaultMaxTokens`** as the last resort — it is a fallback, not an override, so it has no effect on models whose server already reports a size.
 
