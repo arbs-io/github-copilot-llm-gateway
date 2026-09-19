@@ -164,7 +164,9 @@ export class ChatRequestHandler {
     );
     log(`Message count: ${messages.length}`);
 
-    const modelName = friendlyModelName(model.id);
+    // Prefer the picker name so a collision-disambiguated model (issue #99)
+    // reads the same in the status bar as in the chat input.
+    const modelName = model.name || friendlyModelName(model.id);
     this.deps.onRequestState({ kind: 'start', modelId: model.id, modelName });
 
     const config = this.deps.getConfig();

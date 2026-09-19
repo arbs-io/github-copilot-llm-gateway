@@ -5,6 +5,8 @@ import {
   describeModel,
   friendlyModelName,
   inferModelFamily,
+  modelIdPrefix,
+  resolveDisplayNames,
 } from '../modelDisplay';
 
 describe('friendlyModelName', () => {
@@ -22,12 +24,65 @@ describe('friendlyModelName', () => {
   });
 });
 
+describe('modelIdPrefix', () => {
+  test('returns the Hugging-Face org or aggregator upstream', () => {
+    assert.equal(modelIdPrefix('Qwen/Qwen3-8B'), 'Qwen');
+    assert.equal(modelIdPrefix('openrouter/deepseek-chat'), 'openrouter');
+  });
+
+  test('keeps nested prefixes intact', () => {
+    assert.equal(modelIdPrefix('openrouter/deepseek/deepseek-chat'), 'openrouter/deepseek');
+  });
+
+  test('is undefined for unprefixed, leading-slash and trailing-slash ids', () => {
+    assert.equal(modelIdPrefix('gpt-4o-mini'), undefined);
+    assert.equal(modelIdPrefix('/gpt-4o-mini'), undefined);
+    assert.equal(modelIdPrefix('foo/'), undefined);
+  });
+});
+
+describe('resolveDisplayNames', () => {
+  test('uses friendly names when they are unique', () => {
+    const names = resolveDisplayNames(['Qwen/Qwen3-8B', 'ollama/llama3', 'gpt-4o-mini']);
+    assert.equal(names.get('Qwen/Qwen3-8B'), 'Qwen3-8B');
+    assert.equal(names.get('ollama/llama3'), 'llama3');
+    assert.equal(names.get('gpt-4o-mini'), 'gpt-4o-mini');
+  });
+
+  test('keeps the full id for models whose friendly names collide (issue #99)', () => {
+    const names = resolveDisplayNames([
+      'deepseek/deepseek-chat',
+      'openrouter/deepseek-chat',
+      'ollama/llama3',
+    ]);
+    assert.equal(names.get('deepseek/deepseek-chat'), 'deepseek/deepseek-chat');
+    assert.equal(names.get('openrouter/deepseek-chat'), 'openrouter/deepseek-chat');
+    assert.equal(names.get('ollama/llama3'), 'llama3');
+  });
+
+  test('an unprefixed id colliding with a prefixed one keeps both full', () => {
+    const names = resolveDisplayNames(['deepseek-chat', 'openrouter/deepseek-chat']);
+    assert.equal(names.get('deepseek-chat'), 'deepseek-chat');
+    assert.equal(names.get('openrouter/deepseek-chat'), 'openrouter/deepseek-chat');
+  });
+
+  test('returns an empty map for an empty list', () => {
+    assert.equal(resolveDisplayNames([]).size, 0);
+  });
+});
+
 describe('inferModelFamily', () => {
   test('detects known families', () => {
     assert.equal(inferModelFamily('Qwen/Qwen3-8B'), 'qwen');
     assert.equal(inferModelFamily('meta-llama/Llama-3.1-8B-Instruct'), 'llama');
     assert.equal(inferModelFamily('mistralai/Mistral-7B'), 'mistral');
     assert.equal(inferModelFamily('deepseek-ai/DeepSeek-V3'), 'deepseek');
+  });
+
+  test('matches against the whole id, so an aggregator prefix does not hide the family', () => {
+    assert.equal(inferModelFamily('ollama/qwen3:8b'), 'qwen');
+    assert.equal(inferModelFamily('openrouter/deepseek-chat'), 'deepseek');
+    assert.equal(inferModelFamily('bedrock/mistral-large'), 'mistral');
   });
 
   test('falls back to llm-gateway for unknown models', () => {

@@ -6,7 +6,12 @@
  */
 
 import { OpenAIModel } from '../api/types';
-import { describeModel, friendlyModelName, inferModelFamily } from './modelDisplay';
+import {
+  describeModel,
+  friendlyModelName,
+  inferModelFamily,
+  modelIdPrefix,
+} from './modelDisplay';
 import {
   hasSeparateOutputWindow,
   serverReportedContext,
@@ -20,6 +25,18 @@ import { TOKEN_CONSTANTS } from '../chat/tokenBudget';
  * which is what visually groups all of our models under the provider.
  */
 export const PROVIDER_DETAIL_LABEL = 'LLM Gateway';
+
+/**
+ * Picker `detail` for a model id. Ids with a prefix — a Hugging-Face org on
+ * vLLM, or the upstream provider behind an aggregator like LiteLLM / Open
+ * WebUI — append it to the provider label (`LLM Gateway · openrouter`), which
+ * is what VS Code documents `detail` for: distinguishing models of the same
+ * name. Unprefixed ids keep the plain label (issue #99).
+ */
+export function providerDetailLabel(modelId: string): string {
+  const prefix = modelIdPrefix(modelId);
+  return prefix ? `${PROVIDER_DETAIL_LABEL} · ${prefix}` : PROVIDER_DETAIL_LABEL;
+}
 
 /**
  * Cost-tier multiplier surfaced to Copilot Chat. Set to 0 so BYOK / self-hosted
@@ -37,6 +54,12 @@ export interface BuildModelInfoInput {
   readonly defaultMaxTokens: number;
   readonly defaultMaxOutputTokens: number;
   readonly capabilities: ModelCapabilities;
+  /**
+   * Picker `name` chosen with the whole model list in view (see
+   * `resolveDisplayNames`), so ids that share a friendly name can keep their
+   * full id. Defaults to the friendly (post-slash) name.
+   */
+  readonly displayName?: string;
   /**
    * User-configured context window for this model (from the
    * `modelContextWindows` setting). Wins over everything else.
@@ -101,6 +124,7 @@ export function buildModelInfo({
   defaultMaxTokens,
   defaultMaxOutputTokens,
   capabilities,
+  displayName,
   contextOverride,
   discoveredContext,
 }: BuildModelInfoInput): BuildModelInfoResult {
@@ -141,17 +165,17 @@ export function buildModelInfo({
 
   const description = describeModel(model);
   const tooltip = description ? `${model.id} — ${description}` : model.id;
-  const friendlyName = friendlyModelName(model.id);
+  const name = displayName ?? friendlyModelName(model.id);
 
   const info: BuildModelInfoResult['info'] = {
     id: model.id,
-    name: friendlyName,
+    name,
     family: inferModelFamily(model.id),
-    version: friendlyName,
+    version: name,
     maxInputTokens,
     maxOutputTokens,
     capabilities,
-    detail: PROVIDER_DETAIL_LABEL,
+    detail: providerDetailLabel(model.id),
     tooltip,
     isUserSelectable: true,
     multiplierNumeric: PROVIDER_MULTIPLIER_NUMERIC,

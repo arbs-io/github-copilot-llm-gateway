@@ -4,7 +4,7 @@ import { GatewayConfig } from '../config/gatewayConfig';
 import { DiscoveredModelInfo, ModelDiscovery } from '../discovery/types';
 import { TOKEN_CONSTANTS } from '../chat/tokenBudget';
 import { parseContextOverflowError, resolveContextWindowOverride } from '../chat/contextWindow';
-import { dedupeModels } from '../models/modelDisplay';
+import { dedupeModels, resolveDisplayNames } from '../models/modelDisplay';
 import { buildModelInfo } from '../models/modelInfoBuilder';
 
 interface ModelCatalogDeps {
@@ -192,6 +192,10 @@ export class ModelCatalog {
     const nextDiscoveredByModelId = new Map<string, DiscoveredModelInfo>();
     const nextSeparateOutputWindowModelIds = new Set<string>();
 
+    // Picker names need the whole list: ids that share a friendly name keep
+    // their full id so they stay distinguishable (issue #99).
+    const displayNames = resolveDisplayNames(uniqueModels.map((m) => m.id));
+
     const config = this.deps.getConfig();
     const models = await Promise.all(
       uniqueModels.map(async (model) => {
@@ -222,6 +226,7 @@ export class ModelCatalog {
             imageInput: config.enableImageInput && (discovered?.visionSupported ?? true),
             toolCalling: config.enableToolCalling && (discovered?.toolsSupported ?? true),
           },
+          displayName: displayNames.get(model.id),
           contextOverride,
           discoveredContext: discovered?.contextLength,
         });

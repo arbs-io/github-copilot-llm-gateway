@@ -23,6 +23,50 @@ export function friendlyModelName(id: string): string {
   return id;
 }
 
+/**
+ * The part of a model id that {@link friendlyModelName} strips: the
+ * Hugging-Face org (`Qwen/Qwen3-8B` → `Qwen`) or, behind an aggregator such
+ * as LiteLLM or Open WebUI, the upstream provider (`openrouter/deepseek-chat`
+ * → `openrouter`). `undefined` when the id has no prefix. Surfaced in the
+ * picker so two upstreams serving the same model name stay distinguishable
+ * (issue #99).
+ */
+export function modelIdPrefix(id: string): string | undefined {
+  const slash = id.lastIndexOf('/');
+  if (slash <= 0 || slash >= id.length - 1) {
+    return undefined;
+  }
+  return id.slice(0, slash);
+}
+
+/**
+ * Choose the picker `name` for every model in a list. Names are the friendly
+ * (post-slash) form, except where two ids would collapse to the same friendly
+ * name — `deepseek/deepseek-chat` and `openrouter/deepseek-chat` behind
+ * LiteLLM — in which case those models keep their full id so the chat
+ * input's model button, which shows only `name`, still tells them apart
+ * (issue #99).
+ */
+export function resolveDisplayNames(ids: readonly string[]): Map<string, string> {
+  const idsByFriendlyName = new Map<string, string[]>();
+  for (const id of ids) {
+    const friendly = friendlyModelName(id);
+    const group = idsByFriendlyName.get(friendly);
+    if (group) {
+      group.push(id);
+    } else {
+      idsByFriendlyName.set(friendly, [id]);
+    }
+  }
+  const names = new Map<string, string>();
+  for (const [friendly, group] of idsByFriendlyName) {
+    for (const id of group) {
+      names.set(id, group.length > 1 ? id : friendly);
+    }
+  }
+  return names;
+}
+
 const FAMILY_KEYWORDS: Array<{ match: RegExp; family: string }> = [
   { match: /qwen/i, family: 'qwen' },
   { match: /llama/i, family: 'llama' },
