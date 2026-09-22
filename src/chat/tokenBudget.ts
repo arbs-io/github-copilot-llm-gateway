@@ -21,6 +21,7 @@ export const TOKEN_CONSTANTS = {
   ADJUST_TOKEN_BUFFER: 256,
   INPUT_OVERHEAD_RATIO: 1.2,
   CHARS_PER_TOKEN: 4,
+  IMAGE_INPUT_TOKENS: 800,
 } as const;
 
 export type TokenLogger = (message: string) => void;
@@ -68,16 +69,42 @@ export function estimateTextTokens(text: string): number {
   return Math.ceil(text.length / TOKEN_CONSTANTS.CHARS_PER_TOKEN);
 }
 
+function isImageUrlPart(contentPart: unknown): boolean {
+  if (typeof contentPart !== 'object' || contentPart === null) {
+    return false;
+  }
+  return (contentPart as { type?: unknown }).type === 'image_url';
+}
+
+function serializeContentForTokenBudget(content: TokenEstimableMessage['content']): string {
+  if (content === null || content === undefined) {
+    return '';
+  }
+  if (typeof content === 'string') {
+    return content;
+  }
+  if (!Array.isArray(content)) {
+    return JSON.stringify(content);
+  }
+  if (!content.some(isImageUrlPart)) {
+    return JSON.stringify(content);
+  }
+
+  return content
+    .map((part) => {
+      if (isImageUrlPart(part)) {
+        return ' '.repeat(TOKEN_CONSTANTS.IMAGE_INPUT_TOKENS * TOKEN_CONSTANTS.CHARS_PER_TOKEN);
+      }
+      return JSON.stringify(part);
+    })
+    .join('');
+}
+
 /**
  * Estimate tokens for an OpenAI-format message, including tool_calls if present.
  */
 export function estimateMessageTokens(message: TokenEstimableMessage): number {
-  let text = '';
-  if (typeof message.content === 'string') {
-    text = message.content;
-  } else if (message.content) {
-    text = JSON.stringify(message.content);
-  }
+  let text = serializeContentForTokenBudget(message.content);
   if (message.tool_calls) {
     text += JSON.stringify(message.tool_calls);
   }
@@ -85,13 +112,13 @@ export function estimateMessageTokens(message: TokenEstimableMessage): number {
 }
 
 /**
- * Concatenate all message text into a single string, mirroring what we'd send
- * on the wire. Used as input to {@link estimateTextTokens}.
+ * Concatenate message content into a token-budget representation. Image parts
+ * use a fixed-size placeholder so data URLs do not inflate the estimate.
  */
 export function buildInputText(messages: readonly TokenEstimableMessage[]): string {
   return messages
     .map((m) => {
-      let text = typeof m.content === 'string' ? m.content : JSON.stringify(m.content ?? '');
+      let text = serializeContentForTokenBudget(m.content);
       if (m.tool_calls) {
         text += JSON.stringify(m.tool_calls);
       }

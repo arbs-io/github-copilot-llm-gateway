@@ -6,7 +6,7 @@ import {
   NormalizedPart,
   NormalizedRole,
 } from '../chat/messageConverter';
-import { estimateTextTokens } from '../chat/tokenBudget';
+import { estimateTextTokens, TOKEN_CONSTANTS } from '../chat/tokenBudget';
 import { OpenAIMessage } from '../api/types';
 
 type Logger = (message: string) => void;
@@ -118,7 +118,7 @@ export function countMessageTokens(message: vscode.LanguageModelChatMessage): nu
     } else if (part instanceof vscode.LanguageModelDataPart) {
       // Images don't map cleanly to tokens — reserve a conservative fixed
       // overhead so multimodal requests aren't massively undercounted.
-      tokens += 800;
+      tokens += TOKEN_CONSTANTS.IMAGE_INPUT_TOKENS;
     }
   }
   return tokens;

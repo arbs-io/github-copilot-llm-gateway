@@ -34,6 +34,19 @@ describe('estimateMessageTokens', () => {
     assert.equal(estimateMessageTokens(msg), Math.ceil(serialized.length / 4));
   });
 
+  test('uses a fixed budget for image URL parts', () => {
+    const msg = {
+      content: [
+        {
+          type: 'image_url',
+          image_url: { url: `data:image/png;base64,${'a'.repeat(1_400_000)}` },
+        },
+      ],
+    };
+
+    assert.equal(estimateMessageTokens(msg), TOKEN_CONSTANTS.IMAGE_INPUT_TOKENS);
+  });
+
   test('adds tool_calls contribution', () => {
     const msg = { content: 'x', tool_calls: [{ id: '1', name: 'foo' }] };
     const expected = Math.ceil(('x' + JSON.stringify(msg.tool_calls)).length / 4);
@@ -58,6 +71,16 @@ describe('buildInputText', () => {
   test('serializes array content', () => {
     const messages = [{ content: [{ type: 'text', text: 'x' }] }];
     assert.equal(buildInputText(messages), JSON.stringify(messages[0].content));
+  });
+
+  test('uses a fixed-size placeholder for image URL parts', () => {
+    const imageDataUrl = `data:image/png;base64,${'a'.repeat(1_400_000)}`;
+    const inputText = buildInputText([
+      { content: [{ type: 'image_url', image_url: { url: imageDataUrl } }] },
+    ]);
+
+    assert.equal(estimateTextTokens(inputText), TOKEN_CONSTANTS.IMAGE_INPUT_TOKENS);
+    assert.equal(inputText.includes(imageDataUrl), false);
   });
 
   test('appends tool_calls to message text', () => {
@@ -107,6 +130,26 @@ describe('truncateMessagesToFit', () => {
       result.map((m) => m.content),
       ['first', 'last']
     );
+  });
+
+  test('retains an image message when its fixed budget fits', () => {
+    const messages = [
+      { role: 'system', content: 's' },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'what is in this image?' },
+          {
+            type: 'image_url',
+            image_url: { url: `data:image/png;base64,${'a'.repeat(1_400_000)}` },
+          },
+        ],
+      },
+    ];
+
+    const result = truncateMessagesToFit(messages, 850);
+
+    assert.deepEqual(result, messages);
   });
 
   test('does not retain a tool result without its assistant tool call', () => {
