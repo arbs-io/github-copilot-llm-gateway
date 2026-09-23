@@ -420,7 +420,7 @@ export class ChatRequestHandler {
         function: {
           name: tool.name,
           description: tool.description,
-          parameters: tool.inputSchema,
+          parameters: tool.inputSchema || { type: 'object', properties: {} },
         },
       };
     });
