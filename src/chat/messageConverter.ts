@@ -111,6 +111,22 @@ export function encodeImageAsDataUrl(part: { mimeType: string; data: Uint8Array 
   return `data:${part.mimeType};base64,${base64Data}`;
 }
 
+/**
+ * Whether a data part's MIME type carries plain text. Chat attachments such as
+ * text pasted from outside the editor arrive as `LanguageModelDataPart`s with
+ * a `text/*` or JSON type rather than as text parts (issue #109). Control
+ * parts like `cache_control` use non-MIME markers and are not matched.
+ */
+export function isTextMimeType(mimeType: string): boolean {
+  const type = mimeType.split(';')[0].trim().toLowerCase();
+  return type.startsWith('text/') || type === 'application/json' || type.endsWith('+json');
+}
+
+/** Decode a text data part's bytes as UTF-8. */
+export function decodeTextData(data: Uint8Array): string {
+  return Buffer.from(data).toString('utf8');
+}
+
 /** Wire-level pieces accumulated while walking one message's parts. */
 interface ConvertedParts {
   readonly toolResults: OpenAIMessage[];
@@ -163,12 +179,20 @@ function appendToolCallPart(
   });
 }
 
-function appendImagePart(
+function appendDataPart(
   acc: ConvertedParts,
+  role: NormalizedRole,
   part: Extract<NormalizedPart, { kind: 'image' }>,
   options: MessageConverterOptions,
   log: ConverterLogger
 ): void {
+  // Text attachments are sent as text whatever enableImageInput says —
+  // that setting only governs image payloads.
+  if (isTextMimeType(part.mimeType)) {
+    appendTextPart(acc, role, { kind: 'text', value: decodeTextData(part.data) });
+    log(`  Added text data part: mimeType=${part.mimeType}, size=${part.data.length} bytes`);
+    return;
+  }
   if (!options.enableImageInput) {
     log(
       `  Skipping data part: mimeType=${part.mimeType}, size=${part.data.length} bytes. (Please enable github.copilot.llm-gateway.enableImageInput in settings)`
@@ -176,6 +200,7 @@ function appendImagePart(
     return;
   }
   if (!part.mimeType.startsWith('image/')) {
+    log(`  Skipping unsupported data part: mimeType=${part.mimeType}, size=${part.data.length} bytes`);
     return;
   }
   const url = encodeImageAsDataUrl(part);
@@ -195,6 +220,7 @@ function appendImagePart(
  *  - tool result parts are flattened into their own `{ role: 'tool' }` messages
  *
  * When `enableImageInput` is false, image parts are dropped with a log line.
+ * Data parts with a text MIME type (e.g. pasted attachments) become text.
  */
 export function convertMessage(
   message: NormalizedMessage,
@@ -215,7 +241,7 @@ export function convertMessage(
         appendToolCallPart(acc, part, log);
         break;
       case 'image':
-        appendImagePart(acc, part, options, log);
+        appendDataPart(acc, message.role, part, options, log);
         break;
       case 'unknown':
         // Unknown parts are silently dropped; the classifier has already logged.

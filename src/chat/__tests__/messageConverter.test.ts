@@ -5,12 +5,27 @@ import {
   convertMessages,
   encodeImageAsDataUrl,
   flattenToolResultContent,
+  isTextMimeType,
   NormalizedMessage,
   NormalizedPart,
 } from '../messageConverter';
 
 const WITH_IMAGES = { enableImageInput: true };
 const WITHOUT_IMAGES = { enableImageInput: false };
+
+describe('isTextMimeType', () => {
+  test('accepts text and JSON types, including parameters and case', () => {
+    for (const t of ['text/plain', 'Text/Markdown', 'text/plain; charset=utf-8', 'application/json', 'application/ld+json']) {
+      assert.equal(isTextMimeType(t), true, t);
+    }
+  });
+
+  test('rejects images, binaries and control markers', () => {
+    for (const t of ['image/png', 'application/pdf', 'application/octet-stream', 'cache_control', 'stateful_marker', '']) {
+      assert.equal(isTextMimeType(t), false, t);
+    }
+  });
+});
 
 const textMsg = (role: 'user' | 'assistant', value: string): NormalizedMessage => ({
   role,
@@ -167,8 +182,44 @@ describe('convertMessage', () => {
       role: 'user',
       parts: [{ kind: 'image', mimeType: 'application/pdf', data: new Uint8Array([1]) }],
     };
-    const result = convertMessage(msg, WITH_IMAGES);
+    const logs: string[] = [];
+    const result = convertMessage(msg, WITH_IMAGES, (m) => logs.push(m));
     assert.equal(result.length, 0);
+    assert.ok(logs.some((m) => m.includes('Skipping unsupported data part: mimeType=application/pdf')));
+  });
+
+  test('sends text data parts (pasted attachments) as text', () => {
+    const pasted = 'line one\nline two — ünïcode';
+    const msg: NormalizedMessage = {
+      role: 'user',
+      parts: [
+        { kind: 'text', value: 'explain this:' },
+        { kind: 'image', mimeType: 'text/plain', data: new TextEncoder().encode(pasted) },
+      ],
+    };
+    const result = convertMessage(msg, WITH_IMAGES);
+    assert.equal(result.length, 1);
+    assert.deepEqual(result[0].content, [
+      { type: 'text', text: 'explain this:' },
+      { type: 'text', text: pasted },
+    ]);
+  });
+
+  test('sends text data parts even when enableImageInput is false', () => {
+    const msg: NormalizedMessage = {
+      role: 'user',
+      parts: [{ kind: 'image', mimeType: 'application/json', data: new TextEncoder().encode('{"a":1}') }],
+    };
+    const result = convertMessage(msg, WITHOUT_IMAGES);
+    assert.deepEqual(result[0].content, [{ type: 'text', text: '{"a":1}' }]);
+  });
+
+  test('does not treat cache_control data parts as text', () => {
+    const msg: NormalizedMessage = {
+      role: 'user',
+      parts: [{ kind: 'image', mimeType: 'cache_control', data: new TextEncoder().encode('ephemeral') }],
+    };
+    assert.equal(convertMessage(msg, WITH_IMAGES).length, 0);
   });
 
   test('converts assistant tool call part into assistant message with tool_calls', () => {

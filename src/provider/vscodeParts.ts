@@ -1,7 +1,9 @@
 import * as vscode from 'vscode';
 import {
   convertMessage,
+  decodeTextData,
   flattenToolResultContent,
+  isTextMimeType,
   NormalizedMessage,
   NormalizedPart,
   NormalizedRole,
@@ -115,6 +117,8 @@ export function countMessageTokens(message: vscode.LanguageModelChatMessage): nu
     } else if (part instanceof vscode.LanguageModelToolResultPart) {
       const body = flattenToolResultContent(part.content);
       tokens += estimateTextTokens(body);
+    } else if (part instanceof vscode.LanguageModelDataPart && isTextMimeType(part.mimeType)) {
+      tokens += estimateTextTokens(decodeTextData(part.data));
     } else if (part instanceof vscode.LanguageModelDataPart) {
       // Images don't map cleanly to tokens — reserve a conservative fixed
       // overhead so multimodal requests aren't massively undercounted.
