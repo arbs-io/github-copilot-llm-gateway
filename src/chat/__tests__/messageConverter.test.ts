@@ -214,6 +214,36 @@ describe('convertMessage', () => {
     assert.deepEqual(result[0].content, [{ type: 'text', text: '{"a":1}' }]);
   });
 
+  test('strips a UTF-8 byte-order mark from text data parts', () => {
+    const msg: NormalizedMessage = {
+      role: 'user',
+      parts: [{ kind: 'image', mimeType: 'text/plain', data: new Uint8Array([0xef, 0xbb, 0xbf, 0x68, 0x69]) }],
+    };
+    assert.deepEqual(convertMessage(msg, WITH_IMAGES)[0].content, [{ type: 'text', text: 'hi' }]);
+  });
+
+  test('skips and logs empty text data parts', () => {
+    const logs: string[] = [];
+    const msg: NormalizedMessage = {
+      role: 'user',
+      parts: [{ kind: 'image', mimeType: 'text/plain', data: new Uint8Array() }],
+    };
+    assert.equal(convertMessage(msg, WITH_IMAGES, (m) => logs.push(m)).length, 0);
+    assert.ok(logs.some((m) => m.includes('Skipping empty text data part')));
+    assert.ok(!logs.some((m) => m.includes('Added text data part')));
+  });
+
+  test('logs unsupported data parts without suggesting enableImageInput', () => {
+    const logs: string[] = [];
+    const msg: NormalizedMessage = {
+      role: 'user',
+      parts: [{ kind: 'image', mimeType: 'application/pdf', data: new Uint8Array([1]) }],
+    };
+    convertMessage(msg, WITHOUT_IMAGES, (m) => logs.push(m));
+    assert.ok(logs.some((m) => m.includes('Skipping unsupported data part')));
+    assert.ok(!logs.some((m) => m.includes('enableImageInput')));
+  });
+
   test('does not treat cache_control data parts as text', () => {
     const msg: NormalizedMessage = {
       role: 'user',

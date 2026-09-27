@@ -96,6 +96,10 @@ function classifyPartDuckTyped(part: unknown, log: Logger): NormalizedPart {
       input: anyPart.input,
     };
   }
+  if (typeof anyPart.mimeType === 'string' && anyPart.data instanceof Uint8Array) {
+    log(`  Found data part (duck-typed): mimeType=${anyPart.mimeType}`);
+    return { kind: 'image', mimeType: anyPart.mimeType, data: anyPart.data };
+  }
   return { kind: 'unknown' };
 }
 

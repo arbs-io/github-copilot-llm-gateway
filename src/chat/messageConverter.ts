@@ -124,7 +124,8 @@ export function isTextMimeType(mimeType: string): boolean {
 
 /** Decode a text data part's bytes as UTF-8. */
 export function decodeTextData(data: Uint8Array): string {
-  return Buffer.from(data).toString('utf8');
+  // TextDecoder strips a leading byte-order mark, which Buffer would keep.
+  return new TextDecoder().decode(data);
 }
 
 /** Wire-level pieces accumulated while walking one message's parts. */
@@ -189,18 +190,23 @@ function appendDataPart(
   // Text attachments are sent as text whatever enableImageInput says —
   // that setting only governs image payloads.
   if (isTextMimeType(part.mimeType)) {
-    appendTextPart(acc, role, { kind: 'text', value: decodeTextData(part.data) });
+    const value = decodeTextData(part.data);
+    if (value.length === 0) {
+      log(`  Skipping empty text data part: mimeType=${part.mimeType}`);
+      return;
+    }
+    appendTextPart(acc, role, { kind: 'text', value });
     log(`  Added text data part: mimeType=${part.mimeType}, size=${part.data.length} bytes`);
+    return;
+  }
+  if (!part.mimeType.startsWith('image/')) {
+    log(`  Skipping unsupported data part: mimeType=${part.mimeType}, size=${part.data.length} bytes`);
     return;
   }
   if (!options.enableImageInput) {
     log(
       `  Skipping data part: mimeType=${part.mimeType}, size=${part.data.length} bytes. (Please enable github.copilot.llm-gateway.enableImageInput in settings)`
     );
-    return;
-  }
-  if (!part.mimeType.startsWith('image/')) {
-    log(`  Skipping unsupported data part: mimeType=${part.mimeType}, size=${part.data.length} bytes`);
     return;
   }
   const url = encodeImageAsDataUrl(part);
