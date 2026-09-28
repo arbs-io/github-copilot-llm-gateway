@@ -78,6 +78,7 @@ export class ConfigService {
       inlineCompletionMaxPrefixChars: config.get<number>('inlineCompletionMaxPrefixChars', 4000),
       inlineCompletionMaxSuffixChars: config.get<number>('inlineCompletionMaxSuffixChars', 1000),
       showReplyTokenUsage: config.get<boolean>('showReplyTokenUsage', false),
+      sessionAffinityHeader: config.get<string>('sessionAffinityHeader', '') ?? '',
       usageEndpoint: config.get<string>('usageEndpoint', DEFAULT_USAGE_ENDPOINT) ?? '',
       usageRefreshInterval: config.get<number>(
         'usageRefreshInterval',

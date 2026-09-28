@@ -275,6 +275,30 @@ Copilot Chat's native **Thinking Effort** submenu only appears for the reasoning
 
 `reasoning_effort` is understood by vLLM, LiteLLM, and most OpenAI-compatible servers. For backends that name the parameter differently, set `github.copilot.llm-gateway.thinkingEffortParameter` (e.g. `reasoning_budget` for llama.cpp) and use **Custom…** to enter the value. Anything more exotic — llama.cpp's `chat_template_kwargs: { "enable_thinking": false }` for Qwen3, or Ollama's `think: false` — can still be set directly in `perModelOptions`.
 
+### Session Affinity (Sticky Sessions)
+
+When a load-balancing gateway such as LiteLLM schedules a model across several backend runners, consecutive requests of one conversation can land on different runners. Each hop re-uploads the whole prompt and re-computes its prefill, and any server-side KV cache from earlier turns is lost. Session affinity pins a conversation to the runner that served its first request.
+
+The extension sends the conversation identifier supplied by Copilot Chat in a configurable HTTP header on every chat request. To enable it, set the header name your gateway expects:
+
+```json
+"github.copilot.llm-gateway.sessionAffinityHeader": "x-litellm-session-id"
+```
+
+On the LiteLLM proxy, enable the matching router pre-call check in `config.yaml`:
+
+```yaml
+router_settings:
+  routing_strategy: simple-shuffle # any strategy works; affinity narrows candidates first
+  optional_pre_call_checks:
+    - session_affinity
+  deployment_affinity_ttl_seconds: 3600 # idle TTL between turns
+```
+
+The proxy reads the session id from the `x-litellm-session-id` header and routes every request of that conversation to the same deployment; the `x-litellm-model-id` response header shows which one served each request. If the pinned deployment is in cooldown, the request is served by another runner and the session returns to its pin once the runner recovers. When running multiple proxy replicas, configure Redis so pins are shared.
+
+The feature fails closed: when the installed Copilot Chat build doesn't supply a conversation identifier, no header is sent and routing is unchanged. Inline completions don't carry a session id and are unaffected. Leave the setting empty to disable.
+
 ### Tool Calling Settings
 
 These settings control how the extension handles agentic features like code editing and file operations.

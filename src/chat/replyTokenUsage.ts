@@ -52,6 +52,22 @@ export function extractToolResultIds(messages: readonly OpenAIMessage[]): string
 }
 
 /**
+ * Build the session-affinity headers for one chat request. Returns an empty
+ * object when the feature is off (no header name configured) or when the
+ * request carries no usable conversation identity — the caller then sends
+ * nothing and the gateway routes as usual (fail closed, per the
+ * {@link extractReplyIdentity} contract above).
+ */
+export function sessionAffinityHeaders(
+  headerName: string,
+  replyIdentity: ReplyIdentity | undefined
+): Record<string, string> {
+  const name = headerName.trim();
+  if (!name || !replyIdentity) { return {}; }
+  return { [name]: replyIdentity.conversationId };
+}
+
+/**
  * One round's server-reported usage, plus whether each field was actually
  * present on the wire (as opposed to defaulted to 0 by normalization). A
  * known zero is valid data; an absent field is unknown.

@@ -39,6 +39,7 @@ function fakeConfig(overrides: Partial<GatewayConfig> = {}): GatewayConfig {
     inlineCompletionMaxPrefixChars: 4000,
     inlineCompletionMaxSuffixChars: 1000,
     showReplyTokenUsage: true,
+    sessionAffinityHeader: '',
 
     usageEndpoint: '/v1/usage/current',
 

@@ -317,7 +317,8 @@ export class GatewayClient {
    */
   public async *streamChatCompletion(
     request: OpenAIChatCompletionRequest,
-    cancellationToken: vscode.CancellationToken
+    cancellationToken: vscode.CancellationToken,
+    extraHeaders?: Record<string, string>
   ): AsyncGenerator<GatewayStreamChunk, void, unknown> {
     const url = `${normalizeBaseUrl(this.config.serverUrl)}/v1/chat/completions`;
     const accumulator = new ToolCallAccumulator();
@@ -326,7 +327,7 @@ export class GatewayClient {
     try {
       const response = await fetch(url, {
         method: 'POST',
-        headers: { ...this.getHeaders(), 'Content-Type': 'application/json' },
+        headers: { ...this.getHeaders(), ...(extraHeaders ?? {}), 'Content-Type': 'application/json' },
         // `stream_options.include_usage` tells OpenAI-compatible servers to
         // emit a final SSE chunk containing `usage` totals once the model
         // finishes. We forward that to VS Code's chat context-window widget

@@ -262,6 +262,12 @@
           "description": "Maximum characters of context after the cursor to send for inline completions. Lower values reduce latency but provide less context.",
           "order": 20
         },
+        "github.copilot.llm-gateway.sessionAffinityHeader": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Name of an HTTP header that carries a per-conversation session id, sent on every chat-completions request so the gateway can pin the conversation to one backend deployment (avoids re-prefilling the prompt when load balancing moves sessions between runners). For LiteLLM set `x-litellm-session-id` and enable `session_affinity` in the proxy's `router_settings.optional_pre_call_checks`. The id is the conversation identifier supplied by Copilot Chat; when the installed build doesn't provide one, no header is sent and routing is unchanged. Leave empty to disable.",
+          "order": 22
+        },
         "github.copilot.llm-gateway.showReplyTokenUsage": {
           "type": "boolean",
           "default": false,

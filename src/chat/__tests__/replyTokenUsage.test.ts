@@ -5,6 +5,7 @@ import {
   extractReplyIdentity,
   extractToolResultIds,
   formatReplyTokenSummaryLine,
+  sessionAffinityHeaders,
   stripReplyTokenSummary,
   ReplyIdentity,
 } from '../replyTokenUsage';
@@ -55,6 +56,28 @@ describe('extractReplyIdentity', () => {
       extractReplyIdentity({ _conversationId: 'abc', _telemetryTurn: Number.MAX_SAFE_INTEGER + 1 }),
       undefined
     );
+  });
+});
+
+describe('sessionAffinityHeaders', () => {
+  test('maps the configured header name to the conversation id', () => {
+    assert.deepEqual(sessionAffinityHeaders('x-litellm-session-id', ID), {
+      'x-litellm-session-id': 'conv-1',
+    });
+  });
+
+  test('trims the configured header name', () => {
+    const headers = sessionAffinityHeaders('  x-litellm-session-id  ', ID);
+    assert.deepEqual(headers, { 'x-litellm-session-id': 'conv-1' });
+  });
+
+  test('returns nothing when the feature is off (empty header name)', () => {
+    assert.deepEqual(sessionAffinityHeaders('', ID), {});
+    assert.deepEqual(sessionAffinityHeaders('   ', ID), {});
+  });
+
+  test('returns nothing when the request has no conversation identity (fail closed)', () => {
+    assert.deepEqual(sessionAffinityHeaders('x-litellm-session-id', undefined), {});
   });
 });
 

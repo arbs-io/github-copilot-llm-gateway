@@ -209,6 +209,7 @@ describe('streamChatCompletion reasoning field handling (issue #59)', () => {
     inlineCompletionMaxPrefixChars: 4000,
     inlineCompletionMaxSuffixChars: 2000,
     showReplyTokenUsage: true,
+    sessionAffinityHeader: '',
 
     usageEndpoint: '/v1/usage/current',
 
@@ -281,6 +282,96 @@ describe('streamChatCompletion reasoning field handling (issue #59)', () => {
       'data: [DONE]',
     ]);
     assert.deepEqual(reasoning, ['thought']);
+  });
+});
+
+describe('streamChatCompletion extraHeaders (session affinity)', () => {
+  const config = {
+    serverUrl: 'http://localhost:11434',
+    requestTimeout: 5000,
+    defaultMaxTokens: 4096,
+    defaultMaxOutputTokens: 4096,
+    enableImageInput: false,
+    enableToolCalling: true,
+    parallelToolCalling: false,
+    agentTemperature: 0,
+    verboseLogging: false,
+    customHeaders: {},
+    extraModelOptions: {},
+    perModelOptions: {},
+    modelContextWindows: {},
+    enableInlineCompletion: false,
+    inlineCompletionModel: '',
+    inlineCompletionMaxTokens: 128,
+    inlineCompletionDebounce: 300,
+    inlineCompletionTimeout: 5000,
+    inlineCompletionMaxPrefixChars: 4000,
+    inlineCompletionMaxSuffixChars: 2000,
+    showReplyTokenUsage: false,
+    sessionAffinityHeader: '',
+    usageEndpoint: '/v1/usage/current',
+    usageRefreshInterval: 300,
+    usageWarningPercent: 20,
+    usageCriticalPercent: 0,
+    thinkingEffortParameter: 'reasoning_effort',
+  } as unknown as import('../../config/gatewayConfig').GatewayConfig;
+
+  const token = {
+    isCancellationRequested: false,
+    onCancellationRequested: () => ({ dispose: () => undefined }),
+  } as unknown as import('vscode').CancellationToken;
+
+  function sseResponse(): Response {
+    const encoder = new TextEncoder();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(
+          encoder.encode(
+            'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'
+          )
+        );
+        controller.close();
+      },
+    });
+    return new Response(body, {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream' },
+    });
+  }
+
+  async function captureRequestHeaders(
+    extraHeaders?: Record<string, string>
+  ): Promise<Headers | undefined> {
+    const originalFetch = globalThis.fetch;
+    let capturedHeaders: Headers | undefined;
+    globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+      capturedHeaders = new Headers(init?.headers);
+      return sseResponse();
+    }) as typeof fetch;
+    try {
+      const client = new GatewayClient(config);
+      for await (const _chunk of client.streamChatCompletion(
+        { model: 'm', messages: [] },
+        token,
+        extraHeaders
+      )) {
+        break;
+      }
+      return capturedHeaders;
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  }
+
+  test('merges extraHeaders into the request headers', async () => {
+    const headers = await captureRequestHeaders({ 'x-litellm-session-id': 'conv-123' });
+    assert.equal(headers?.get('x-litellm-session-id'), 'conv-123');
+    assert.equal(headers?.get('Content-Type'), 'application/json');
+  });
+
+  test('sends no affinity header when extraHeaders is omitted', async () => {
+    const headers = await captureRequestHeaders();
+    assert.equal(headers?.get('x-litellm-session-id'), null);
   });
 });
 

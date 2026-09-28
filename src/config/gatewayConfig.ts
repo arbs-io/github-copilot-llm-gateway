@@ -53,6 +53,14 @@ export interface GatewayConfig {
    */
   showReplyTokenUsage: boolean;
   /**
+   * Name of an HTTP header carrying a per-conversation session id, sent on
+   * every chat-completions request so gateways can pin the conversation to
+   * one backend (LiteLLM `session_affinity` reads `x-litellm-session-id`).
+   * Empty disables the header. See replyTokenUsage.ts for the identity
+   * source and its fail-closed contract.
+   */
+  sessionAffinityHeader: string;
+  /**
    * Path of the gateway's daily-usage endpoint, joined onto `serverUrl`.
    * Empty disables the status-bar quota display. Servers without the
    * endpoint answer 404 once and the display stays hidden.
