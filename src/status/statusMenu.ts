@@ -143,19 +143,23 @@ function connectionItems(snapshot: StatusSnapshot): StatusMenuItem[] {
   }
 }
 
+/** `3 requests · 13k tokens (12k in, 8k cached / 800 out)`, or a placeholder before the first request. */
+function sessionUsageDescription(stats: StatusSnapshot['sessionStats']): string {
+  if (stats.requestCount === 0) {
+    return 'No requests yet';
+  }
+  const requests = `${stats.requestCount} request${stats.requestCount === 1 ? '' : 's'}`;
+  const cached = stats.cachedTokens > 0 ? `, ${formatTokenCount(stats.cachedTokens)} cached` : '';
+  return `${requests} · ${formatTokenCount(stats.totalTokens)} tokens (${formatTokenCount(stats.promptTokens)} in${cached} / ${formatTokenCount(stats.completionTokens)} out)`;
+}
+
 function sessionItems(snapshot: StatusSnapshot): StatusMenuItem[] {
   const stats = snapshot.sessionStats;
   const items: StatusMenuItem[] = [];
 
-  const requests = `${stats.requestCount} request${stats.requestCount === 1 ? '' : 's'}`;
   items.push({
     label: '$(graph) Session usage',
-    description:
-      stats.requestCount === 0
-        ? 'No requests yet'
-        : `${requests} · ${formatTokenCount(stats.totalTokens)} tokens (${formatTokenCount(stats.promptTokens)} in${
-            stats.cachedTokens > 0 ? `, ${formatTokenCount(stats.cachedTokens)} cached` : ''
-          } / ${formatTokenCount(stats.completionTokens)} out)`,
+    description: sessionUsageDescription(stats),
     action: { kind: 'none' },
   });
 

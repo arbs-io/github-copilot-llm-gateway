@@ -806,7 +806,7 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 function firstNonNegativeNumber(...values: unknown[]): number | undefined {
   for (const value of values) {
     if (typeof value === 'number' && Number.isFinite(value)) {
-      return value < 0 ? 0 : value;
+      return Math.max(0, value);
     }
   }
   return undefined;
