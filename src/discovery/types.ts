@@ -42,6 +42,11 @@ export interface DiscoveredModelInfo {
   readonly visionSupported?: boolean;
   /** Whether the model supports tool calling; `undefined` = server didn't say. */
   readonly toolsSupported?: boolean;
+  /**
+   * Whether the model is a reasoning ("thinking") model; `undefined` = server
+   * didn't say. Decides whether the model picker offers Thinking Effort.
+   */
+  readonly reasoningSupported?: boolean;
 }
 
 /**

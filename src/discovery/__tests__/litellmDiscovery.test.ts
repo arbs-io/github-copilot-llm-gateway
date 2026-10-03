@@ -30,6 +30,7 @@ describe('parseLiteLLMModelInfoResponse', () => {
           max_output_tokens: 64000,
           supports_vision: true,
           supports_function_calling: true,
+          supports_reasoning: true,
         }),
         entry('local-qwen', { max_input_tokens: 32768, max_output_tokens: 32768 }),
       ],
@@ -43,10 +44,12 @@ describe('parseLiteLLMModelInfoResponse', () => {
       maxOutputTokens: 64000,
       supportsVision: true,
       supportsFunctionCalling: true,
+      supportsReasoning: true,
     });
     const qwen = parsed.get('local-qwen');
     assert.equal(qwen?.supportsVision, undefined);
     assert.equal(qwen?.supportsFunctionCalling, undefined);
+    assert.equal(qwen?.supportsReasoning, undefined);
   });
 
   test('skips wildcard deployments', () => {

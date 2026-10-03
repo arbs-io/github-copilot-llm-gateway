@@ -8,6 +8,7 @@ import {
 } from '../modelInfoBuilder';
 import { TOKEN_CONSTANTS } from '../../chat/tokenBudget';
 import { OpenAIModel } from '../../api/types';
+import { buildThinkingEffortSchema } from '../../config/thinkingEffort';
 
 function baseModel(overrides: Partial<OpenAIModel> = {}): OpenAIModel {
   return {
@@ -476,5 +477,29 @@ describe('buildModelInfo capabilities pass-through', () => {
       capabilities: {},
     });
     assert.deepEqual(info.capabilities, {});
+  });
+});
+
+describe('buildModelInfo configuration schema', () => {
+  test('omits configurationSchema when none is given', () => {
+    const { info } = buildModelInfo({
+      model: baseModel(),
+      defaultMaxTokens: 8192,
+      defaultMaxOutputTokens: 2048,
+      capabilities: {},
+    });
+    assert.equal('configurationSchema' in info, false);
+  });
+
+  test('passes a Thinking Effort schema through to the picker info', () => {
+    const schema = buildThinkingEffortSchema('medium');
+    const { info } = buildModelInfo({
+      model: baseModel(),
+      defaultMaxTokens: 8192,
+      defaultMaxOutputTokens: 2048,
+      capabilities: {},
+      configurationSchema: schema,
+    });
+    assert.deepEqual(info.configurationSchema, schema);
   });
 });

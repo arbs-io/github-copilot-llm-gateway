@@ -39,6 +39,24 @@ declare module 'vscode' {
     detail?: string;
     isUserSelectable?: boolean;
     multiplierNumeric?: number;
+    /**
+     * Per-model options VS Code renders in the model picker (`chatProvider`
+     * proposed API). A `navigation`-group property — Thinking Effort — shows
+     * as a primary control. VS Code reads it from any provider; older builds
+     * ignore it.
+     */
+    configurationSchema?: {
+      readonly properties?: { readonly [key: string]: Record<string, unknown> };
+    };
+  }
+
+  /**
+   * The user's resolved values for the model's `configurationSchema`
+   * (schema defaults with their picker choices applied), passed on every
+   * request (`chatProvider` proposed API). Undefined on builds without it.
+   */
+  interface ProvideLanguageModelChatResponseOptions {
+    readonly modelConfiguration?: { readonly [key: string]: unknown };
   }
 
   /**

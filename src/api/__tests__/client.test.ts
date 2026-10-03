@@ -40,6 +40,7 @@ const streamTestConfig = {
   usageWarningPercent: 20,
   usageCriticalPercent: 0,
   thinkingEffortParameter: 'reasoning_effort',
+  thinkingEffortPicker: 'auto',
 } as unknown as import('../../config/gatewayConfig').GatewayConfig;
 
 const streamTestToken = {

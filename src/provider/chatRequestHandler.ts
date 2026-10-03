@@ -4,6 +4,7 @@ import { OpenAIChatCompletionRequest, OpenAIMessage } from '../api/types';
 import { buildChatRequest, OpenAIToolDefinition, ToolChoice } from '../api/requestBuilder';
 import { GatewayConfig } from '../config/gatewayConfig';
 import { resolvePerModelOptions } from '../config/perModelOptions';
+import { applyModelConfigurationEffort } from '../config/thinkingEffort';
 import { REQUEST_SAMPLER_KEYS } from '../discovery/types';
 import {
   TOKEN_CONSTANTS,
@@ -288,9 +289,18 @@ export class ChatRequestHandler {
         toolChoice: hasTools ? this.mapToolChoice(options.toolMode) : undefined,
         parallelToolCalls: hasTools ? config.parallelToolCalling : undefined,
         extraOptions: {
-          ...discoveredSamplerOptions(discovered),
-          ...config.extraModelOptions,
-          ...perModel,
+          // A Thinking Effort chosen in the model picker overrides the
+          // settings-based value (including removing it for "Server
+          // Default"); only Copilot's own per-request options rank higher.
+          ...applyModelConfigurationEffort(
+            {
+              ...discoveredSamplerOptions(discovered),
+              ...config.extraModelOptions,
+              ...perModel,
+            },
+            options.modelConfiguration,
+            config.thinkingEffortParameter
+          ),
           ...options.modelOptions,
         },
       });

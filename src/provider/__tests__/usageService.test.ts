@@ -32,6 +32,7 @@ function fakeConfig(overrides: Partial<GatewayConfig> = {}): GatewayConfig {
     showReplyTokenUsage: false,
     sessionAffinityHeader: '',
     thinkingEffortParameter: 'reasoning_effort',
+    thinkingEffortPicker: 'auto',
     usageEndpoint: '/v1/usage/current',
     usageRefreshInterval: 300,
     usageWarningPercent: 20,

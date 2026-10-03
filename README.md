@@ -287,9 +287,21 @@ The merge order, lowest to highest priority, is: sampler defaults discovered fro
 
 ### Thinking Effort
 
-Copilot Chat's native **Thinking Effort** submenu only appears for the reasoning models Copilot itself knows about; VS Code's provider API gives third-party models no way to join it. The **GitHub Copilot LLM Gateway: Set Thinking Effort** command (also linked from the status-bar popup) fills the gap: pick a model, then **Off / Low / Medium / High** or a custom value, and the choice is written to `perModelOptions` as `reasoning_effort` for that model id. **Off** removes the key so the server's own default applies.
+Gateway models can show VS Code's native **Thinking Effort** control in the chat model picker, the same one Copilot's built-in reasoning models use. Choose **Server Default**, **Low**, **Medium** or **High** per model; the choice is sent as `reasoning_effort` on every request to that model, and **Server Default** sends nothing so the server's own default applies.
 
-`reasoning_effort` is understood by vLLM, LiteLLM, and most OpenAI-compatible servers. For backends that name the parameter differently, set `github.copilot.llm-gateway.thinkingEffortParameter` (e.g. `reasoning_budget` for llama.cpp) and use **Custom…** to enter the value. Anything more exotic — llama.cpp's `chat_template_kwargs: { "enable_thinking": false }` for Qwen3, or Ollama's `think: false` — can still be set directly in `perModelOptions`.
+Which models show the control is set by `github.copilot.llm-gateway.thinkingEffortPicker`:
+
+| Value | Models with the Thinking Effort control |
+| --- | --- |
+| `auto` (default) | Models the server reports as reasoning models (Ollama's `thinking` capability, LiteLLM's `supports_reasoning`), plus any model that already has a thinking effort set in `perModelOptions` |
+| `all` | Every gateway model. Use this with servers that don't report reasoning support, such as vLLM and llama.cpp. |
+| `off` | None |
+
+The **GitHub Copilot LLM Gateway: Set Thinking Effort** command (also in the status-bar menu) works with every VS Code version and every model: pick a model, then **Off / Low / Medium / High** or a custom value, and the choice is written to `perModelOptions` for that model id. The picker starts from that value, so the two stay in step; once you choose a level in the picker, the picker's choice takes precedence for that model.
+
+`reasoning_effort` is understood by vLLM, LiteLLM, and most OpenAI-compatible servers. For backends that name the parameter differently, set `github.copilot.llm-gateway.thinkingEffortParameter` (e.g. `reasoning_budget` for llama.cpp); both the picker and the command use it, and the command's **Custom…** option accepts any value. Anything more exotic — llama.cpp's `chat_template_kwargs: { "enable_thinking": false }` for Qwen3, or Ollama's `think: false` — can still be set directly in `perModelOptions`.
+
+> The picker control relies on a VS Code model-picker API that is still marked as proposed. VS Code builds that don't support it simply don't show the control; the command keeps working either way.
 
 ### Session Affinity (Sticky Sessions)
 
@@ -574,7 +586,7 @@ Access from the Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`):
 | **GitHub Copilot LLM Gateway: Refresh Models**         | Re-probe the inference server and refresh the picker                |
 | **GitHub Copilot LLM Gateway: Edit Custom Headers**    | Add, edit, or remove custom HTTP headers (stored in secret storage) |
 | **GitHub Copilot LLM Gateway: Show Output Log**        | Open the extension's output channel                                 |
-| **GitHub Copilot LLM Gateway: Set Thinking Effort**    | Pick a model and a reasoning-effort level to send with every request |
+| **GitHub Copilot LLM Gateway: Set Thinking Effort**    | Pick a model and a reasoning-effort level to send with every request (also available in the model picker) |
 | **GitHub Copilot LLM Gateway: Refresh Daily Usage**    | Re-fetch the gateway's daily token quota shown in the status bar    |
 | **GitHub Copilot LLM Gateway: Show Status Menu**       | Open the status menu (same as clicking the status-bar entry)        |
 

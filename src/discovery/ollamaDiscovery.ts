@@ -110,6 +110,7 @@ export function toDiscoveredModelInfo(info: OllamaModelInfo): DiscoveredModelInf
     samplerParams: info.params,
     visionSupported: info.capabilities?.includes('vision'),
     toolsSupported: info.capabilities?.includes('tools'),
+    reasoningSupported: info.capabilities?.includes('thinking'),
   };
 }
 

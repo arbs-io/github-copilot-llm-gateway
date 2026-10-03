@@ -6,6 +6,29 @@ import { TOKEN_CONSTANTS } from '../chat/tokenBudget';
 import { parseContextOverflowError, resolveContextWindowOverride } from '../chat/contextWindow';
 import { dedupeModels, resolveDisplayNames } from '../models/modelDisplay';
 import { buildModelInfo } from '../models/modelInfoBuilder';
+import {
+  ModelConfigurationSchema,
+  buildThinkingEffortSchema,
+  resolveThinkingEffort,
+  shouldOfferThinkingEffortPicker,
+} from '../config/thinkingEffort';
+
+/**
+ * The Thinking Effort picker schema for one model, or `undefined` when the
+ * picker mode says this model shouldn't get one. The schema's default
+ * mirrors what `perModelOptions` currently sends, so the picker shows the
+ * level the Set Thinking Effort command chose.
+ */
+function thinkingEffortSchemaFor(
+  modelId: string,
+  discovered: DiscoveredModelInfo | undefined,
+  config: GatewayConfig
+): ModelConfigurationSchema | undefined {
+  const current = resolveThinkingEffort(modelId, config.perModelOptions, config.thinkingEffortParameter);
+  return shouldOfferThinkingEffortPicker(config.thinkingEffortPicker, discovered?.reasoningSupported, current)
+    ? buildThinkingEffortSchema(current)
+    : undefined;
+}
 
 interface ModelCatalogDeps {
   client: GatewayClient;
@@ -232,6 +255,7 @@ export class ModelCatalog {
           discoveredContext: discovered?.contextLength,
           discoveredMaxOutput: discovered?.maxOutputTokens,
           discoveredOutputWindowIsSeparate: discovered?.separateOutputWindow,
+          configurationSchema: thinkingEffortSchemaFor(model.id, discovered, config),
         });
         nextContextByModelId.set(model.id, totalContext);
         if (outputWindowIsSeparate) {
@@ -263,7 +287,7 @@ export class ModelCatalog {
             value === undefined ? 'unknown' : String(value);
           const samplerKeys = Object.keys(discovered.samplerParams).join(', ') || '(none)';
           log(
-            `  Model ${model.id}: discovered vision=${capability(discovered.visionSupported)}, tools=${capability(discovered.toolsSupported)}; params: ${samplerKeys}`
+            `  Model ${model.id}: discovered vision=${capability(discovered.visionSupported)}, tools=${capability(discovered.toolsSupported)}, reasoning=${capability(discovered.reasoningSupported)}; params: ${samplerKeys}`
           );
         }
 

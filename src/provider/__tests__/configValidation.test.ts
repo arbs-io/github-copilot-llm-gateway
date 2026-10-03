@@ -43,6 +43,7 @@ function baseConfig(overrides: Partial<GatewayConfig> = {}): GatewayConfig {
 
     usageCriticalPercent: 0,
     thinkingEffortParameter: 'reasoning_effort',
+    thinkingEffortPicker: 'auto',
     ...overrides,
   };
 }

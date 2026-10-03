@@ -88,13 +88,20 @@ describe('toDiscoveredModelInfo', () => {
     assert.match(discovered.contextSource ?? '', /num_ctx/);
     assert.equal(discovered.toolsSupported, true);
     assert.equal(discovered.visionSupported, false);
+    assert.equal(discovered.reasoningSupported, false);
     assert.equal(discovered.samplerParams.top_p, 0.8);
   });
 
-  test('absent capabilities -> both verdicts unknown', () => {
+  test('the thinking capability marks a reasoning model', () => {
+    const discovered = toDiscoveredModelInfo({ params: {}, capabilities: ['completion', 'thinking'] });
+    assert.equal(discovered.reasoningSupported, true);
+  });
+
+  test('absent capabilities -> every verdict unknown', () => {
     const discovered = toDiscoveredModelInfo({ trainedContext: 8192, params: {} });
     assert.equal(discovered.visionSupported, undefined);
     assert.equal(discovered.toolsSupported, undefined);
+    assert.equal(discovered.reasoningSupported, undefined);
     assert.match(discovered.contextSource ?? '', /trained context/);
   });
 });

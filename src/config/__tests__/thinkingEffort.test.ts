@@ -3,8 +3,14 @@ import assert from 'node:assert/strict';
 import {
   DEFAULT_THINKING_EFFORT_PARAMETER,
   THINKING_EFFORT_PRESETS,
+  MODEL_CONFIG_EFFORT_KEY,
+  SERVER_DEFAULT_EFFORT,
+  applyModelConfigurationEffort,
   applyThinkingEffort,
+  buildThinkingEffortSchema,
+  parseThinkingEffortPickerMode,
   resolveThinkingEffort,
+  shouldOfferThinkingEffortPicker,
 } from '../thinkingEffort';
 import { resolvePerModelOptions } from '../perModelOptions';
 
@@ -100,5 +106,98 @@ describe('resolveThinkingEffort', () => {
 
   test('uses reasoning_effort by default', () => {
     assert.equal(DEFAULT_THINKING_EFFORT_PARAMETER, 'reasoning_effort');
+  });
+});
+
+describe('parseThinkingEffortPickerMode', () => {
+  test('accepts the known modes and defaults anything else to auto', () => {
+    assert.equal(parseThinkingEffortPickerMode('all'), 'all');
+    assert.equal(parseThinkingEffortPickerMode('off'), 'off');
+    assert.equal(parseThinkingEffortPickerMode('auto'), 'auto');
+    assert.equal(parseThinkingEffortPickerMode('ALL'), 'auto');
+    assert.equal(parseThinkingEffortPickerMode(undefined), 'auto');
+  });
+});
+
+describe('shouldOfferThinkingEffortPicker', () => {
+  test('auto offers it for reasoning models and models with an effort already set', () => {
+    assert.equal(shouldOfferThinkingEffortPicker('auto', true, undefined), true);
+    assert.equal(shouldOfferThinkingEffortPicker('auto', undefined, 'high'), true);
+    assert.equal(shouldOfferThinkingEffortPicker('auto', false, 'low'), true);
+  });
+
+  test('auto skips models with no reasoning signal', () => {
+    assert.equal(shouldOfferThinkingEffortPicker('auto', undefined, undefined), false);
+    assert.equal(shouldOfferThinkingEffortPicker('auto', false, undefined), false);
+  });
+
+  test('all and off ignore the model', () => {
+    assert.equal(shouldOfferThinkingEffortPicker('all', false, undefined), true);
+    assert.equal(shouldOfferThinkingEffortPicker('off', true, 'high'), false);
+  });
+});
+
+describe('buildThinkingEffortSchema', () => {
+  test('offers Server Default plus the presets as a navigation-group picker', () => {
+    const property = buildThinkingEffortSchema(undefined).properties[MODEL_CONFIG_EFFORT_KEY];
+    assert.deepEqual(property.enum, [SERVER_DEFAULT_EFFORT, 'low', 'medium', 'high']);
+    assert.deepEqual(property.enumItemLabels, ['Server Default', 'Low', 'Medium', 'High']);
+    assert.equal(property.enumDescriptions.length, property.enum.length);
+    assert.equal(property.default, SERVER_DEFAULT_EFFORT);
+    assert.equal(property.group, 'navigation');
+    assert.equal(property.title, 'Thinking Effort');
+  });
+
+  test('defaults to the effort perModelOptions currently sends', () => {
+    const property = buildThinkingEffortSchema('high').properties[MODEL_CONFIG_EFFORT_KEY];
+    assert.equal(property.default, 'high');
+    assert.equal(property.enum.length, 4);
+  });
+
+  test('keeps a custom value as an extra option instead of dropping it', () => {
+    const property = buildThinkingEffortSchema('minimal').properties[MODEL_CONFIG_EFFORT_KEY];
+    assert.equal(property.default, 'minimal');
+    assert.equal(property.enum[property.enum.length - 1], 'minimal');
+    assert.equal(property.enumItemLabels[property.enumItemLabels.length - 1], 'minimal');
+  });
+});
+
+describe('applyModelConfigurationEffort', () => {
+  const base = { temperature: 0.6, reasoning_effort: 'low' };
+
+  test('leaves options unchanged without a picker value', () => {
+    assert.deepEqual(applyModelConfigurationEffort(base, undefined), base);
+    assert.deepEqual(applyModelConfigurationEffort(base, {}), base);
+    assert.deepEqual(applyModelConfigurationEffort(base, { reasoningEffort: 3 }), base);
+    assert.deepEqual(applyModelConfigurationEffort(base, ['high']), base);
+  });
+
+  test('the picker value overrides the settings value', () => {
+    assert.deepEqual(applyModelConfigurationEffort(base, { reasoningEffort: 'high' }), {
+      temperature: 0.6,
+      reasoning_effort: 'high',
+    });
+  });
+
+  test('Server Default removes the parameter entirely', () => {
+    assert.deepEqual(applyModelConfigurationEffort(base, { reasoningEffort: SERVER_DEFAULT_EFFORT }), {
+      temperature: 0.6,
+    });
+  });
+
+  test('writes to the configured parameter name', () => {
+    const result = applyModelConfigurationEffort({}, { reasoningEffort: 'medium' }, 'reasoning_budget');
+    assert.deepEqual(result, { reasoning_budget: 'medium' });
+  });
+
+  test('keeps an unchanged numeric value as a number', () => {
+    const result = applyModelConfigurationEffort({ reasoning_budget: 1024 }, { reasoningEffort: '1024' }, 'reasoning_budget');
+    assert.deepEqual(result, { reasoning_budget: 1024 });
+  });
+
+  test('does not mutate its input', () => {
+    const input = { reasoning_effort: 'low' };
+    applyModelConfigurationEffort(input, { reasoningEffort: SERVER_DEFAULT_EFFORT });
+    assert.deepEqual(input, { reasoning_effort: 'low' });
   });
 });

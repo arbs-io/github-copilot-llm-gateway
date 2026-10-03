@@ -49,6 +49,7 @@ function fakeConfig(overrides: Partial<GatewayConfig> = {}): GatewayConfig {
 
     usageCriticalPercent: 0,
     thinkingEffortParameter: 'reasoning_effort',
+    thinkingEffortPicker: 'auto',
     ...overrides,
   };
 }
@@ -428,5 +429,59 @@ describe('ModelCatalog.learnContextSizeFromError', () => {
     assert.equal(h.catalog.resolveModelMaxContext(model), 4096);
     h.catalog.clearLearnedContexts();
     assert.equal(h.catalog.resolveModelMaxContext(model), 8192);
+  });
+});
+
+describe('ModelCatalog Thinking Effort picker', () => {
+  function discoveryWith(byId: Record<string, DiscoveredModelInfo>): ModelDiscovery {
+    return { reset: () => undefined, enrichModel: (id) => Promise.resolve(byId[id]) };
+  }
+
+  async function schemaDefaults(config: GatewayConfig, discovery?: ModelDiscovery): Promise<Record<string, unknown>> {
+    const h = makeCatalog({
+      fetchModels: () => Promise.resolve(modelsResponse({ id: 'thinker' }, { id: 'plain' }, { id: 'tuned' })),
+      config,
+      discovery,
+    });
+    const { models } = await h.catalog.getOrFetchModels(fakeToken());
+    const out: Record<string, unknown> = {};
+    for (const m of models) {
+      const schema = (m as { configurationSchema?: { properties: Record<string, { default: unknown }> } }).configurationSchema;
+      out[m.id] = schema?.properties.reasoningEffort.default;
+    }
+    return out;
+  }
+
+  const discovery = discoveryWith({
+    thinker: { samplerParams: {}, reasoningSupported: true },
+    plain: { samplerParams: {}, reasoningSupported: false },
+  });
+
+  test('auto: reasoning models and models with a configured effort get the picker', async () => {
+    const defaults = await schemaDefaults(
+      fakeConfig({ perModelOptions: { tuned: { reasoning_effort: 'high' } } }),
+      discovery
+    );
+    assert.deepEqual(defaults, { thinker: 'default', plain: undefined, tuned: 'high' });
+  });
+
+  test('all: every model gets the picker', async () => {
+    const defaults = await schemaDefaults(fakeConfig({ thinkingEffortPicker: 'all' }), discovery);
+    assert.deepEqual(defaults, { thinker: 'default', plain: 'default', tuned: 'default' });
+  });
+
+  test('off: no model gets the picker', async () => {
+    const defaults = await schemaDefaults(
+      fakeConfig({ thinkingEffortPicker: 'off', perModelOptions: { tuned: { reasoning_effort: 'high' } } }),
+      discovery
+    );
+    assert.deepEqual(defaults, { thinker: undefined, plain: undefined, tuned: undefined });
+  });
+
+  test('reads the configured parameter name for the default', async () => {
+    const defaults = await schemaDefaults(
+      fakeConfig({ thinkingEffortParameter: 'reasoning_budget', perModelOptions: { tuned: { reasoning_budget: 512 } } })
+    );
+    assert.equal(defaults.tuned, '512');
   });
 });

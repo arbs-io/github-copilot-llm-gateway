@@ -60,6 +60,10 @@ const MODEL_AFFECTING_KEYS: readonly string[] = [
   'github.copilot.llm-gateway.enableToolCalling',
   'github.copilot.llm-gateway.customHeaders',
   'github.copilot.llm-gateway.modelContextWindows',
+  // The Thinking Effort picker schema is built per model from these.
+  'github.copilot.llm-gateway.perModelOptions',
+  'github.copilot.llm-gateway.thinkingEffortParameter',
+  'github.copilot.llm-gateway.thinkingEffortPicker',
 ];
 
 /**

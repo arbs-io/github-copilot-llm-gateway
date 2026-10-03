@@ -4,6 +4,8 @@
  * framework-supplied overrides — everything downstream reads this shape
  * instead of touching `vscode.workspace.getConfiguration` directly.
  */
+import type { ThinkingEffortPickerMode } from './thinkingEffort';
+
 export interface GatewayConfig {
   serverUrl: string;
   apiKey?: string;
@@ -25,6 +27,11 @@ export interface GatewayConfig {
    * change it for backends that name the parameter differently.
    */
   thinkingEffortParameter: string;
+  /**
+   * Which gateway models get VS Code's native Thinking Effort control in the
+   * chat model picker. See `ThinkingEffortPickerMode`.
+   */
+  thinkingEffortPicker: ThinkingEffortPickerMode;
   /**
    * Per-model context-window overrides (total tokens) keyed by model id /
    * wildcard. Wins over server-reported values — for servers that report the

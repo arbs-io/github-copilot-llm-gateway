@@ -1,13 +1,19 @@
 /**
  * Thinking-effort presets for gateway models (issue #82).
  *
- * Copilot Chat shows a native "Thinking Effort" submenu for the reasoning
- * models it knows about, but third-party providers can't hook into that
- * menu: the public `LanguageModelChatInformation` carries no reasoning
- * capability and there is no contribution point for the per-model context
- * menu. So the extension owns the setting instead — a command writes the
- * chosen level into `perModelOptions`, which already flows into the request
- * body, and this module holds the pure helpers behind that command.
+ * Two ways to choose a level, both landing on the same request-body key:
+ *
+ * - **Model picker (preferred).** A model that declares a
+ *   `configurationSchema` with a `navigation`-group property gets VS Code's
+ *   native "Thinking Effort" control in the chat model picker — the same
+ *   mechanism Copilot's built-in BYOK providers use. The user's choice comes
+ *   back on every request as `options.modelConfiguration`. This is part of the
+ *   `chatProvider` proposed API; VS Code reads the field from any provider, so
+ *   it works for us without enabling the proposal, and older builds simply
+ *   ignore it.
+ * - **Set Thinking Effort command (fallback).** Writes the chosen level into
+ *   `perModelOptions`, which already flows into the request body. It also
+ *   seeds the picker's default, so the two stay consistent.
  *
  * The request-body key defaults to OpenAI's `reasoning_effort` (honoured by
  * vLLM, LiteLLM, and most OpenAI-compatible servers) but is configurable via
@@ -88,5 +94,125 @@ export function applyThinkingEffort(
   } else {
     next[modelId] = entry;
   }
+  return next;
+}
+
+/**
+ * Key of the thinking-effort property in a model's `configurationSchema`, and
+ * so of the value VS Code hands back in `options.modelConfiguration`. Matches
+ * the key Copilot's built-in BYOK providers use.
+ */
+export const MODEL_CONFIG_EFFORT_KEY = 'reasoningEffort';
+
+/** Picker value meaning "don't send the parameter; let the server decide". */
+export const SERVER_DEFAULT_EFFORT = 'default';
+
+/**
+ * When the model picker offers Thinking Effort for a gateway model:
+ * - `auto`: models the server reports as reasoning-capable, plus any model
+ *   that already has an effort configured in `perModelOptions`.
+ * - `all`: every gateway model.
+ * - `off`: never (the Set Thinking Effort command still works).
+ */
+export type ThinkingEffortPickerMode = 'auto' | 'all' | 'off';
+
+export function parseThinkingEffortPickerMode(value: unknown): ThinkingEffortPickerMode {
+  return value === 'all' || value === 'off' ? value : 'auto';
+}
+
+/** Whether a model should get the Thinking Effort control in the picker. */
+export function shouldOfferThinkingEffortPicker(
+  mode: ThinkingEffortPickerMode,
+  reasoningSupported: boolean | undefined,
+  currentEffort: string | undefined
+): boolean {
+  if (mode === 'off') { return false; }
+  if (mode === 'all') { return true; }
+  return reasoningSupported === true || currentEffort !== undefined;
+}
+
+/**
+ * Structural copy of VS Code's proposed `LanguageModelConfigurationSchema`
+ * (the subset we emit), kept here so this module stays free of `vscode`.
+ */
+export interface ModelConfigurationSchema {
+  readonly properties: {
+    readonly [key: string]: {
+      readonly type: 'string';
+      readonly title: string;
+      readonly enum: readonly string[];
+      readonly enumItemLabels: readonly string[];
+      readonly enumDescriptions: readonly string[];
+      readonly default: string;
+      readonly group: 'navigation';
+    };
+  };
+}
+
+/**
+ * Build the `configurationSchema` that puts Thinking Effort in the model
+ * picker. The default is whatever `perModelOptions` currently sends for the
+ * model (so a level set with the command shows as selected), or "Server
+ * default" when nothing is set. A custom value the presets don't cover —
+ * `minimal`, or a numeric llama.cpp budget — is kept as an extra option
+ * rather than silently replaced.
+ */
+export function buildThinkingEffortSchema(currentEffort: string | undefined): ModelConfigurationSchema {
+  const values: string[] = [SERVER_DEFAULT_EFFORT];
+  const labels: string[] = ['Server Default'];
+  const descriptions: string[] = ["Don't send a thinking effort; use the server's default"];
+  for (const preset of THINKING_EFFORT_PRESETS) {
+    if (preset.value === undefined) { continue; }
+    values.push(preset.value);
+    labels.push(preset.label);
+    descriptions.push(preset.detail);
+  }
+  if (currentEffort !== undefined && !values.includes(currentEffort)) {
+    values.push(currentEffort);
+    labels.push(currentEffort);
+    descriptions.push('Custom value from perModelOptions');
+  }
+  return {
+    properties: {
+      [MODEL_CONFIG_EFFORT_KEY]: {
+        type: 'string',
+        title: 'Thinking Effort',
+        enum: values,
+        enumItemLabels: labels,
+        enumDescriptions: descriptions,
+        default: currentEffort ?? SERVER_DEFAULT_EFFORT,
+        group: 'navigation',
+      },
+    },
+  };
+}
+
+/**
+ * Apply the picker's thinking-effort choice (from
+ * `options.modelConfiguration`) to the merged request options. "Server
+ * default" removes the parameter; any other value sets it. Without a picker
+ * value — older VS Code, or a model with no schema — the options are returned
+ * unchanged, so `perModelOptions` keeps working on its own.
+ *
+ * When the value is unchanged from a numeric setting (a llama.cpp
+ * `reasoning_budget`, say), the original number is kept rather than replaced
+ * by its string form.
+ */
+export function applyModelConfigurationEffort(
+  options: Readonly<Record<string, unknown>>,
+  modelConfiguration: unknown,
+  parameter: string = DEFAULT_THINKING_EFFORT_PARAMETER
+): Record<string, unknown> {
+  const next: Record<string, unknown> = { ...options };
+  if (!isOptionsObject(modelConfiguration)) { return next; }
+  const value = modelConfiguration[MODEL_CONFIG_EFFORT_KEY];
+  if (typeof value !== 'string' || value.length === 0) { return next; }
+
+  if (value === SERVER_DEFAULT_EFFORT) {
+    delete next[parameter];
+    return next;
+  }
+  const existing = next[parameter];
+  next[parameter] = typeof existing === 'number' && String(existing) === value ? existing : value;
   return next;
 }

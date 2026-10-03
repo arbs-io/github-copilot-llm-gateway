@@ -18,6 +18,7 @@ import {
   serverReportedMaxOutput,
 } from '../chat/contextWindow';
 import { TOKEN_CONSTANTS } from '../chat/tokenBudget';
+import type { ModelConfigurationSchema } from '../config/thinkingEffort';
 
 /**
  * Grey right-hand label rendered next to the model in VS Code's chat model
@@ -89,6 +90,11 @@ export interface BuildModelInfoInput {
    * consulted when `discoveredContext` is in use.
    */
   readonly discoveredOutputWindowIsSeparate?: boolean;
+  /**
+   * Per-model options VS Code renders in the model picker (proposed
+   * `configurationSchema`), e.g. Thinking Effort. Omitted when undefined.
+   */
+  readonly configurationSchema?: ModelConfigurationSchema;
 }
 
 /**
@@ -110,6 +116,7 @@ export interface BuildModelInfoResult {
     readonly description?: string;
     readonly isUserSelectable: true;
     readonly multiplierNumeric: number;
+    readonly configurationSchema?: ModelConfigurationSchema;
   };
   readonly totalContext: number;
   readonly hasServerReportedContext: boolean;
@@ -148,6 +155,7 @@ export function buildModelInfo({
   discoveredContext,
   discoveredMaxOutput,
   discoveredOutputWindowIsSeparate,
+  configurationSchema,
 }: BuildModelInfoInput): BuildModelInfoResult {
   const serverContext = serverReportedContext(model);
   const serverMaxOutput = serverReportedMaxOutput(model);
@@ -212,6 +220,7 @@ export function buildModelInfo({
     isUserSelectable: true,
     multiplierNumeric: PROVIDER_MULTIPLIER_NUMERIC,
     ...(description ? { description } : {}),
+    ...(configurationSchema ? { configurationSchema } : {}),
   };
 
   return {

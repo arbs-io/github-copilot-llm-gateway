@@ -26,6 +26,8 @@ export interface LiteLLMModelInfo {
   readonly supportsVision?: boolean;
   /** `model_info.supports_function_calling`, when reported. */
   readonly supportsFunctionCalling?: boolean;
+  /** `supports_reasoning`: the deployment is a reasoning (thinking) model. */
+  readonly supportsReasoning?: boolean;
 }
 
 function positiveNumber(value: unknown): number | undefined {
@@ -63,6 +65,7 @@ function mergeDeployments(a: LiteLLMModelInfo, b: LiteLLMModelInfo): LiteLLMMode
     maxOutputTokens: minDefined(a.maxOutputTokens, b.maxOutputTokens),
     supportsVision: andDefined(a.supportsVision, b.supportsVision),
     supportsFunctionCalling: andDefined(a.supportsFunctionCalling, b.supportsFunctionCalling),
+    supportsReasoning: andDefined(a.supportsReasoning, b.supportsReasoning),
   };
 }
 
@@ -101,6 +104,7 @@ export function parseLiteLLMModelInfoResponse(
       maxOutputTokens: positiveNumber(info.max_output_tokens),
       supportsVision: optionalBoolean(info.supports_vision),
       supportsFunctionCalling: optionalBoolean(info.supports_function_calling),
+      supportsReasoning: optionalBoolean(info.supports_reasoning),
     };
     const existing = byName.get(modelName);
     byName.set(modelName, existing ? mergeDeployments(existing, parsed) : parsed);
@@ -130,6 +134,7 @@ export function toDiscoveredModelInfo(info: LiteLLMModelInfo): DiscoveredModelIn
     samplerParams: {},
     visionSupported: info.supportsVision,
     toolsSupported: info.supportsFunctionCalling,
+    reasoningSupported: info.supportsReasoning,
   };
 }
 

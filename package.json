@@ -203,7 +203,19 @@
         "github.copilot.llm-gateway.thinkingEffortParameter": {
           "type": "string",
           "default": "reasoning_effort",
-          "markdownDescription": "Request-body key written by the **Set Thinking Effort** command into `perModelOptions`. The default `reasoning_effort` (values `low` / `medium` / `high`) is understood by vLLM, LiteLLM, and most OpenAI-compatible servers; change it for backends that use a different name, e.g. `reasoning_budget` for llama.cpp.",
+          "markdownDescription": "Request-body key used for thinking effort, whether chosen in the chat model picker or with the **Set Thinking Effort** command. The default `reasoning_effort` (values `low` / `medium` / `high`) is understood by vLLM, LiteLLM, and most OpenAI-compatible servers; change it for backends that use a different name, e.g. `reasoning_budget` for llama.cpp.",
+          "order": 14
+        },
+        "github.copilot.llm-gateway.thinkingEffortPicker": {
+          "type": "string",
+          "enum": ["auto", "all", "off"],
+          "enumDescriptions": [
+            "Models the server reports as reasoning models (Ollama `thinking` capability, LiteLLM `supports_reasoning`), plus any model with a thinking effort already set in `perModelOptions`.",
+            "Every gateway model. Use this for servers that don't report reasoning support, such as vLLM or llama.cpp.",
+            "Never. The **Set Thinking Effort** command still works."
+          ],
+          "default": "auto",
+          "markdownDescription": "Which gateway models show VS Code's **Thinking Effort** control in the chat model picker. The choice is sent as `thinkingEffortParameter` on each request and overrides `perModelOptions` for that model; **Server Default** sends nothing.",
           "order": 14
         },
         "github.copilot.llm-gateway.modelContextWindows": {
