@@ -314,10 +314,7 @@ export class ChatRequestHandler {
         (round) => { roundUsage = round; },
         (id) => { emittedToolCallIds.push(id); }
       );
-      const affinityHeaders = sessionAffinityHeaders(config.sessionAffinityHeader, conversationIdentity);
-      if (config.sessionAffinityHeader.trim() && conversationIdentity && Object.keys(affinityHeaders).length === 0) {
-        log(`Session affinity: header name "${config.sessionAffinityHeader}" is not a valid or allowed header (or the conversation id is unusable); sending without it.`);
-      }
+      const affinityHeaders = this.buildAffinityHeaders(config.sessionAffinityHeader, conversationIdentity);
       const chunks = this.deps.client.streamChatCompletion(requestOptions, token, affinityHeaders);
       const stats = await streamResponse({
         chunks: chunks as AsyncIterable<StreamChunk>,
@@ -554,6 +551,21 @@ export class ChatRequestHandler {
         ? `Request (truncated): ${debugRequest.substring(0, DEBUG_REQUEST_MAX_LOG_LENGTH)}...`
         : `Request: ${debugRequest}`
     );
+  }
+
+  /**
+   * Session-affinity headers for one request, logging when a configured
+   * header has to be dropped so a bad setting isn't silently ignored.
+   */
+  private buildAffinityHeaders(
+    headerName: string,
+    identity: ReplyIdentity | undefined
+  ): Record<string, string> {
+    const headers = sessionAffinityHeaders(headerName, identity);
+    if (headerName.trim() && identity && Object.keys(headers).length === 0) {
+      this.deps.log(`Session affinity: header name "${headerName}" is not a valid or allowed header (or the conversation id is unusable); sending without it.`);
+    }
+    return headers;
   }
 
   /**

@@ -327,7 +327,7 @@ export class GatewayClient {
     try {
       const response = await fetch(url, {
         method: 'POST',
-        headers: { ...this.getHeaders(), ...(extraHeaders ?? {}), 'Content-Type': 'application/json' },
+        headers: { ...this.getHeaders(), ...extraHeaders, 'Content-Type': 'application/json' },
         // `stream_options.include_usage` tells OpenAI-compatible servers to
         // emit a final SSE chunk containing `usage` totals once the model
         // finishes. We forward that to VS Code's chat context-window widget
@@ -381,7 +381,8 @@ export class GatewayClient {
 
     while (true) {
       if (cancellationToken.isCancellationRequested) {
-        reader.cancel();
+        // Best effort: the stream may already be closed or errored.
+        reader.cancel().catch(() => undefined);
         return;
       }
 
