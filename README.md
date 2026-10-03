@@ -100,14 +100,15 @@ curl http://localhost:42069/v1/models
 
 ### Step 3: Configure the Extension
 
-1. Open VS Code **Settings** (`Ctrl+,` / `Cmd+,`)
-2. Search for **"Copilot LLM Gateway"**
-3. Set **Server URL** to your inference server address (e.g., `http://localhost:42069` to match the server started above; the setting defaults to `http://localhost:8000`)
-4. Configure other settings as needed (token limits, tool calling, etc.)
+1. Open the Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`) and run **GitHub Copilot LLM Gateway: Configure Server**. The same flow opens from **Add Models…** in Copilot Chat's model picker.
+2. Enter the **Server URL** of your inference server, e.g. `http://localhost:42069` to match the server started above (the default is `http://localhost:8000`).
+3. Enter the **API Key** if your server requires one, or leave it empty for unauthenticated local servers. The key is stored in VS Code's secret storage, not in `settings.json`.
+4. If a folder is open, choose whether the Server URL applies to this **Workspace** only or to all windows (**User**).
+5. Finish, or continue to **Edit custom headers…** or **Edit advanced settings…**. Everything else (token limits, tool calling, etc.) lives in VS Code **Settings** (`Ctrl+,` / `Cmd+,`) under **"Copilot LLM Gateway"**.
 
-![Extension settings panel showing all configuration options](assets/screenshot-settings.png)
+> **Where is the API Key setting?** API keys are no longer stored in settings. The old `github.copilot.llm-gateway.apiKey` setting is deprecated and hidden from the Settings UI; any value left in it is moved to secret storage and cleared when the extension starts. Set or change the key with **Configure Server**, or in the **API Key** field VS Code shows for the **LLM Gateway** provider under **Chat: Manage Language Models**. If both are set, the key entered in Manage Language Models is used.
 
-> **Note**: If the server is unreachable, you'll see an error notification with a quick link to settings:
+> **Note**: If the server is unreachable, you'll see an error notification with a link to the extension's settings:
 >
 > ![Connection error notification](assets/screenshot-notification.png)
 
@@ -202,8 +203,9 @@ Configure the extension through VS Code Settings (`Ctrl+,` / `Cmd+,`) → search
 | Setting             | Default                 | Description                                         |
 | ------------------- | ----------------------- | --------------------------------------------------- |
 | **Server URL**      | `http://localhost:8000` | Base URL of your OpenAI-compatible inference server |
-| **API Key**         | _(empty)_               | Authentication key if your server requires one      |
 | **Request Timeout** | `60000`                 | Request timeout in milliseconds                     |
+
+The **API key** and any **custom HTTP headers** are not settings: they are kept in VS Code's secret storage and managed with the **Configure Server** and **Edit Custom Headers** commands (see [Step 3](#step-3-configure-the-extension)). The deprecated `apiKey` and `customHeaders` settings are migrated to secret storage automatically.
 
 **Server URL** can be saved to either **User** or **Workspace** settings from the *Configure Server* command, so different VS Code windows can point at different servers. The API key is always stored globally (VS Code's secret storage is not workspace-aware).
 
@@ -501,7 +503,7 @@ If you only need *different* servers in *different* projects rather than several
 
 1. Verify server is running: `curl http://your-server:port/v1/models`
 2. Check **Server URL** in settings — paste the **base URL only**, e.g. `http://your-server:port`. Do **not** include a trailing `/v1` or a trailing slash; the extension appends `/v1/models` itself.
-3. Check **API Key** — paste the key only. Do **not** prefix it with `Bearer `; the extension adds that automatically.
+3. Check the **API Key** by re-running **"GitHub Copilot LLM Gateway: Configure Server"** — paste the key only. Do **not** prefix it with `Bearer `; the extension adds that automatically. If you also entered a key under **Chat: Manage Language Models → LLM Gateway**, that one takes precedence.
 4. Run command **"GitHub Copilot LLM Gateway: Test Server Connection"** from the Command Palette.
 5. If the connection worked earlier but models vanished, run **"GitHub Copilot LLM Gateway: Refresh Models"** from the Command Palette (or click the status-bar entry).
 6. Inspect the **"GitHub Copilot LLM Gateway"** output channel for the exact URL being probed and the server's response.
