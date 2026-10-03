@@ -79,6 +79,23 @@ describe('sessionAffinityHeaders', () => {
   test('returns nothing when the request has no conversation identity (fail closed)', () => {
     assert.deepEqual(sessionAffinityHeaders('x-litellm-session-id', undefined), {});
   });
+
+  test('returns nothing for a header name fetch would reject', () => {
+    assert.deepEqual(sessionAffinityHeaders('x session id', ID), {});
+    assert.deepEqual(sessionAffinityHeaders('x-session:id', ID), {});
+    assert.deepEqual(sessionAffinityHeaders('x-sessi\u00f6n', ID), {});
+  });
+
+  test('never replaces headers the client already sets', () => {
+    assert.deepEqual(sessionAffinityHeaders('Authorization', ID), {});
+    assert.deepEqual(sessionAffinityHeaders('content-type', ID), {});
+  });
+
+  test('returns nothing when the conversation id is not a safe header value', () => {
+    const odd = (conversationId: string): ReplyIdentity => ({ conversationId, turnIndex: 0 });
+    assert.deepEqual(sessionAffinityHeaders('x-litellm-session-id', odd('conv\r\nx-evil: 1')), {});
+    assert.deepEqual(sessionAffinityHeaders('x-litellm-session-id', odd('conv \u2603')), {});
+  });
 });
 
 describe('extractToolResultIds', () => {

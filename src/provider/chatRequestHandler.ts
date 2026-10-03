@@ -315,6 +315,9 @@ export class ChatRequestHandler {
         (id) => { emittedToolCallIds.push(id); }
       );
       const affinityHeaders = sessionAffinityHeaders(config.sessionAffinityHeader, conversationIdentity);
+      if (config.sessionAffinityHeader.trim() && conversationIdentity && Object.keys(affinityHeaders).length === 0) {
+        log(`Session affinity: header name "${config.sessionAffinityHeader}" is not a valid or allowed header (or the conversation id is unusable); sending without it.`);
+      }
       const chunks = this.deps.client.streamChatCompletion(requestOptions, token, affinityHeaders);
       const stats = await streamResponse({
         chunks: chunks as AsyncIterable<StreamChunk>,

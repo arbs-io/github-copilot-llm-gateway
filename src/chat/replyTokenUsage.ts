@@ -51,11 +51,19 @@ export function extractToolResultIds(messages: readonly OpenAIMessage[]): string
   return ids;
 }
 
+/** RFC 9110 field-name token; anything else makes `fetch` throw. */
+const HEADER_NAME_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+/** Visible ASCII only, so an odd id can never fail header serialization. */
+const HEADER_VALUE_PATTERN = /^[\x21-\x7e]+$/;
+/** Headers the client already sets; the affinity header must not replace them. */
+const RESERVED_HEADER_NAMES = new Set(['authorization', 'content-type', 'content-length', 'host']);
+
 /**
  * Build the session-affinity headers for one chat request. Returns an empty
- * object when the feature is off (no header name configured) or when the
- * request carries no usable conversation identity — the caller then sends
- * nothing and the gateway routes as usual (fail closed, per the
+ * object when the feature is off (no header name configured), when the
+ * configured name isn't a valid or allowed header name, or when the request
+ * carries no usable conversation identity — the caller then sends nothing
+ * and the gateway routes as usual (fail closed, per the
  * {@link extractReplyIdentity} contract above).
  */
 export function sessionAffinityHeaders(
@@ -64,6 +72,8 @@ export function sessionAffinityHeaders(
 ): Record<string, string> {
   const name = headerName.trim();
   if (!name || !replyIdentity) { return {}; }
+  if (!HEADER_NAME_PATTERN.test(name) || RESERVED_HEADER_NAMES.has(name.toLowerCase())) { return {}; }
+  if (!HEADER_VALUE_PATTERN.test(replyIdentity.conversationId)) { return {}; }
   return { [name]: replyIdentity.conversationId };
 }
 
