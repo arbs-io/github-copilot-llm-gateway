@@ -177,13 +177,12 @@ export class ChatRequestHandler {
 
     // Fail closed: only track/append a token summary when the installed
     // Copilot build actually supplies both private identity fields (see
-    // replyTokenUsage.ts). Gating extraction on the setting means a disabled
-    // feature never touches the tracker at all.
-    // Session affinity needs the same identity, so it is extracted
-    // unconditionally here; the token-usage tracker stays gated on its own
-    // setting below. When the fields are absent (unsupported Copilot builds)
-    // both features silently do nothing.
-    const replyIdentity = extractReplyIdentity(options.modelOptions);
+    // replyTokenUsage.ts). Session affinity needs the same identity, so it is
+    // extracted unconditionally, but the tracker only ever sees it when
+    // showReplyTokenUsage is on — a disabled feature never touches the
+    // tracker at all.
+    const conversationIdentity = extractReplyIdentity(options.modelOptions);
+    const replyIdentity = config.showReplyTokenUsage ? conversationIdentity : undefined;
     if (config.showReplyTokenUsage && !replyIdentity) {
       log(
         'Reply token summary: no valid _conversationId/_telemetryTurn on this request; skipping (this is expected on Copilot builds that don\'t supply them).'
@@ -315,7 +314,7 @@ export class ChatRequestHandler {
         (round) => { roundUsage = round; },
         (id) => { emittedToolCallIds.push(id); }
       );
-      const affinityHeaders = sessionAffinityHeaders(config.sessionAffinityHeader, replyIdentity);
+      const affinityHeaders = sessionAffinityHeaders(config.sessionAffinityHeader, conversationIdentity);
       const chunks = this.deps.client.streamChatCompletion(requestOptions, token, affinityHeaders);
       const stats = await streamResponse({
         chunks: chunks as AsyncIterable<StreamChunk>,
