@@ -17,7 +17,7 @@ A robustness layer for running **self-hosted open-source models** inside GitHub 
 
 ## Do I need this, or is native BYOK enough?
 
-Since **VS Code 1.122**, VS Code ships a built-in **BYOK "Custom Endpoint" provider** (Generally Available) that connects any OpenAI-compatible server — vLLM, Ollama, llama.cpp, LM Studio, LocalAI — directly to Copilot chat, agent mode, tools, and MCP, with **no extension and no GitHub sign-in required**. For most setups that's the simplest path, and you should start there: run **Chat: Manage Language Models** from the Command Palette and add a Custom Endpoint.
+Since **VS Code 1.122**, VS Code ships a built-in **BYOK "Custom Endpoint" provider** (Generally Available) that connects any OpenAI-compatible server — vLLM, Ollama, llama.cpp, LM Studio, LocalAI — directly to Copilot chat, agent mode, tools, and MCP, with **no extension and no GitHub sign-in required**. For most setups that's the simplest path, and you should start there: run **Chat: Manage Language Models** from the Command Palette and add a Custom Endpoint. This extension uses the same bring-your-own-key (BYOK) model system, so it doesn't need a GitHub sign-in either; the choice between the two is about how your model behaves, not about accounts.
 
 **This extension is for the harder cases native BYOK doesn't handle.** Native BYOK trusts your endpoint as-is and does no quirk-smoothing — its own docs note that tool-call reliability "depends on your server's tool-call parser." When you're stuck with a specific small or quantized model, or a server you can't reconfigure, that's where this extension earns its place:
 
@@ -47,7 +47,7 @@ If native BYOK already works well for you, you don't need this extension. If you
 
 It also keeps the familiar benefits of self-hosting: inference stays on your network, there are no per-token fees, and your self-hosted models don't draw down Copilot premium quota.
 
-> **Privacy note**: This extension routes **LLM inference to your configured server only** — those requests never touch GitHub. It runs inside GitHub Copilot Chat, which is the host application and performs its own network activity (such as telemetry) that this extension cannot intercept or block. Some host features that default to GitHub — including conversation-title generation — can be redirected to a gateway model via VS Code's `chat.utilityModel` setting. See [Privacy & Network Requests](#privacy--network-requests) for details.
+> **Privacy note**: Every request this extension makes goes to **your configured server only**, and the extension collects no telemetry of its own. No GitHub account or Copilot plan is needed. VS Code itself may still contact GitHub or Microsoft (for example utility tasks such as chat titles when you're signed in, and VS Code telemetry), and you can turn that off or redirect it. See [Privacy & Network Requests](#privacy--network-requests), including how to run [fully offline](#running-fully-offline).
 
 ### Compatible Inference Servers
 
@@ -69,8 +69,11 @@ The extension connects to **one** server. To reach several providers at once —
 ### Prerequisites
 
 - **VS Code** 1.138.0 or later
-- **GitHub Copilot** extension installed and signed in
 - **Inference server** running with an OpenAI-compatible API
+
+A GitHub account and Copilot plan are **not** required. Since VS Code 1.122, models from language-model provider extensions like this one work in chat without a GitHub sign-in, including offline. Signing in is optional, and only adds GitHub-hosted features such as Copilot's own models and inline suggestions.
+
+> **Copilot Business or Enterprise**: if you are signed in with an organization-managed Copilot plan, an administrator must enable the **Bring Your Own Language Model Key in VS Code** policy in the organization's Copilot settings before extension-provided models can be used.
 
 ### Step 1: Install the Extension
 
@@ -183,12 +186,23 @@ extension in with the `extensions.supportAgentsWindow` setting:
 }
 ```
 
+Gateway models are BYOK models, so Agent Host sessions (such as Copilot sessions in the
+Agents window) also need VS Code's BYOK opt-in for those sessions:
+
+```jsonc
+"chat.agentHost.byokModels.enabled": true
+```
+
 Requirements and notes:
 
 1. The extension must be installed in your **default VS Code profile**.
-2. After adding the setting, reload/reopen the Agents window so the extension activates.
+2. After adding the settings, reload/reopen the Agents window so the extension activates.
 3. Your gateway models then appear in the per-session **language model** picker, with the
    same tool-calling and image capabilities they have in Copilot Chat.
+4. By default the Agents window asks for a GitHub sign-in when it opens. To use it signed
+   out with only BYOK models, also enable the experimental
+   `chat.agentHost.allowSignedOutWhenUsable` setting (desktop only; the browser-based
+   Agents window always requires sign-in).
 
 > Agents-window extension support is still a VS Code preview and is evolving. If a
 > gateway model doesn't appear after opting in, confirm the extension is enabled in your
@@ -343,14 +357,20 @@ VS Code does **not** let bring-your-own-key models power its own inline ("ghost 
 
 ### Using Gateway Models for Titles & Other Utility Tasks
 
-VS Code uses small background models for "utility" work — chat **title generation**, commit messages, rename/branch-name suggestions, settings search, and Git review. By default these use GitHub Copilot's built-in utility models, which are unavailable if you run BYOK without signing into GitHub.
+VS Code uses lightweight background models for "utility" work: chat **title generation**, summaries, commit messages, pull request descriptions, rename and branch-name suggestions, settings search, Git review, and intent detection. The model you pick for a chat does not control these. What they use by default depends on whether you're signed in to GitHub:
 
-You can point them at one of your Gateway models instead, via VS Code's own settings (no extension configuration needed):
+- **Signed in** — GitHub Copilot's built-in utility models. The text for these tasks (for example your first message, for the chat title) is sent to GitHub, even when you're chatting with a gateway model.
+- **Not signed in** — GitHub's utility models aren't available, so these features stay off until you choose a model. VS Code shows a prompt in the Chat view to set one up.
 
-- `chat.utilityModel` — titles, summaries, settings search, Git review
-- `chat.utilitySmallModel` — commit messages, rename and branch-name suggestions
+You can point them at your gateway models with VS Code's own settings (no extension configuration needed):
 
-Open **Settings**, search for `chat.utilityModel` / `chat.utilitySmallModel`, and pick your Gateway model from the dropdown (its `LLM Gateway` models appear there once the server is connected). When running BYOK without GitHub sign-in, VS Code also shows a prompt in the Chat view to configure these.
+| Setting | Controls |
+| --- | --- |
+| `chat.utilityModel` | Titles, summaries, settings search, Git review |
+| `chat.utilitySmallModel` | Commit messages, PR titles and descriptions, rename and branch-name suggestions, prompt categorization, intent detection |
+| `chat.byokUtilityModelDefault` | Default for both when the chat model is a BYOK model such as a gateway model: **Main Agent Model** uses that model, **GitHub Copilot** uses GitHub's utility models, **None** disables them. A specific model set in either setting above wins. |
+
+Open **Settings**, search for `chat.utilityModel` / `chat.utilitySmallModel`, and pick a gateway model from the dropdown (`LLM Gateway` models appear there once the server is connected). Pick a small, fast model for `chat.utilitySmallModel`.
 
 ## Recommended Models
 
@@ -516,8 +536,9 @@ The Agents window is a separate window and won't activate this extension automat
 
 1. Add the opt-in setting (see [Using your models in the Agents window](#using-your-models-in-the-agents-window-preview)):
    `"extensions.supportAgentsWindow": { "AndrewButson.github-copilot-llm-gateway": true }`
-2. Confirm the extension is installed in your **default VS Code profile**.
-3. Reload/reopen the Agents window, then re-check the session's language model picker.
+2. Enable `"chat.agentHost.byokModels.enabled": true` so BYOK models are offered to Agent Host sessions.
+3. Confirm the extension is installed in your **default VS Code profile**.
+4. Reload/reopen the Agents window, then re-check the session's language model picker.
 
 ### "Model returned empty response"
 
@@ -574,36 +595,43 @@ Tokens: input 12,345 | output 1,234 | total 13,579
 
 ## Privacy & Network Requests
 
-This extension is a **Language Model provider** — it registers alongside GitHub's built-in models and handles inference when you select an LLM Gateway model. Understanding what it does and does not control is important:
+This extension is a VS Code **language model provider**: it adds your server's models to the chat model picker and handles every request made with them. This section covers what the extension sends, what VS Code may send independently, and how to keep everything on your own network.
 
-### What this extension controls
+### What this extension sends
 
-- **Chat inference** — When you select an LLM Gateway model, all prompts, code snippets, and tool calls are sent exclusively to your configured server. None of this traffic touches GitHub.
-- **Daily usage polling** — a small `GET` to your configured server's usage endpoint (default `/v1/usage/current`) to show the remaining daily quota. It carries only your API key and custom headers, never prompt content, and stops after a single 404 on servers without the endpoint. Clear **Usage Endpoint** to turn it off.
+Everything goes to the **Server URL** you configured, with your API key and custom headers. Nothing is sent to GitHub, Microsoft, or the extension's authors, and the extension collects **no telemetry**.
 
-### What this extension does NOT control
-
-GitHub Copilot Chat is the host application. It performs its own network activity that this extension cannot intercept:
-
-| Request | Why it happens | What is sent |
+| Request | When | What is sent |
 | --- | --- | --- |
-| **GitHub authentication** | Copilot Chat requires a GitHub sign-in to activate, even for third-party model providers | OAuth tokens |
-| **Conversation title generation** | By default Copilot Chat sends your first message to GitHub's API to auto-generate a title — redirectable to a gateway model via `chat.utilityModel` | Your prompt text |
-| **Telemetry** | Copilot collects usage telemetry per its own policies | Usage metadata |
+| `GET /v1/models` (falling back to `/models`) | On startup, when the model picker opens, and on **Refresh Models** | Nothing beyond the request itself |
+| Backend detection: `GET /api/version` and `POST /api/show` (Ollama), `GET /model/info` (LiteLLM) | While listing models, at most once per backend per refresh | Model ids only |
+| `POST /v1/chat/completions` | Each chat request with a gateway model | Your prompts, attached context, images and tool calls/results |
+| `POST /v1/completions` | Only when **Enable Inline Completion** is on | Code around the cursor, up to the configured prefix/suffix limits |
+| `GET` usage endpoint (default `/v1/usage/current`) | On startup, after chat requests, and every **Usage Refresh Interval** (default 5 minutes) while VS Code is focused; background polling stops after a 404 | Nothing beyond the request itself. Clear **Usage Endpoint** to turn it off. |
 
-### Reducing exposure
+With **Verbose Logging** on, full request bodies are also written to the local **GitHub Copilot LLM Gateway** output channel. They stay on your machine, but may include conversation content.
 
-While you cannot fully eliminate GitHub network requests when using Copilot Chat, you can minimise them:
+### What VS Code may send
 
-- Set `chat.utilityModel` (and `chat.utilitySmallModel`) to a gateway model so conversation titles, commit messages, and other utility prompts are sent to your server instead of GitHub — see [Using Gateway Models for Titles & Other Utility Tasks](#using-gateway-models-for-titles--other-utility-tasks).
-- Set `"telemetry.telemetryLevel": "off"` in VS Code settings to reduce VS Code/Copilot telemetry.
+These come from VS Code and its built-in chat features, not this extension, so the extension can't intercept them. You can control each one with VS Code settings:
 
-> **Note**: We have no control over the Copilot Chat host extension's core behaviour (auth, telemetry). The good news is
-> that **VS Code 1.122 made BYOK work without a GitHub sign-in** — the native Custom Endpoint provider
-> can run chat, tools, and MCP fully air-gapped, so if strict network isolation is your priority that
-> path is worth evaluating. Utility tasks that used to be hardcoded to GitHub — including conversation
-> title generation — can now be routed to your own model via the `chat.utilityModel` /
-> `chat.utilitySmallModel` settings, keeping that text on your server too.
+| Traffic | When it happens | How to control it |
+| --- | --- | --- |
+| **Utility tasks** (chat titles, commit messages, summaries, intent detection) | Only while signed in to GitHub, using GitHub's utility models by default. Signed out, these features are off until you choose a model. | Set `chat.utilityModel` and `chat.utilitySmallModel` to a gateway model, or `chat.byokUtilityModelDefault` to **Main Agent Model**. See [Using Gateway Models for Titles & Other Utility Tasks](#using-gateway-models-for-titles--other-utility-tasks). |
+| **GitHub sign-in and Copilot services** (Copilot-hosted models, inline suggestions, semantic search, embeddings) | Only if you sign in to GitHub and use those features | Don't sign in, or don't use those features. Gateway chat doesn't need them. |
+| **VS Code telemetry** | Depends on `telemetry.telemetryLevel` (on by default) | Set `"telemetry.telemetryLevel": "off"` |
+| **Other VS Code online services** (updates, Marketplace, Settings Sync, …) | As configured in VS Code | Settings tagged `@tag:usesOnlineServices` |
+
+### Running fully offline
+
+VS Code's BYOK support lets chat run with no GitHub account and no internet connection when your inference server is local or on your private network:
+
+1. Don't sign in to GitHub in VS Code (or sign out).
+2. Configure the extension with **Configure Server** and select a gateway model in chat.
+3. Set `chat.utilityModel` and `chat.utilitySmallModel` to a gateway model (or `chat.byokUtilityModelDefault` to **Main Agent Model**) so chat titles and commit messages keep working.
+4. Set `"telemetry.telemetryLevel": "off"`.
+
+Chat, agent mode, tools and MCP servers keep working. Features hosted by GitHub (Copilot's own models, Copilot inline suggestions, semantic search and embeddings) aren't available. This extension's [inline completions](#inline-completions-experimental) can provide ghost text from your own server instead.
 
 ## Support
 
