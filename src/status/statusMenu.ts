@@ -153,7 +153,9 @@ function sessionItems(snapshot: StatusSnapshot): StatusMenuItem[] {
     description:
       stats.requestCount === 0
         ? 'No requests yet'
-        : `${requests} · ${formatTokenCount(stats.totalTokens)} tokens (${formatTokenCount(stats.promptTokens)} in / ${formatTokenCount(stats.completionTokens)} out)`,
+        : `${requests} · ${formatTokenCount(stats.totalTokens)} tokens (${formatTokenCount(stats.promptTokens)} in${
+            stats.cachedTokens > 0 ? `, ${formatTokenCount(stats.cachedTokens)} cached` : ''
+          } / ${formatTokenCount(stats.completionTokens)} out)`,
     action: { kind: 'none' },
   });
 
@@ -164,6 +166,9 @@ function sessionItems(snapshot: StatusSnapshot): StatusMenuItem[] {
     let detail: string | undefined;
     if (last.usage) {
       parts.push(`${formatTokenCount(last.usage.total)} tokens`);
+      if (last.usage.cached !== undefined && last.usage.cached > 0) {
+        parts.push(`${formatTokenCount(last.usage.cached)} cached`);
+      }
       const model = snapshot.models.find((m) => m.id === last.modelId);
       if (model?.totalContext) {
         const ratio = last.usage.total / model.totalContext;

@@ -85,6 +85,8 @@ export function sessionAffinityHeaders(
 export interface RoundUsage {
   readonly promptTokens: number;
   readonly completionTokens: number;
+  /** Prompt tokens served from the server's cache (a subset of `promptTokens`); 0 when not reported. */
+  readonly cachedTokens?: number;
   readonly promptKnown: boolean;
   readonly completionKnown: boolean;
 }
@@ -96,14 +98,23 @@ export interface RoundOutcome {
   readonly outgoingToolCallIds: readonly string[];
 }
 
+interface ReplyTokenCounts {
+  readonly promptTokens: number;
+  readonly completionTokens: number;
+  readonly totalTokens: number;
+  /** Cached prompt tokens across the reply's rounds; absent or 0 when the server reported none. */
+  readonly cachedTokens?: number;
+}
+
 export type ReplyTokenSummary =
-  | { readonly kind: 'complete'; readonly promptTokens: number; readonly completionTokens: number; readonly totalTokens: number }
-  | { readonly kind: 'partial'; readonly promptTokens: number; readonly completionTokens: number; readonly totalTokens: number }
+  | ({ readonly kind: 'complete' } & ReplyTokenCounts)
+  | ({ readonly kind: 'partial' } & ReplyTokenCounts)
   | { readonly kind: 'unavailable' };
 
 interface ChainState {
   promptTokens: number;
   completionTokens: number;
+  cachedTokens: number;
   hadAnyUsage: boolean;
   hadMissingUsage: boolean;
   pendingToolCallIds: ReadonlySet<string>;
@@ -126,6 +137,7 @@ function emptyChain(): ChainState {
   return {
     promptTokens: 0,
     completionTokens: 0,
+    cachedTokens: 0,
     hadAnyUsage: false,
     hadMissingUsage: false,
     pendingToolCallIds: new Set(),
@@ -176,7 +188,10 @@ export class ReplyTokenUsageTracker {
 
     const promptKnown = outcome.usage?.promptKnown ?? false;
     const completionKnown = outcome.usage?.completionKnown ?? false;
-    if (promptKnown) { chain.promptTokens += sanitize(outcome.usage!.promptTokens); }
+    if (promptKnown) {
+      chain.promptTokens += sanitize(outcome.usage!.promptTokens);
+      chain.cachedTokens += sanitize(outcome.usage!.cachedTokens ?? 0);
+    }
     if (completionKnown) { chain.completionTokens += sanitize(outcome.usage!.completionTokens); }
     chain.hadAnyUsage = chain.hadAnyUsage || promptKnown || completionKnown;
     chain.hadMissingUsage = chain.hadMissingUsage || !(promptKnown && completionKnown);
@@ -188,10 +203,13 @@ export class ReplyTokenUsageTracker {
   summarize(identity: ReplyIdentity): ReplyTokenSummary {
     const chain = this.chains.get(chainKey(identity));
     if (!chain?.hadAnyUsage) { return { kind: 'unavailable' }; }
-    const totalTokens = chain.promptTokens + chain.completionTokens;
-    return chain.hadMissingUsage
-      ? { kind: 'partial', promptTokens: chain.promptTokens, completionTokens: chain.completionTokens, totalTokens }
-      : { kind: 'complete', promptTokens: chain.promptTokens, completionTokens: chain.completionTokens, totalTokens };
+    const counts: ReplyTokenCounts = {
+      promptTokens: chain.promptTokens,
+      completionTokens: chain.completionTokens,
+      totalTokens: chain.promptTokens + chain.completionTokens,
+      ...(chain.cachedTokens > 0 ? { cachedTokens: chain.cachedTokens } : {}),
+    };
+    return { kind: chain.hadMissingUsage ? 'partial' : 'complete', ...counts };
   }
 
   /** Clear a reply's state. Call once its terminal (tool-call-free) round completes. */
@@ -232,8 +250,11 @@ export function formatReplyTokenSummaryLine(summary: ReplyTokenSummary): string 
     return 'Tokens: input unavailable | output unavailable | total unavailable';
   }
   const label = summary.kind === 'partial' ? 'Tokens (partial)' : 'Tokens';
+  // Cached tokens are part of the input count, so they're shown alongside it
+  // rather than as a fourth field.
+  const cached = summary.cachedTokens ? ` (${formatWithCommas(summary.cachedTokens)} cached)` : '';
   return (
-    `${label}: input ${formatWithCommas(summary.promptTokens)} | ` +
+    `${label}: input ${formatWithCommas(summary.promptTokens)}${cached} | ` +
     `output ${formatWithCommas(summary.completionTokens)} | ` +
     `total ${formatWithCommas(summary.totalTokens)}`
   );

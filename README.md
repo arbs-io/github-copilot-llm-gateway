@@ -143,9 +143,15 @@ The model integrates seamlessly with Copilot's features including:
 
 ### Status Bar & Connection Info
 
-A status-bar entry (bottom-right) shows the gateway's connection state at a glance and turns into a live indicator while a request streams. Hover it for a detailed info popup — connection status, the detected models with their context windows and capabilities, running session token totals, the last request, and the active feature toggles. Click it for the **status menu**: the same sections as a Quick Pick, with checkbox-style toggles for inline suggestions, tool calling, parallel tool calls and image input that flip the setting in place, a per-model shortcut to **Thinking Effort**, and the refresh / test / configure / headers / settings / log actions.
+A status-bar entry (bottom-right) shows the gateway's connection state at a glance and turns into a live indicator while a request streams. Hover it for a detailed info popup — connection status, the detected models with their context windows and capabilities, running session token totals (including cached prompt tokens when the server reports them), the last request, and the active feature toggles. Click it for the **status menu**: the same sections as a Quick Pick, with checkbox-style toggles for inline suggestions, tool calling, parallel tool calls and image input that flip the setting in place, a per-model shortcut to **Thinking Effort**, and the refresh / test / configure / headers / settings / log actions.
 
 ![LLM Gateway status info dialog](assets/screenshot-status-dialog.png)
+
+#### Token usage in chat
+
+The token counts your server reports with each response are passed to VS Code, so gateway models get the same usage displays as Copilot's own models: the context-window control in the Chat view, and the per-turn usage breakdown (input, cached input and output tokens) shown when you hover over a response's footer. Cache-write and reasoning token counts are passed through too when the server reports them.
+
+Cached input appears when the server reports prompt-cache hits in the standard `prompt_tokens_details.cached_tokens` field. llama.cpp, Ollama and LiteLLM do this by default; **vLLM** needs `--enable-prompt-tokens-details`.
 
 #### Daily token quota
 
@@ -595,15 +601,17 @@ Access from the Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`):
 By default replies look exactly like native Copilot output — per-request token counts live in the [status bar menu](#status-bar--connection-info) and VS Code's context-window widget. If you'd rather see the numbers in the chat itself, an opt-in setting appends a plain-text summary line to the end of each reply:
 
 ```
-Tokens: input 12,345 | output 1,234 | total 13,579
+Tokens: input 12,345 (10,240 cached) | output 1,234 | total 13,579
 ```
+
+The `cached` figure appears when the server reports prompt tokens served from its cache, and is part of the input count.
 
 - **Scope is one completed reply**, including all of its internal tool-call rounds — not the whole chat conversation, and not the extension's lifetime session totals shown in the [status dialog](#status-bar--connection-info). Nested subagent calls (a tool that spawns its own separate chat) are **not** rolled into the parent reply's total.
 - Counts are **server-reported usage**, summed once per actual model call — not a token estimate. Because each round of a multi-step tool-calling reply resends the growing conversation, the input count is the sum of what was *actually sent* on each call, not a single context-window snapshot.
 - If the server didn't report usage for one round, the line reads `Tokens (partial): …` using only the rounds that did. If no round ever reported usage, it reads `Tokens: input unavailable | output unavailable | total unavailable`.
 - The line is ordinary assistant text, so it is included if you copy or export the reply. The gateway strips it from the assistant history before sending later turns to the server, so it never costs prompt tokens or gets echoed by the model — and it is not counted as part of this reply's own output tokens.
 - Setting: `github.copilot.llm-gateway.showReplyTokenUsage` (default: off). Turn it on to add the line.
-- **Compatibility note**: linking a reply's tool-call rounds together requires per-request identity fields that Copilot Chat passes internally but does not publish as a stable API. If your installed Copilot Chat build doesn't supply them, this feature silently does nothing — no line is added, and nothing else about the reply changes. This does not affect the [context-window usage widget](#what-it-does-that-a-plain-connection-doesnt), which uses a separate, stable mechanism.
+- **Compatibility note**: linking a reply's tool-call rounds together requires per-request identity fields that Copilot Chat passes internally but does not publish as a stable API. If your installed Copilot Chat build doesn't supply them, this feature silently does nothing — no line is added, and nothing else about the reply changes. This does not affect the [token usage shown in chat](#token-usage-in-chat), which uses a separate, stable mechanism.
 
 ## Privacy & Network Requests
 

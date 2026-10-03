@@ -336,3 +336,39 @@ describe('stripReplyTokenSummary', () => {
     assert.equal(stripReplyTokenSummary(text), text);
   });
 });
+
+describe('cached prompt tokens in the reply summary', () => {
+  test('sums cached tokens across rounds and shows them with the input count', () => {
+    const tracker = new ReplyTokenUsageTracker();
+    tracker.beginRound(ID, []);
+    tracker.recordRound(ID, { usage: { ...known(1000, 50), cachedTokens: 0 }, outgoingToolCallIds: ['t1'] });
+    tracker.beginRound(ID, ['t1']);
+    tracker.recordRound(ID, { usage: { ...known(1200, 80), cachedTokens: 1000 }, outgoingToolCallIds: [] });
+    const summary = tracker.summarize(ID);
+    assert.deepEqual(summary, {
+      kind: 'complete', promptTokens: 2200, completionTokens: 130, totalTokens: 2330, cachedTokens: 1000,
+    });
+    assert.equal(
+      formatReplyTokenSummaryLine(summary),
+      'Tokens: input 2,200 (1,000 cached) | output 130 | total 2,330'
+    );
+  });
+
+  test('ignores cached tokens from a round whose prompt count is unknown', () => {
+    const tracker = new ReplyTokenUsageTracker();
+    tracker.beginRound(ID, []);
+    tracker.recordRound(ID, {
+      usage: { promptTokens: 0, completionTokens: 10, cachedTokens: 500, promptKnown: false, completionKnown: true },
+      outgoingToolCallIds: [],
+    });
+    const summary = tracker.summarize(ID);
+    assert.equal(summary.kind === 'unavailable' ? undefined : summary.cachedTokens, undefined);
+  });
+
+  test('a summary line with cached tokens is still stripped from history', () => {
+    const line = formatReplyTokenSummaryLine({
+      kind: 'complete', promptTokens: 2200, completionTokens: 130, totalTokens: 2330, cachedTokens: 1000,
+    });
+    assert.equal(stripReplyTokenSummary(`Done.\n\n${line}`), 'Done.');
+  });
+});

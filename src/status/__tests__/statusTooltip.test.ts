@@ -63,6 +63,7 @@ describe('renderStatusTooltipHtml — sanitizer conformance', () => {
           promptTokens: 1000,
           completionTokens: 2000,
           totalTokens: 3000,
+          cachedTokens: 0,
           requestsWithUsage: 5,
         },
         lastRequest: {
@@ -195,6 +196,7 @@ describe('renderStatusTooltipHtml — session usage', () => {
           promptTokens: 123_400,
           completionTokens: 111_100,
           totalTokens: 234_500,
+          cachedTokens: 0,
           requestsWithUsage: 17,
         },
       })
@@ -215,6 +217,7 @@ describe('renderStatusTooltipHtml — session usage', () => {
           promptTokens: 100,
           completionTokens: 200,
           totalTokens: 300,
+          cachedTokens: 0,
           requestsWithUsage: 1,
         },
       })
@@ -225,6 +228,34 @@ describe('renderStatusTooltipHtml — session usage', () => {
 });
 
 describe('renderStatusTooltipHtml — last request and context bar', () => {
+  test('shows cached prompt tokens next to the input count when reported', () => {
+    const html = renderStatusTooltipHtml(
+      makeSnapshot({
+        lastRequest: {
+          modelId: 'qwen/Qwen3-8B',
+          modelName: 'Qwen3-8B',
+          completedAt: FIXED_NOW - 34_000,
+          usage: { prompt: 1234, completion: 3456, total: 4690, cached: 1000 },
+        },
+      })
+    );
+    assert.ok(html.includes('1,234 (1,000 cached)'));
+  });
+
+  test('omits the cached figure when none was reported', () => {
+    const html = renderStatusTooltipHtml(
+      makeSnapshot({
+        lastRequest: {
+          modelId: 'm',
+          modelName: 'm',
+          completedAt: FIXED_NOW - 34_000,
+          usage: { prompt: 1234, completion: 3456, total: 4690, cached: 0 },
+        },
+      })
+    );
+    assert.ok(!html.includes('cached'));
+  });
+
   test('omits the section when there is no last request', () => {
     const html = renderStatusTooltipHtml(makeSnapshot());
     assert.ok(!html.includes('Last request'));

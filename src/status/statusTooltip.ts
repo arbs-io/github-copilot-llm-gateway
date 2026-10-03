@@ -270,6 +270,11 @@ function renderDailyUsage(snapshot: StatusSnapshot): string {
   ].join('');
 }
 
+/** ` (1,234 cached)` when the server reported cached prompt tokens, else empty. */
+function cachedSuffix(cached: number | undefined): string {
+  return cached !== undefined && cached > 0 ? ` (${esc(cached.toLocaleString())} cached)` : '';
+}
+
 function renderSession(snapshot: StatusSnapshot): string {
   const s = snapshot.sessionStats;
   if (s.requestCount === 0) {
@@ -281,7 +286,7 @@ function renderSession(snapshot: StatusSnapshot): string {
   const ioRow =
     s.requestsWithUsage > 0
       ? `<tr><td colspan="2">${mutedSpan(
-          `$(arrow-up) ${esc(s.promptTokens.toLocaleString())} in · $(arrow-down) ${esc(s.completionTokens.toLocaleString())} out`
+          `$(arrow-up) ${esc(s.promptTokens.toLocaleString())} in${cachedSuffix(s.cachedTokens)} · $(arrow-down) ${esc(s.completionTokens.toLocaleString())} out`
         )}</td></tr>`
       : '';
   const totalsLabel = mutedSpan(`${esc(formatTokenCount(s.totalTokens))} tokens${esc(avgText)}`);
@@ -320,7 +325,7 @@ function renderLastRequest(snapshot: StatusSnapshot): string {
   if (last.usage) {
     rows.push(
       `<tr><td colspan="2">${mutedSpan(
-        `$(arrow-up) ${esc(last.usage.prompt.toLocaleString())} · $(arrow-down) ${esc(last.usage.completion.toLocaleString())} / ${esc(last.usage.total.toLocaleString())} total`
+        `$(arrow-up) ${esc(last.usage.prompt.toLocaleString())}${cachedSuffix(last.usage.cached)} · $(arrow-down) ${esc(last.usage.completion.toLocaleString())} / ${esc(last.usage.total.toLocaleString())} total`
       )}</td></tr>`
     );
     if (totalContext && totalContext > 0) {

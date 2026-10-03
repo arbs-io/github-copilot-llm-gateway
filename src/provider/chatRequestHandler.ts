@@ -504,16 +504,21 @@ export class ChatRequestHandler {
         // the chat view's context-window widget render real numbers instead
         // of `0%` for gateway models (issue #24).
         this.deps.log(
-          `Usage: prompt=${usage.prompt_tokens}, completion=${usage.completion_tokens}, total=${usage.total_tokens}`
+          `Usage: prompt=${usage.prompt_tokens}, completion=${usage.completion_tokens}, total=${usage.total_tokens}, cached=${usage.prompt_tokens_details?.cached_tokens ?? 0}${
+            usage.completion_tokens_details?.reasoning_tokens === undefined ? '' : `, reasoning=${usage.completion_tokens_details.reasoning_tokens}`
+          }`
         );
+        const cached = usage.prompt_tokens_details?.cached_tokens ?? 0;
         onUsage?.({
           prompt: usage.prompt_tokens,
           completion: usage.completion_tokens,
           total: usage.total_tokens,
+          cached,
         });
         onRoundUsage?.({
           promptTokens: usage.prompt_tokens,
           completionTokens: usage.completion_tokens,
+          cachedTokens: cached,
           promptKnown: availability?.promptKnown ?? true,
           completionKnown: availability?.completionKnown ?? true,
         });

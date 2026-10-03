@@ -126,16 +126,26 @@ export interface OpenAIChatCompletionChunk {
 }
 
 /**
- * OpenAI-compatible token usage stats. `prompt_tokens_details.cached_tokens`
- * is supported by OpenAI and a growing set of compatible servers; absent
- * elsewhere, we default to 0 when surfacing to VS Code.
+ * OpenAI-compatible token usage stats. This is also the payload of the
+ * `usage` data part VS Code reads for the context-window control and the
+ * per-turn usage footer (input / cached input / output), so field names
+ * follow OpenAI's `usage` object. `prompt_tokens_details.cached_tokens` is
+ * reported by OpenAI and a growing set of compatible servers; absent
+ * elsewhere, we default it to 0 when surfacing to VS Code.
  */
 export interface OpenAIUsage {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
   prompt_tokens_details?: {
+    /** Prompt tokens served from the server's prefix / KV cache. */
     cached_tokens?: number;
+    /** Prompt tokens written to a provider-side cache (Anthropic via LiteLLM). */
+    cache_creation_input_tokens?: number;
+  };
+  completion_tokens_details?: {
+    /** Completion tokens spent on reasoning; included in `completion_tokens`. */
+    reasoning_tokens?: number;
   };
 }
 

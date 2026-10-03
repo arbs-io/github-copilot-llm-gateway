@@ -182,6 +182,55 @@ describe('extractUsage', () => {
     });
   });
 
+  test('passes through cache-write and reasoning token details when reported', () => {
+    const result = extractUsage({
+      prompt_tokens: 100,
+      completion_tokens: 50,
+      total_tokens: 150,
+      prompt_tokens_details: { cached_tokens: 60, cache_creation_input_tokens: 30 },
+      completion_tokens_details: { reasoning_tokens: 20, accepted_prediction_tokens: 0 },
+    });
+    assert.deepEqual(result, {
+      prompt_tokens: 100,
+      completion_tokens: 50,
+      total_tokens: 150,
+      prompt_tokens_details: { cached_tokens: 60, cache_creation_input_tokens: 30 },
+      completion_tokens_details: { reasoning_tokens: 20 },
+    });
+  });
+
+  test('falls back to top-level Anthropic-style cache fields', () => {
+    const result = extractUsage({
+      prompt_tokens: 100,
+      completion_tokens: 50,
+      total_tokens: 150,
+      cache_read_input_tokens: 70,
+      cache_creation_input_tokens: 10,
+    });
+    assert.deepEqual(result?.prompt_tokens_details, { cached_tokens: 70, cache_creation_input_tokens: 10 });
+  });
+
+  test('prefers prompt_tokens_details over top-level cache fields', () => {
+    const result = extractUsage({
+      prompt_tokens: 100,
+      completion_tokens: 50,
+      prompt_tokens_details: { cached_tokens: 40 },
+      cache_read_input_tokens: 70,
+    });
+    assert.equal(result?.prompt_tokens_details?.cached_tokens, 40);
+  });
+
+  test('clamps negative cache and reasoning counts to zero', () => {
+    const result = extractUsage({
+      prompt_tokens: 10,
+      completion_tokens: 5,
+      prompt_tokens_details: { cached_tokens: -1 },
+      completion_tokens_details: { reasoning_tokens: -3 },
+    });
+    assert.equal(result?.prompt_tokens_details?.cached_tokens, 0);
+    assert.deepEqual(result?.completion_tokens_details, { reasoning_tokens: 0 });
+  });
+
   test('defaults missing cached_tokens to 0', () => {
     const result = extractUsage({
       prompt_tokens: 10,

@@ -10,6 +10,8 @@ export interface TokenUsage {
   readonly prompt: number;
   readonly completion: number;
   readonly total: number;
+  /** Prompt tokens served from the server's cache (a subset of `prompt`), when reported. */
+  readonly cached?: number;
 }
 
 export interface SessionStats {
@@ -17,6 +19,8 @@ export interface SessionStats {
   readonly promptTokens: number;
   readonly completionTokens: number;
   readonly totalTokens: number;
+  /** Prompt tokens served from the server's cache, summed over requests that reported it. */
+  readonly cachedTokens: number;
   /**
    * Number of requests that reported a usage frame. Used to display an
    * average tokens/request that ignores requests where the server gave us no
@@ -31,6 +35,7 @@ export function emptySessionStats(): SessionStats {
     promptTokens: 0,
     completionTokens: 0,
     totalTokens: 0,
+    cachedTokens: 0,
     requestsWithUsage: 0,
   };
 }
@@ -56,6 +61,7 @@ export function accumulateUsage(stats: SessionStats, usage: TokenUsage): Session
     promptTokens: stats.promptTokens + prompt,
     completionTokens: stats.completionTokens + completion,
     totalTokens: stats.totalTokens + total,
+    cachedTokens: stats.cachedTokens + sanitize(usage.cached ?? 0),
     requestsWithUsage: stats.requestsWithUsage + 1,
   };
 }

@@ -20,6 +20,7 @@ describe('emptySessionStats', () => {
       promptTokens: 0,
       completionTokens: 0,
       totalTokens: 0,
+      cachedTokens: 0,
       requestsWithUsage: 0,
     });
   });
@@ -134,5 +135,15 @@ describe('formatRelativeTime', () => {
 
   test('clamps future timestamps to "just now" rather than going negative', () => {
     assert.equal(formatRelativeTime(NOW + 50_000, NOW), 'just now');
+  });
+});
+
+describe('accumulateUsage cached tokens', () => {
+  test('sums cached tokens and treats a missing value as zero', () => {
+    let stats = emptySessionStats();
+    stats = accumulateUsage(stats, { prompt: 100, completion: 10, total: 110, cached: 80 });
+    stats = accumulateUsage(stats, { prompt: 50, completion: 5, total: 55 });
+    stats = accumulateUsage(stats, { prompt: 50, completion: 5, total: 55, cached: -4 });
+    assert.equal(stats.cachedTokens, 80);
   });
 });

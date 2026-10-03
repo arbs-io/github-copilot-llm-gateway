@@ -90,6 +90,7 @@ describe('buildStatusMenu session rows', () => {
             promptTokens: 12_000,
             completionTokens: 800,
             totalTokens: 12_800,
+            cachedTokens: 0,
             requestsWithUsage: 3,
           },
         })
@@ -115,6 +116,28 @@ describe('buildStatusMenu session rows', () => {
     );
     assert.equal(item.description, 'Qwen3-8B · 30s ago · 66k tokens');
     assert.equal(item.detail, `${renderTextMeter(0.5)}  50% of 131k context`);
+  });
+
+  test('last request and session totals mention cached tokens when reported', () => {
+    const snapshot = makeSnapshot({
+      lastRequest: {
+        modelId: 'qwen/Qwen3-8B',
+        modelName: 'Qwen3-8B',
+        completedAt: FIXED_NOW - 30_000,
+        usage: { prompt: 60_000, completion: 5_536, total: 65_536, cached: 48_000 },
+      },
+      sessionStats: {
+        requestCount: 1,
+        promptTokens: 60_000,
+        completionTokens: 5_536,
+        totalTokens: 65_536,
+        cachedTokens: 48_000,
+        requestsWithUsage: 1,
+      },
+    });
+    const menu = buildStatusMenu(snapshot);
+    assert.equal(find(menu, 'Last request').description, 'Qwen3-8B · 30s ago · 66k tokens · 48k cached');
+    assert.equal(find(menu, 'Session usage').description, '1 request · 66k tokens (60k in, 48k cached / 5.5k out)');
   });
 
   test('last request without usage has no meter', () => {
