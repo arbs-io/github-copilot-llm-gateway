@@ -370,15 +370,14 @@ export class GatewayProvider
    * Provide token count estimation (rough char/4 approximation). Non-text
    * parts contribute too — see {@link countMessageTokens}.
    */
-  async provideTokenCount(
+  provideTokenCount(
     _model: vscode.LanguageModelChatInformation,
     text: string | vscode.LanguageModelChatMessage,
     _token: vscode.CancellationToken
   ): Promise<number> {
-    if (typeof text === 'string') {
-      return estimateTextTokens(text);
-    }
-    return countMessageTokens(text);
+    return Promise.resolve(
+      typeof text === 'string' ? estimateTextTokens(text) : countMessageTokens(text)
+    );
   }
 
   // ---------- status ----------

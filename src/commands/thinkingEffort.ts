@@ -93,17 +93,17 @@ export async function setThinkingEffortFlow(
  * one (the status menu's per-model rows), otherwise show every model with its
  * current value.
  */
-async function pickModel(
+function pickModel(
   models: readonly vscode.LanguageModelChatInformation[],
   preselectedModelId: string | undefined,
   perModelOptions: Record<string, unknown>,
   parameter: string
-): Promise<ModelPickItem | undefined> {
+): Thenable<ModelPickItem | undefined> {
   const preselected = preselectedModelId
     ? models.find((model) => model.id === preselectedModelId)
     : undefined;
   if (preselected) {
-    return { label: preselected.name, modelId: preselected.id };
+    return Promise.resolve({ label: preselected.name, modelId: preselected.id });
   }
   return vscode.window.showQuickPick<ModelPickItem>(
     models.map((model) => {
