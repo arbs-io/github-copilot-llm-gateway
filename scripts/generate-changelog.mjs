@@ -58,7 +58,7 @@ function escapeTags(line) {
     .map((part, i) =>
       i % 2
         ? part
-        : part.replace(/<(\/?)([A-Za-z][\w-]*)([^<>]*)>/g, (tag, slash, name, rest) =>
+        : part.replace(/<(\/?)([A-Za-z][\w-]*)(\s[^<>]*|\/)?>/g, (tag, slash, name, rest = "") =>
             HTML_TAGS.has(name.toLowerCase()) ? tag : `&lt;${slash}${name}${rest}&gt;`,
           ),
     )
@@ -68,7 +68,7 @@ function escapeTags(line) {
 function formatNotes(body) {
   let inFence = false;
   const lines = [];
-  for (const line of (body ?? "").replace(/\r\n/g, "\n").split("\n")) {
+  for (const line of (body ?? "").replaceAll("\r\n", "\n").split("\n")) {
     if (/^\s*(```|~~~)/.test(line)) {
       inFence = !inFence;
       lines.push(line);
