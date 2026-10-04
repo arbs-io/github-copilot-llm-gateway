@@ -657,6 +657,12 @@ Chat, agent mode, tools and MCP servers keep working. Features hosted by GitHub 
 
 - **Issues & Feature Requests**: [GitHub Issues](https://github.com/arbs-io/github-copilot-llm-gateway/issues)
 - **Discussions**: [GitHub Discussions](https://github.com/arbs-io/github-copilot-llm-gateway/discussions)
+- **Security**: please report vulnerabilities privately, as described in the [security policy](SECURITY.md)
+- **Release notes**: [GitHub Releases](https://github.com/arbs-io/github-copilot-llm-gateway/releases), or the **Changelog** tab on the Marketplace page
+
+## Contributing
+
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for how to set up a development environment and open a pull request. Everyone taking part is expected to follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## License
 

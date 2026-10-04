@@ -146,5 +146,8 @@ out-test/
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 
-# Claude AI local settings
+# Local tool settings
 .claude
+
+# Generated from the GitHub releases at release time (npm run changelog)
+CHANGELOG.md

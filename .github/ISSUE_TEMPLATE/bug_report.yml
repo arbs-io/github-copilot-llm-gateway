@@ -1,0 +1,80 @@
+name: Bug report
+description: Something isn't working as described in the README.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a problem. Please check the
+        [Troubleshooting](https://github.com/arbs-io/github-copilot-llm-gateway#troubleshooting)
+        section and the existing issues first.
+
+        **Security problems should not be reported here.** See the
+        [security policy](https://github.com/arbs-io/github-copilot-llm-gateway/security/policy).
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Configure the server as ...
+        2. Select the model ... in Copilot Chat
+        3. Ask ...
+    validations:
+      required: true
+  - type: input
+    id: extension-version
+    attributes:
+      label: Extension version
+      placeholder: "1.10.0"
+    validations:
+      required: true
+  - type: input
+    id: vscode-version
+    attributes:
+      label: VS Code version
+      description: From **Help > About**.
+      placeholder: "1.138.0"
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: "macOS 15, Windows 11, Ubuntu 24.04, ..."
+  - type: dropdown
+    id: server
+    attributes:
+      label: Inference server
+      options:
+        - vLLM
+        - Ollama
+        - llama.cpp
+        - LM Studio
+        - LocalAI
+        - LiteLLM
+        - Open WebUI
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: Model
+      description: The model name, including the quantization if there is one.
+      placeholder: "Qwen/Qwen3-8B, qwen3:8b-q4_K_M, ..."
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        Run **GitHub Copilot LLM Gateway: Show Output Log** and paste the
+        relevant lines. Please remove API keys, headers and anything else
+        private before posting.
+      render: text

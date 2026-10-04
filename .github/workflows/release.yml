@@ -1,0 +1,56 @@
+name: Release
+
+# Publishes the extension to the Visual Studio Marketplace when a GitHub
+# release is published. Draft releases don't trigger this until they're
+# published, and for a published release github.ref is the release tag, so
+# the job always builds the tagged commit.
+#
+# It can also be run by hand against a release tag (pick the tag under "Use
+# workflow from"), for example to publish a release that was first published
+# as a pre-release.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    if: ${{ github.event_name == 'workflow_dispatch' || !github.event.release.prerelease }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Extension
+        uses: actions/checkout@v4
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Check Version Matches Tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=$(node -p "require('./package.json').version")
+          if [ "$version" != "$TAG" ]; then
+            echo "::error::package.json version ($version) does not match the release tag ($TAG)"
+            exit 1
+          fi
+      - name: Install Extension Dependencies
+        # --ignore-scripts blocks dependency lifecycle scripts from running at
+        # install time (supply-chain hardening). Safe here: all devDependencies
+        # (incl. esbuild, whose platform binary ships as an optionalDependency)
+        # work without install scripts.
+        run: npm ci --ignore-scripts
+      - name: Generate Changelog
+        # Built from every published release, including this one, and packaged
+        # into the VSIX so the Marketplace shows the full history.
+        run: npm run changelog
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Run Tests
+        run: npm test
+      - name: Publish Extension
+        run: npm run deploy
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}

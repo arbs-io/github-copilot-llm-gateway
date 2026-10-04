@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and setup help
+    url: https://github.com/arbs-io/github-copilot-llm-gateway/discussions
+    about: Ask how to set something up or share what's working for you.
+  - name: Report a security vulnerability
+    url: https://github.com/arbs-io/github-copilot-llm-gateway/security/advisories/new
+    about: Please report security problems privately, not as an issue.

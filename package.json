@@ -11,6 +11,10 @@
     "type": "git",
     "url": "https://github.com/arbs-io/github-copilot-llm-gateway.git"
   },
+  "bugs": {
+    "url": "https://github.com/arbs-io/github-copilot-llm-gateway/issues"
+  },
+  "homepage": "https://github.com/arbs-io/github-copilot-llm-gateway#readme",
   "sponsor": {
     "url": "https://github.com/sponsors/arbs-io"
   },
@@ -27,6 +31,7 @@
     "test-build": "rm -rf out-test && tsc -p tsconfig.test.json",
     "test": "npm run test-build && node --test \"out-test/**/*.test.js\"",
     "test-coverage": "npm run test-build && node --test --experimental-test-coverage \"out-test/**/*.test.js\"",
+    "changelog": "gh api --paginate \"repos/arbs-io/github-copilot-llm-gateway/releases?per_page=100\" --jq \".[]\" | node scripts/generate-changelog.mjs",
     "deploy": "vsce publish --no-yarn",
     "package": "vsce package --no-yarn"
   },

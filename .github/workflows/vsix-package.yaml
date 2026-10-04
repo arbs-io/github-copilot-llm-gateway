@@ -1,16 +1,17 @@
 name: VsixPackage
 
+# Builds the extension on every supported OS. Publishing to the Marketplace
+# happens in release.yml when a GitHub release is published.
 on:
   push:
     branches:
       - main
-    tags:
-      # Publish to the Marketplace on a semver tag push (e.g. 1.2.0).
-      # A tag ref guarantees github.ref == refs/tags/<tag>, which the
-      # publish step below relies on. The previous `release: created`
-      # trigger could fire during the draft phase with the `main` ref,
-      # silently skipping the publish step.
-      - '[0-9]+.[0-9]+.[0-9]+'
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
 
 jobs:
   build:
@@ -31,10 +32,12 @@ jobs:
         # (incl. esbuild, whose platform binary ships as an optionalDependency)
         # work without install scripts.
         run: npm ci --ignore-scripts
+      - name: Lint
+        if: matrix.os == 'ubuntu-latest'
+        run: npm run lint
+      - name: Run Tests
+        # The test scripts use POSIX shell commands, so they run on Linux only.
+        if: matrix.os == 'ubuntu-latest'
+        run: npm test
       - name: Build Extension
         run: npm run esbuild
-      - name: Publish Extension
-        if: success() && startsWith(github.ref, 'refs/tags/') && matrix.os == 'ubuntu-latest'
-        run: npm run deploy
-        env:
-          VSCE_PAT: ${{ secrets.VSCE_PAT }}

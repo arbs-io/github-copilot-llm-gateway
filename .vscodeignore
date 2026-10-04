@@ -15,6 +15,10 @@ node_modules/**
 .github/**
 .claude/**
 **/.DS_Store
+scripts/**
+CONTRIBUTING.md
+SECURITY.md
+CODE_OF_CONDUCT.md
 PROJECT_SUMMARY.md
 INSTALLATION_TESTING.md
 package-lock.json
