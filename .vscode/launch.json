@@ -12,7 +12,8 @@
         "${workspaceFolder}/out/**/*.js"
       ],
       "preLaunchTask": "npm: esbuild-watch",
-      "sourceMaps": true
+      "sourceMaps": true,
+      "trace": true
     },
     {
       "name": "Run Extension (No Build)",
