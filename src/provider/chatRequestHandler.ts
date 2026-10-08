@@ -4,6 +4,7 @@ import { OpenAIChatCompletionRequest, OpenAIMessage } from '../api/types';
 import { buildChatRequest, OpenAIToolDefinition, ToolChoice } from '../api/requestBuilder';
 import { GatewayConfig } from '../config/gatewayConfig';
 import { resolvePerModelOptions } from '../config/perModelOptions';
+import { resolveReplayReasoning } from '../config/replayReasoning';
 import { applyModelConfigurationEffort } from '../config/thinkingEffort';
 import { REQUEST_SAMPLER_KEYS } from '../discovery/types';
 import {
@@ -175,7 +176,10 @@ export class ChatRequestHandler {
     const config = this.deps.getConfig();
     const openAIMessages = convertAllMessages(
       messages,
-      { enableImageInput: config.enableImageInput, replayReasoning: config.replayReasoning },
+      {
+        enableImageInput: config.enableImageInput,
+        replayReasoning: resolveReplayReasoning(model.id, config),
+      },
       log
     );
     log(`Converted to ${openAIMessages.length} OpenAI messages`);

@@ -36,6 +36,7 @@ import { SecretsManager } from './secretsManager';
 import { UsageService } from './usageService';
 import { promptOpenSettings } from './notifications';
 import { countMessageTokens } from './vscodeParts';
+import { resolveReplayReasoning } from '../config/replayReasoning';
 
 export type { RequestStateEvent } from './chatRequestHandler';
 
@@ -371,12 +372,14 @@ export class GatewayProvider
    * parts contribute too — see {@link countMessageTokens}.
    */
   provideTokenCount(
-    _model: vscode.LanguageModelChatInformation,
+    model: vscode.LanguageModelChatInformation,
     text: string | vscode.LanguageModelChatMessage,
     _token: vscode.CancellationToken
   ): Promise<number> {
     return Promise.resolve(
-      typeof text === 'string' ? estimateTextTokens(text) : countMessageTokens(text, this.config.replayReasoning)
+      typeof text === 'string'
+        ? estimateTextTokens(text)
+        : countMessageTokens(text, resolveReplayReasoning(model.id, this.config))
     );
   }
 

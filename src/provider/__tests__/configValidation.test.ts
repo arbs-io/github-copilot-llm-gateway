@@ -49,6 +49,7 @@ function baseConfig(overrides: Partial<GatewayConfig> = {}): GatewayConfig {
     loopGuardToolNudgeAfter: 3,
     loopGuardToolBlockAfter: 5,
     replayReasoning: false,
+    replayReasoningModels: {},
     ...overrides,
   };
 }
@@ -132,5 +133,22 @@ describe('validateGatewayConfig', () => {
     const { config, issues } = validateGatewayConfig(baseConfig({ replayReasoning: true }));
     assert.equal(config.replayReasoning, true);
     assert.deepEqual(issues, []);
+  });
+
+  test('keeps only boolean replayReasoningModels entries', () => {
+    const raw = baseConfig({
+      replayReasoningModels: { 'deepseek*': true, 'gpt-*': false, qwen: 'true', llama: 1 } as unknown as Record<
+        string,
+        boolean
+      >,
+    });
+    const { config, issues } = validateGatewayConfig(raw);
+    assert.deepEqual(config.replayReasoningModels, { 'deepseek*': true, 'gpt-*': false });
+    assert.deepEqual(issues, []);
+  });
+
+  test('treats a non-object replayReasoningModels as empty', () => {
+    const raw = baseConfig({ replayReasoningModels: null as unknown as Record<string, boolean> });
+    assert.deepEqual(validateGatewayConfig(raw).config.replayReasoningModels, {});
   });
 });

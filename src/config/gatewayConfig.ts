@@ -94,4 +94,10 @@ export interface GatewayConfig {
    * because some servers reject the unknown field.
    */
   replayReasoning: boolean;
+  /**
+   * Per-model overrides of `replayReasoning`, keyed by model id / wildcard.
+   * Resolve through `resolveReplayReasoning` rather than reading either
+   * field directly.
+   */
+  replayReasoningModels: Record<string, boolean>;
 }

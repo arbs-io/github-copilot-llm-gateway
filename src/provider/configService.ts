@@ -98,6 +98,7 @@ export class ConfigService {
       loopGuardToolNudgeAfter: config.get<number>('loopGuardToolNudgeAfter', 3),
       loopGuardToolBlockAfter: config.get<number>('loopGuardToolBlockAfter', 5),
       replayReasoning: config.get<boolean>('replayReasoning', false),
+      replayReasoningModels: config.get<Record<string, boolean>>('replayReasoningModels', {}) ?? {},
     };
   }
 

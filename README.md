@@ -239,6 +239,7 @@ The **API key** and any **custom HTTP headers** are not settings: they are kept 
 | **Model Context Windows**     | `{}`     | Per-model context window override (total tokens), keyed by model id or `*` wildcard. Wins over server-reported values. |
 | **Enable Image Input**        | `true`   | Advertise image-input capability for multimodal models and forward image parts as base64 `image_url`s.       |
 | **Replay Reasoning**          | `false`  | Send the model's earlier thinking back as `reasoning_content` in agent tool-call rounds. Needed for DeepSeek with tools; see [Reasoning Replay](#reasoning-replay). |
+| **Replay Reasoning Models**   | `{}`     | Per-model override of **Replay Reasoning**, keyed by model id or `*` wildcard. `true` or `false` wins over the global setting. |
 
 #### How the context window is determined
 
@@ -321,6 +322,14 @@ In agent mode, Copilot Chat passes the model's thinking from earlier tool-call r
 | llama.cpp, LM Studio | Helps: the chat template keeps the model's reasoning across tool calls |
 | vLLM, Ollama, SGLang | Ignored, so it only adds input tokens |
 | OpenAI, Azure OpenAI | May reject the request because of the extra field |
+
+On a gateway that serves several model families, such as LiteLLM in front of both DeepSeek and OpenAI, set it per model with `github.copilot.llm-gateway.replayReasoningModels` instead. An entry wins over the global setting, and models without one follow it:
+
+```json
+"github.copilot.llm-gateway.replayReasoningModels": { "deepseek*": true, "gpt-*": false }
+```
+
+Keys match the model id exactly or with a `*` wildcard (case-insensitive); exact-id entries win.
 
 The reasoning text counts towards each request's input tokens and the context budget. Thinking from earlier replies is never replayed; Copilot Chat doesn't keep it.
 
