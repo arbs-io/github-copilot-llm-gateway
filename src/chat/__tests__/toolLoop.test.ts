@@ -151,7 +151,7 @@ describe('countRepeatedToolRounds', () => {
       assert.equal(countRepeatedToolRounds([...PROMPT, ...A('1'), ...B('2'), ...changed, ...B('4')]).count, 1);
     });
 
-    test('finds three-round cycles and prefers the shortest period', () => {
+    test('finds three-round cycles and prefers the shorter period on a tie', () => {
       const three = countRepeatedToolRounds([...PROMPT, ...A('1'), ...B('2'), ...C('3'), ...A('4'), ...B('5'), ...C('6')]);
       assert.equal(three.period, 3);
       assert.equal(three.count, 6);
@@ -177,6 +177,21 @@ describe('countRepeatedToolRounds', () => {
       const status = countRepeatedToolRounds([...PROMPT, ...A('1'), ...A('2'), ...B('3'), ...A('4'), ...A('5'), ...B('6')]);
       assert.equal(status.period, 3);
       assert.equal(status.count, 6);
+    });
+
+    test('keeps the longer cycle when the latest rounds also repeat on their own', () => {
+      // The two latest rounds match, but the three-round cycle covers the whole stretch.
+      const status = countRepeatedToolRounds([
+        ...PROMPT, ...A('1'), ...A('2'), ...B('3'), ...A('4'), ...A('5'), ...B('6'), ...A('7'), ...A('8'),
+      ]);
+      assert.equal(status.period, 3);
+      assert.equal(status.count, 8);
+    });
+
+    test('a longer cycle that has not come round twice does not outrank a shorter one', () => {
+      const status = countRepeatedToolRounds([...PROMPT, ...A('1'), ...A('2'), ...B('3'), ...A('4'), ...A('5')]);
+      assert.equal(status.period, 1);
+      assert.equal(status.count, 2);
     });
 
     test('ignores cycles longer than four rounds', () => {

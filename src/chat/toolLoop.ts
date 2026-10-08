@@ -94,21 +94,24 @@ function collectToolRounds(messages: readonly OpenAIMessage[]): ToolRound[] {
 }
 
 /**
- * The shortest period (up to MAX_PERIOD) the trailing rounds repeat with, and
- * how many rounds that stretch covers. A cycle has to come round at least
- * twice; one earlier occurrence of a round is not a loop.
+ * The period (up to MAX_PERIOD) the trailing rounds repeat with, and how many
+ * rounds that stretch covers. A cycle has to come round at least twice; one
+ * earlier occurrence of a round is not a loop. The longest stretch wins, so a
+ * round repeated inside a longer cycle (A, A, B, A, A, B, …) does not hide it;
+ * ties go to the shorter period.
  */
 function findCycle(rounds: readonly ToolRound[]): { period: number; length: number } | undefined {
+  let best: { period: number; length: number } | undefined;
   for (let period = 1; period <= MAX_PERIOD && 2 * period <= rounds.length; period++) {
     let matched = 0;
     while (matched + period < rounds.length && rounds[matched].signature === rounds[matched + period].signature) {
       matched++;
     }
-    if (matched >= period) {
-      return { period, length: matched + period };
+    if (matched >= period && (best === undefined || matched + period > best.length)) {
+      best = { period, length: matched + period };
     }
   }
-  return undefined;
+  return best;
 }
 
 /** A request ending in a user message is a fresh prompt, not a continuation, so it never counts. */
