@@ -508,8 +508,9 @@ export class GatewayProvider
   private reloadConfig(): void {
     this.config = this.configService.load();
     this.client.updateConfig(this.config);
-    // The server (or its capabilities) may have changed — probe suffix support again.
-    this.inlineCompletions.resetSuffixProbe();
+    // The server (or its capabilities) may have changed — probe suffix support
+    // again and re-arm the inline-completion timeout advice.
+    this.inlineCompletions.resetServerState();
     // Context sizes learned from a previous server's errors no longer apply,
     // and neither does the cached backend detection.
     this.catalog.clearLearnedContexts();

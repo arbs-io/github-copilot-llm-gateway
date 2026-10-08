@@ -128,6 +128,23 @@ describe('isSuffixUnsupportedError', () => {
     );
   });
 
+  test('matches Azure OpenAI "Unrecognized request argument supplied: suffix" (issue #127)', () => {
+    const azureError =
+      '{"error":{"message":"litellm.BadRequestError: AzureException BadRequestError - Unrecognized request argument supplied: suffix","type":null,"param":null,"code":"400"}}';
+    assert.equal(isSuffixUnsupportedError(400, azureError), true);
+    assert.equal(
+      isSuffixUnsupportedError(400, 'Unrecognized request arguments supplied: echo, suffix'),
+      true
+    );
+  });
+
+  test('ignores Azure "Unrecognized request argument" errors for other parameters', () => {
+    assert.equal(
+      isSuffixUnsupportedError(400, 'Unrecognized request argument supplied: logit_bias'),
+      false
+    );
+  });
+
   test('ignores "not permitted" error when it does not mention suffix', () => {
     assert.equal(
       isSuffixUnsupportedError(400, 'extra inputs are not permitted'),

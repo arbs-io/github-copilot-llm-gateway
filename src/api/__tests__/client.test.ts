@@ -7,6 +7,8 @@ import {
   normalizeApiKey,
   buildHeaders,
   extractUsage,
+  RequestCancelledError,
+  RequestTimeoutError,
 } from '../client';
 
 // Shared stream-test fixtures: a full GatewayConfig literal, a no-op
@@ -434,5 +436,118 @@ describe('fetchCurrentUsage', () => {
       () => new GatewayClient(config).fetchCurrentUsage('/v1/usage/current')
     );
     assert.equal(result.kind, 'unreachable');
+  });
+});
+
+describe('non-streaming abort reasons (issue #127)', () => {
+  const config = {
+    serverUrl: 'http://gateway:8000',
+    apiKey: '',
+    requestTimeout: 60000,
+    customHeaders: {},
+  } as unknown as import('../../config/gatewayConfig').GatewayConfig;
+
+  const completionRequest = { model: 'm', prompt: 'def f(', max_tokens: 16 };
+
+  /** A fetch that never answers and rejects the way the given impl does once aborted. */
+  function hangingFetch(rejectWith: (signal: AbortSignal) => unknown): typeof fetch {
+    return ((_url: string, init: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      const signal = init.signal as AbortSignal;
+      signal.addEventListener('abort', () => reject(rejectWith(signal)));
+    })) as typeof fetch;
+  }
+
+  /** Cancellation token whose listeners fire when `cancel()` is called. */
+  function fakeToken(): { token: import('vscode').CancellationToken; cancel: () => void } {
+    const listeners: Array<() => void> = [];
+    const token = {
+      isCancellationRequested: false,
+      onCancellationRequested: (listener: () => void) => {
+        listeners.push(listener);
+        return { dispose: () => undefined };
+      },
+    };
+    return {
+      token: token as unknown as import('vscode').CancellationToken,
+      cancel: () => {
+        token.isCancellationRequested = true;
+        listeners.forEach((listener) => listener());
+      },
+    };
+  }
+
+  async function withFetch<T>(impl: typeof fetch, run: () => Promise<T>): Promise<T> {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = impl;
+    try {
+      return await run();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  }
+
+  const undiciStyle = (signal: AbortSignal) => signal.reason;
+  const plainAbortError = () => new DOMException('This operation was aborted', 'AbortError');
+
+  for (const [label, rejectWith] of [['signal.reason', undiciStyle], ['a plain AbortError', plainAbortError]] as const) {
+    test(`fetchCompletion timeout rejects with RequestTimeoutError naming the setting (fetch rejects with ${label})`, async () => {
+      await withFetch(hangingFetch(rejectWith), () => assert.rejects(
+        new GatewayClient(config).fetchCompletion(completionRequest, streamTestToken, 20),
+        (error: unknown) => {
+          assert.ok(error instanceof RequestTimeoutError);
+          assert.equal(error.name, 'RequestTimeoutError');
+          assert.match(error.message, /20 ms/);
+          assert.match(error.message, /github\.copilot\.llm-gateway\.inlineCompletionTimeout/);
+          return true;
+        }
+      ));
+    });
+
+    test(`fetchCompletion cancellation rejects with RequestCancelledError (fetch rejects with ${label})`, async () => {
+      const { token, cancel } = fakeToken();
+      await withFetch(hangingFetch(rejectWith), async () => {
+        const pending = new GatewayClient(config).fetchCompletion(completionRequest, token, 60000);
+        cancel();
+        await assert.rejects(pending, (error: unknown) => {
+          assert.ok(error instanceof RequestCancelledError);
+          assert.equal(error.name, 'RequestCancelledError');
+          return true;
+        });
+      });
+    });
+
+    test(`usage probe still reports an aborted request as timed out/cancelled (fetch rejects with ${label})`, async () => {
+      const { token, cancel } = fakeToken();
+      const result = await withFetch(hangingFetch(rejectWith), async () => {
+        const pending = new GatewayClient(config).fetchCurrentUsage('/v1/usage/current', token);
+        cancel();
+        return pending;
+      });
+      assert.deepEqual(result, { kind: 'unreachable', reason: 'timed out after 10000ms or cancelled' });
+    });
+  }
+
+  test('real fetch surfaces RequestTimeoutError against a server that never answers', async () => {
+    const http = await import('node:http');
+    const server = http.createServer(() => { /* never respond */ });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as import('node:net').AddressInfo;
+    try {
+      await assert.rejects(
+        new GatewayClient({ ...config, serverUrl: `http://127.0.0.1:${port}` })
+          .fetchCompletion(completionRequest, streamTestToken, 50),
+        RequestTimeoutError
+      );
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  test('model list timeout names requestTimeout', async () => {
+    await withFetch(hangingFetch(undiciStyle), () => assert.rejects(
+      new GatewayClient({ ...config, requestTimeout: 20 }).fetchModels(),
+      /did not respond within 20 ms \(github\.copilot\.llm-gateway\.requestTimeout\)/
+    ));
   });
 });

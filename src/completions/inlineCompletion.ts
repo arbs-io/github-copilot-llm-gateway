@@ -99,10 +99,14 @@ export function buildCompletionRequestBody(
  * `400 {"error":{"message":"suffix is not currently supported",...}}` for any
  * request carrying `suffix`, regardless of the model's FIM ability. LiteLLM
  * answers `400 "suffix: Extra inputs are not permitted"` when the underlying
- * model doesn't accept the parameter.
+ * model doesn't accept the parameter. Azure OpenAI (directly or behind
+ * LiteLLM) answers `400 "Unrecognized request argument supplied: suffix"`.
  */
 export function isSuffixUnsupportedError(status: number, body: string): boolean {
-  return status === 400 && /suffix\b[\s\S]{0,80}?not[\s\S]{0,40}?(?:support|permit)/i.test(body);
+  return status === 400 && (
+    /suffix\b[\s\S]{0,80}?not[\s\S]{0,40}?(?:support|permit)/i.test(body) ||
+    /unrecognized request arguments? supplied:[^"]{0,80}?\bsuffix\b/i.test(body)
+  );
 }
 
 /**

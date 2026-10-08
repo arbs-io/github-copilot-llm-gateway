@@ -235,6 +235,29 @@ export class CompletionHttpError extends Error {
   }
 }
 
+/**
+ * A non-streaming request exceeded its time budget. The message names the
+ * setting that controls the budget so the log line tells the user what to
+ * change, instead of the generic "This operation was aborted" (issue #127).
+ */
+export class RequestTimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'RequestTimeoutError';
+  }
+}
+
+/**
+ * A non-streaming request was aborted through its VS Code cancellation token
+ * (e.g. an inline completion superseded by the next keystroke). Not a failure.
+ */
+export class RequestCancelledError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'RequestCancelledError';
+  }
+}
+
 export class GatewayClient {
   private config: GatewayConfig;
   private readonly log: GatewayLogger;
@@ -596,7 +619,8 @@ export class GatewayClient {
         body: JSON.stringify({ ...request, stream: false }),
       },
       cancellationToken,
-      timeoutMs
+      timeoutMs,
+      'github.copilot.llm-gateway.inlineCompletionTimeout'
     );
 
     if (!response.ok) {
@@ -711,7 +735,10 @@ export class GatewayClient {
       if (!response.ok) { return { kind: 'http', status: response.status }; }
       return { kind: 'ok', body: await response.json() };
     } catch (error) {
-      const reason = error instanceof Error && error.name === 'AbortError'
+      const aborted = error instanceof RequestTimeoutError ||
+        error instanceof RequestCancelledError ||
+        (error instanceof Error && error.name === 'AbortError');
+      const reason = aborted
         ? `timed out after ${timeoutMs}ms or cancelled`
         : describeFetchError(error);
       return { kind: 'unreachable', reason };
@@ -728,25 +755,45 @@ export class GatewayClient {
    * and optional cancellation-token wiring. Used for non-streaming requests
    * like the model list and inline completions. Streaming requests manage
    * their own timers in `streamChatCompletion`.
+   *
+   * Rejects with {@link RequestTimeoutError} (naming `timeoutSetting`) when the
+   * budget runs out and {@link RequestCancelledError} when the token fires.
    */
   private async fetchWithTimeout(
     url: string,
     options: RequestInit,
     cancellationToken?: vscode.CancellationToken,
-    timeoutMs?: number
+    timeoutMs?: number,
+    timeoutSetting = 'github.copilot.llm-gateway.requestTimeout'
   ): Promise<Response> {
     const controller = new AbortController();
+    const budgetMs = timeoutMs ?? this.config.requestTimeout;
     const timeoutId = setTimeout(
-      () => controller.abort(),
-      timeoutMs ?? this.config.requestTimeout
+      () => controller.abort(
+        new RequestTimeoutError(`The server did not respond within ${budgetMs} ms (${timeoutSetting})`)
+      ),
+      budgetMs
     );
-    const cancelSub = cancellationToken?.onCancellationRequested(() => controller.abort());
+    const cancelSub = cancellationToken?.onCancellationRequested(
+      () => controller.abort(new RequestCancelledError('Request cancelled'))
+    );
 
     try {
       return await fetch(url, {
         ...options,
         signal: controller.signal,
       });
+    } catch (error) {
+      // undici rejects with `signal.reason`, but other fetch implementations
+      // reject with a plain AbortError — surface our reason either way.
+      const reason: unknown = controller.signal.reason;
+      if (
+        controller.signal.aborted &&
+        (reason instanceof RequestTimeoutError || reason instanceof RequestCancelledError)
+      ) {
+        throw reason;
+      }
+      throw error;
     } finally {
       clearTimeout(timeoutId);
       cancelSub?.dispose();
