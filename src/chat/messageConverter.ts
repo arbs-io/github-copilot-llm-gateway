@@ -259,6 +259,64 @@ function appendDataPart(
 }
 
 /**
+ * Collect a thinking part's text. Only assistant messages replay reasoning,
+ * and only when `replayReasoning` is on; otherwise the part is dropped.
+ */
+function appendThinkingPart(
+  acc: ConvertedParts,
+  role: NormalizedRole,
+  part: Extract<NormalizedPart, { kind: 'thinking' }>,
+  options: MessageConverterOptions
+): void {
+  if (!options.replayReasoning || role !== 'assistant') {
+    return;
+  }
+  acc.sawThinking = true;
+  // Empty values include our own `vscode_reasoning_done` marker.
+  if (part.value.length > 0) {
+    acc.thinking.push(part.value);
+  }
+}
+
+/** Pick the wire message shape for the accumulated parts. */
+function buildWireMessages(role: NormalizedRole, acc: ConvertedParts): OpenAIMessage[] {
+  const { toolCalls, toolResults, userContent, textContent } = acc;
+  if (toolCalls.length > 0) {
+    return [{ role: 'assistant', content: textContent || null, tool_calls: toolCalls }];
+  }
+  if (toolResults.length > 0) {
+    return [...toolResults];
+  }
+  if (userContent.length > 0) {
+    return [{ role, content: userContent }];
+  }
+  if (textContent) {
+    return [{ role, content: textContent }];
+  }
+  return [];
+}
+
+/**
+ * Attach collected reasoning to the first wire message.
+ *
+ * Only assistant messages collect thinking; a thinking-only message has
+ * nothing to attach it to and is still dropped. A tool-call round that had
+ * thinking parts keeps the field even when they were all empty, because
+ * DeepSeek checks for its presence on every assistant message in the turn.
+ */
+function attachReasoning(result: OpenAIMessage[], acc: ConvertedParts): void {
+  const firstMessage = result[0];
+  if (firstMessage?.role !== 'assistant') {
+    return;
+  }
+  if (acc.thinking.length > 0) {
+    firstMessage.reasoning_content = acc.thinking.join('\n');
+  } else if (acc.sawThinking && acc.toolCalls.length > 0) {
+    firstMessage.reasoning_content = '';
+  }
+}
+
+/**
  * Convert a normalized message into zero or more OpenAI wire messages.
  *
  * The conversion is lossy-but-deliberate:
@@ -301,13 +359,7 @@ export function convertMessage(
         appendDataPart(acc, message.role, part, options, log);
         break;
       case 'thinking':
-        if (options.replayReasoning && message.role === 'assistant') {
-          acc.sawThinking = true;
-          // Empty values include our own `vscode_reasoning_done` marker.
-          if (part.value.length > 0) {
-            acc.thinking.push(part.value);
-          }
-        }
+        appendThinkingPart(acc, message.role, part, options);
         break;
       case 'unknown':
         // Unknown parts are silently dropped; the classifier has already logged.
@@ -319,29 +371,8 @@ export function convertMessage(
     }
   }
 
-  const { toolCalls, toolResults, userContent, textContent } = acc;
-  const result: OpenAIMessage[] = [];
-  if (toolCalls.length > 0) {
-    result.push({ role: 'assistant', content: textContent || null, tool_calls: toolCalls });
-  } else if (toolResults.length > 0) {
-    result.push(...toolResults);
-  } else if (userContent.length > 0) {
-    result.push({ role: message.role, content: userContent });
-  } else if (textContent) {
-    result.push({ role: message.role, content: textContent });
-  }
-  // Only assistant messages collect thinking; a thinking-only message has
-  // nothing to attach it to and is still dropped. A tool-call round that had
-  // thinking parts keeps the field even when they were all empty, because
-  // DeepSeek checks for its presence on every assistant message in the turn.
-  const firstMessage = result[0];
-  if (firstMessage?.role === 'assistant') {
-    if (acc.thinking.length > 0) {
-      firstMessage.reasoning_content = acc.thinking.join('\n');
-    } else if (acc.sawThinking && toolCalls.length > 0) {
-      firstMessage.reasoning_content = '';
-    }
-  }
+  const result = buildWireMessages(message.role, acc);
+  attachReasoning(result, acc);
   return result;
 }
 
