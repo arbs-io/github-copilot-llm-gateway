@@ -345,6 +345,21 @@
           "minimum": 0,
           "markdownDescription": "When the same tool call — or the same short cycle of tool calls — repeats for this many rounds with identical results, block those exact calls (same tool, same arguments): the model is told so in the tool result, a note is shown in the chat, and if it makes one of them again it is withheld. Any other tool call still goes through, so the agent can change approach and keep working; if the model only repeats blocked calls, the reply ends. `0` turns this off; values below `2` also turn it off.",
           "order": 30
+        },
+        "github.copilot.llm-gateway.replayReasoning": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Send the model's earlier reasoning back to the server as `reasoning_content` on assistant messages. Copilot Chat only passes back thinking from the current reply's tool-call rounds, so this matters mostly in agent mode. **DeepSeek** thinking mode with tools requires it (requests fail with a 400 error without it); **llama.cpp** and **LM Studio** chat templates use it to keep reasoning across tool calls. vLLM, Ollama and SGLang ignore it, and OpenAI or Azure OpenAI may reject the request because of the extra field. Adds the reasoning text to every request's input tokens.",
+          "order": 14
+        },
+        "github.copilot.llm-gateway.replayReasoningModels": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": {
+            "type": "boolean"
+          },
+          "markdownDescription": "Per-model override of **Replay Reasoning**, keyed by model id. `true` replays reasoning for that model and `false` turns it off, whatever **Replay Reasoning** says; models with no entry follow **Replay Reasoning**. Useful on gateways such as LiteLLM that serve DeepSeek next to OpenAI models. Keys match the model id exactly, or use a `*` wildcard (case-insensitive); exact-id entries win. Example: `{ \"deepseek*\": true, \"gpt-*\": false }`. Edit in settings.json.",
+          "order": 14
         }
       }
     }

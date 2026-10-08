@@ -21,6 +21,7 @@ export type NormalizedPart =
   | { kind: 'toolResult'; callId: string; content: string }
   | { kind: 'toolCall'; callId: string; name: string; input: unknown }
   | { kind: 'image'; mimeType: string; data: Uint8Array }
+  | { kind: 'thinking'; value: string }
   | { kind: 'unknown' };
 
 export interface NormalizedMessage {
@@ -86,8 +87,46 @@ function extractToolResultPartText(part: unknown): string {
   return JSON.stringify(part);
 }
 
+/**
+ * Normalize a thinking part's `value` to plain text. The proposed
+ * `LanguageModelThinkingPart` API types it as `string | string[]`; array
+ * chunks are concatenated. Anything else yields an empty string.
+ */
+export function normalizeThinkingValue(value: unknown): string {
+  if (typeof value === 'string') {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.filter((chunk): chunk is string => typeof chunk === 'string').join('');
+  }
+  return '';
+}
+
+/**
+ * Duck-typed check for a `LanguageModelThinkingPart`: a `value` that is a
+ * string or string array, plus the `id` / `metadata` keys its constructor
+ * always assigns. Text parts carry only `value`, so they never match.
+ */
+export function isThinkingPartShape(part: unknown): part is { value: string | string[] } {
+  if (typeof part !== 'object' || part === null) {
+    return false;
+  }
+  const obj = part as Record<string, unknown>;
+  const value = obj.value;
+  const hasThinkingValue =
+    typeof value === 'string' || (Array.isArray(value) && value.every((v) => typeof v === 'string'));
+  return hasThinkingValue && ('id' in obj || 'metadata' in obj);
+}
+
 export interface MessageConverterOptions {
   enableImageInput: boolean;
+  /**
+   * Send the model's earlier reasoning back as `reasoning_content` on
+   * assistant history messages. Copilot Chat only replays thinking for the
+   * current turn's tool-call rounds, so this mainly covers agent loops.
+   * Off by default: some servers reject the unknown field.
+   */
+  replayReasoning?: boolean;
 }
 
 const NOOP_LOGGER: ConverterLogger = () => {
@@ -133,6 +172,9 @@ interface ConvertedParts {
   readonly toolResults: OpenAIMessage[];
   readonly toolCalls: OpenAIMessage[];
   readonly userContent: UserContentPart[];
+  readonly thinking: string[];
+  /** Whether any thinking part was seen, empty ones included. */
+  sawThinking: boolean;
   textContent: string;
 }
 
@@ -217,6 +259,64 @@ function appendDataPart(
 }
 
 /**
+ * Collect a thinking part's text. Only assistant messages replay reasoning,
+ * and only when `replayReasoning` is on; otherwise the part is dropped.
+ */
+function appendThinkingPart(
+  acc: ConvertedParts,
+  role: NormalizedRole,
+  part: Extract<NormalizedPart, { kind: 'thinking' }>,
+  options: MessageConverterOptions
+): void {
+  if (!options.replayReasoning || role !== 'assistant') {
+    return;
+  }
+  acc.sawThinking = true;
+  // Empty values include our own `vscode_reasoning_done` marker.
+  if (part.value.length > 0) {
+    acc.thinking.push(part.value);
+  }
+}
+
+/** Pick the wire message shape for the accumulated parts. */
+function buildWireMessages(role: NormalizedRole, acc: ConvertedParts): OpenAIMessage[] {
+  const { toolCalls, toolResults, userContent, textContent } = acc;
+  if (toolCalls.length > 0) {
+    return [{ role: 'assistant', content: textContent || null, tool_calls: toolCalls }];
+  }
+  if (toolResults.length > 0) {
+    return [...toolResults];
+  }
+  if (userContent.length > 0) {
+    return [{ role, content: userContent }];
+  }
+  if (textContent) {
+    return [{ role, content: textContent }];
+  }
+  return [];
+}
+
+/**
+ * Attach collected reasoning to the first wire message.
+ *
+ * Only assistant messages collect thinking; a thinking-only message has
+ * nothing to attach it to and is still dropped. A tool-call round that had
+ * thinking parts keeps the field even when they were all empty, because
+ * DeepSeek checks for its presence on every assistant message in the turn.
+ */
+function attachReasoning(result: OpenAIMessage[], acc: ConvertedParts): void {
+  const firstMessage = result[0];
+  if (firstMessage?.role !== 'assistant') {
+    return;
+  }
+  if (acc.thinking.length > 0) {
+    firstMessage.reasoning_content = acc.thinking.join('\n');
+  } else if (acc.sawThinking && acc.toolCalls.length > 0) {
+    firstMessage.reasoning_content = '';
+  }
+}
+
+/**
  * Convert a normalized message into zero or more OpenAI wire messages.
  *
  * The conversion is lossy-but-deliberate:
@@ -227,13 +327,22 @@ function appendDataPart(
  *
  * When `enableImageInput` is false, image parts are dropped with a log line.
  * Data parts with a text MIME type (e.g. pasted attachments) become text.
+ * Thinking parts are dropped unless `replayReasoning` is on, in which case
+ * they become the assistant message's `reasoning_content`.
  */
 export function convertMessage(
   message: NormalizedMessage,
   options: MessageConverterOptions,
   log: ConverterLogger = NOOP_LOGGER
 ): OpenAIMessage[] {
-  const acc: ConvertedParts = { toolResults: [], toolCalls: [], userContent: [], textContent: '' };
+  const acc: ConvertedParts = {
+    toolResults: [],
+    toolCalls: [],
+    userContent: [],
+    thinking: [],
+    sawThinking: false,
+    textContent: '',
+  };
 
   for (const part of message.parts) {
     switch (part.kind) {
@@ -249,6 +358,9 @@ export function convertMessage(
       case 'image':
         appendDataPart(acc, message.role, part, options, log);
         break;
+      case 'thinking':
+        appendThinkingPart(acc, message.role, part, options);
+        break;
       case 'unknown':
         // Unknown parts are silently dropped; the classifier has already logged.
         break;
@@ -259,17 +371,8 @@ export function convertMessage(
     }
   }
 
-  const { toolCalls, toolResults, userContent, textContent } = acc;
-  const result: OpenAIMessage[] = [];
-  if (toolCalls.length > 0) {
-    result.push({ role: 'assistant', content: textContent || null, tool_calls: toolCalls });
-  } else if (toolResults.length > 0) {
-    result.push(...toolResults);
-  } else if (userContent.length > 0) {
-    result.push({ role: message.role, content: userContent });
-  } else if (textContent) {
-    result.push({ role: message.role, content: textContent });
-  }
+  const result = buildWireMessages(message.role, acc);
+  attachReasoning(result, acc);
   return result;
 }
 

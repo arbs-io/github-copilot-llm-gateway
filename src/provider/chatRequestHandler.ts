@@ -4,6 +4,7 @@ import { OpenAIChatCompletionRequest, OpenAIMessage } from '../api/types';
 import { buildChatRequest, OpenAIToolDefinition, ToolChoice } from '../api/requestBuilder';
 import { GatewayConfig } from '../config/gatewayConfig';
 import { resolvePerModelOptions } from '../config/perModelOptions';
+import { resolveReplayReasoning } from '../config/replayReasoning';
 import { applyModelConfigurationEffort } from '../config/thinkingEffort';
 import { REQUEST_SAMPLER_KEYS } from '../discovery/types';
 import {
@@ -173,7 +174,14 @@ export class ChatRequestHandler {
     this.deps.onRequestState({ kind: 'start', modelId: model.id, modelName });
 
     const config = this.deps.getConfig();
-    const openAIMessages = convertAllMessages(messages, config.enableImageInput, log);
+    const openAIMessages = convertAllMessages(
+      messages,
+      {
+        enableImageInput: config.enableImageInput,
+        replayReasoning: resolveReplayReasoning(model.id, config),
+      },
+      log
+    );
     log(`Converted to ${openAIMessages.length} OpenAI messages`);
     this.logMessageStructure(openAIMessages);
     const loopGuard = this.applyToolLoopGuard(openAIMessages, config, options, progress);
@@ -607,8 +615,9 @@ export class ChatRequestHandler {
         hasContent = msg.content !== null && msg.content !== undefined;
       }
       const hasToolCalls = Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0;
+      const hasReasoning = typeof msg.reasoning_content === 'string';
       this.deps.log(
-        `  Message ${i + 1}: role=${msg.role}, hasContent=${hasContent}, hasToolCalls=${hasToolCalls}, toolCallId=${toolCallId}`
+        `  Message ${i + 1}: role=${msg.role}, hasContent=${hasContent}, hasToolCalls=${hasToolCalls}, toolCallId=${toolCallId}, hasReasoning=${hasReasoning}`
       );
     }
   }

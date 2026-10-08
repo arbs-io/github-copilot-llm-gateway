@@ -39,6 +39,8 @@ export interface TokenEstimableMessage {
   role?: string;
   tool_call_id?: string;
   tool_calls?: unknown;
+  /** Replayed reasoning; only present when `replayReasoning` is on. */
+  reasoning_content?: unknown;
 }
 
 function getToolCallIds(message: TokenEstimableMessage): Set<string> {
@@ -100,15 +102,24 @@ function serializeContentForTokenBudget(content: TokenEstimableMessage['content'
     .join('');
 }
 
-/**
- * Estimate tokens for an OpenAI-format message, including tool_calls if present.
- */
-export function estimateMessageTokens(message: TokenEstimableMessage): number {
+/** Serialize one message's content, tool calls and replayed reasoning. */
+function serializeMessageForTokenBudget(message: TokenEstimableMessage): string {
   let text = serializeContentForTokenBudget(message.content);
   if (message.tool_calls) {
     text += JSON.stringify(message.tool_calls);
   }
-  return estimateTextTokens(text);
+  if (typeof message.reasoning_content === 'string') {
+    text += message.reasoning_content;
+  }
+  return text;
+}
+
+/**
+ * Estimate tokens for an OpenAI-format message, including tool_calls and
+ * replayed `reasoning_content` if present.
+ */
+export function estimateMessageTokens(message: TokenEstimableMessage): number {
+  return estimateTextTokens(serializeMessageForTokenBudget(message));
 }
 
 /**
@@ -116,15 +127,7 @@ export function estimateMessageTokens(message: TokenEstimableMessage): number {
  * use a fixed-size placeholder so data URLs do not inflate the estimate.
  */
 export function buildInputText(messages: readonly TokenEstimableMessage[]): string {
-  return messages
-    .map((m) => {
-      let text = serializeContentForTokenBudget(m.content);
-      if (m.tool_calls) {
-        text += JSON.stringify(m.tool_calls);
-      }
-      return text;
-    })
-    .join('\n');
+  return messages.map(serializeMessageForTokenBudget).join('\n');
 }
 
 /**

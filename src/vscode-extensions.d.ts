@@ -9,6 +9,11 @@ declare module 'vscode' {
    * A part of a language model response that contains reasoning/thinking content.
    * Copilot Chat renders this in a dedicated collapsible "Thinking" UI block.
    *
+   * Copilot Chat also sends these back in assistant history messages for the
+   * current turn's tool-call rounds. There `value` may be a `string[]` and
+   * `id` may be `''`; vscodeParts.ts reads them defensively rather than
+   * through this declaration, which stays assignable to response parts.
+   *
    * @param value   The thinking text for this chunk.
    * @param id      Optional identifier for the thinking block.
    * @param metadata  Optional metadata. Pass `{ vscode_reasoning_done: true }` to close the block.

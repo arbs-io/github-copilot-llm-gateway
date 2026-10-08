@@ -53,6 +53,11 @@ describe('estimateMessageTokens', () => {
     assert.equal(estimateMessageTokens(msg), expected);
   });
 
+  test('adds replayed reasoning_content', () => {
+    const msg = { content: 'x', reasoning_content: 'y'.repeat(40) };
+    assert.equal(estimateMessageTokens(msg), Math.ceil(41 / 4));
+  });
+
   test('handles empty message', () => {
     assert.equal(estimateMessageTokens({}), 0);
   });
@@ -89,6 +94,10 @@ describe('buildInputText', () => {
       buildInputText(messages),
       'hi' + JSON.stringify(messages[0].tool_calls)
     );
+  });
+
+  test('appends replayed reasoning_content', () => {
+    assert.equal(buildInputText([{ content: 'hi', reasoning_content: 'why' }]), 'hiwhy');
   });
 
   test('returns empty string for empty message list', () => {
@@ -243,6 +252,22 @@ describe('truncateMessagesToFit', () => {
     const logs: string[] = [];
     truncateMessagesToFit([{ content: 'short' }], 100, (m) => logs.push(m));
     assert.equal(logs.length, 0);
+  });
+});
+
+describe('truncateMessagesToFit with replayed reasoning', () => {
+  test('counts reasoning_content towards the budget', () => {
+    const messages = [
+      { role: 'system', content: 'sys' },
+      { role: 'assistant', content: 'a', reasoning_content: 'r'.repeat(400) },
+      { role: 'user', content: 'q' },
+    ];
+    // Fits without the reasoning (3 tokens), not with it (~103 tokens).
+    const result = truncateMessagesToFit(messages, 50);
+    assert.deepEqual(
+      result.map((m) => m.role),
+      ['system', 'user']
+    );
   });
 });
 

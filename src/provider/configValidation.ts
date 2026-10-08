@@ -58,5 +58,20 @@ export function validateGatewayConfig(raw: GatewayConfig): {
     cfg.defaultMaxOutputTokens = adjusted;
   }
 
+  // Strict opt-in: a stray non-boolean in settings.json (e.g. "true") must
+  // not start adding a field that some servers reject.
+  cfg.replayReasoning = cfg.replayReasoning === true;
+  cfg.replayReasoningModels = keepBooleanEntries(cfg.replayReasoningModels);
+
   return { config: cfg, issues };
+}
+
+/** Drop entries whose value isn't a real boolean (e.g. `"true"`), so they fall back to the global switch. */
+function keepBooleanEntries(map: unknown): Record<string, boolean> {
+  if (typeof map !== 'object' || map === null || Array.isArray(map)) {
+    return {};
+  }
+  return Object.fromEntries(
+    Object.entries(map).filter((entry): entry is [string, boolean] => typeof entry[1] === 'boolean')
+  );
 }

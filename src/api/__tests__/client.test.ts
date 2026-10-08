@@ -47,6 +47,8 @@ const streamTestConfig = {
   loopGuardToolCalls: true,
   loopGuardToolNudgeAfter: 3,
   loopGuardToolBlockAfter: 5,
+  replayReasoning: false,
+  replayReasoningModels: {},
 } as unknown as import('../../config/gatewayConfig').GatewayConfig;
 
 const streamTestToken = {

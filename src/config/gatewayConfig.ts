@@ -87,4 +87,17 @@ export interface GatewayConfig {
   loopGuardToolNudgeAfter: number;
   /** Withhold a repeat of the looping call(s) after this many such rounds; 0 = off. */
   loopGuardToolBlockAfter: number;
+  /**
+   * Send earlier reasoning back as `reasoning_content` on assistant history
+   * messages (current turn's tool-call rounds only — that is all Copilot Chat
+   * replays). Required by DeepSeek thinking mode with tools; off by default
+   * because some servers reject the unknown field.
+   */
+  replayReasoning: boolean;
+  /**
+   * Per-model overrides of `replayReasoning`, keyed by model id / wildcard.
+   * Resolve through `resolveReplayReasoning` rather than reading either
+   * field directly.
+   */
+  replayReasoningModels: Record<string, boolean>;
 }

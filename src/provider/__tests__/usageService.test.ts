@@ -41,6 +41,8 @@ function fakeConfig(overrides: Partial<GatewayConfig> = {}): GatewayConfig {
     loopGuardToolCalls: true,
     loopGuardToolNudgeAfter: 3,
     loopGuardToolBlockAfter: 5,
+    replayReasoning: false,
+    replayReasoningModels: {},
     ...overrides,
   };
 }

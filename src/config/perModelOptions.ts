@@ -27,7 +27,7 @@ function isOptionsObject(value: unknown): value is Record<string, unknown> {
  * Build a case-insensitive `RegExp` that matches `modelId` against a pattern
  * containing `*` wildcards. All other characters are matched literally.
  */
-function matchesWildcard(pattern: string, modelId: string): boolean {
+export function matchesWildcard(pattern: string, modelId: string): boolean {
   const escaped = pattern
     .split('*')
     .map((segment) => segment.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`))
