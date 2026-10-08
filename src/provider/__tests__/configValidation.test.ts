@@ -48,6 +48,7 @@ function baseConfig(overrides: Partial<GatewayConfig> = {}): GatewayConfig {
     loopGuardToolCalls: true,
     loopGuardToolNudgeAfter: 3,
     loopGuardToolBlockAfter: 5,
+    replayReasoning: false,
     ...overrides,
   };
 }
@@ -119,5 +120,17 @@ describe('validateGatewayConfig', () => {
       issues.map((i) => i.kind).sort(),
       ['invalidRequestTimeout', 'invalidServerUrl', 'outputTokensAdjusted']
     );
+  });
+
+  test('keeps replayReasoning off by default and when not a real boolean', () => {
+    assert.equal(validateGatewayConfig(baseConfig()).config.replayReasoning, false);
+    const stray = baseConfig({ replayReasoning: 'true' as unknown as boolean });
+    assert.equal(validateGatewayConfig(stray).config.replayReasoning, false);
+  });
+
+  test('keeps replayReasoning on when enabled', () => {
+    const { config, issues } = validateGatewayConfig(baseConfig({ replayReasoning: true }));
+    assert.equal(config.replayReasoning, true);
+    assert.deepEqual(issues, []);
   });
 });

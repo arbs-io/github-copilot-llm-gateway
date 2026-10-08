@@ -58,5 +58,9 @@ export function validateGatewayConfig(raw: GatewayConfig): {
     cfg.defaultMaxOutputTokens = adjusted;
   }
 
+  // Strict opt-in: a stray non-boolean in settings.json (e.g. "true") must
+  // not start adding a field that some servers reject.
+  cfg.replayReasoning = cfg.replayReasoning === true;
+
   return { config: cfg, issues };
 }

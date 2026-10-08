@@ -376,7 +376,7 @@ export class GatewayProvider
     _token: vscode.CancellationToken
   ): Promise<number> {
     return Promise.resolve(
-      typeof text === 'string' ? estimateTextTokens(text) : countMessageTokens(text)
+      typeof text === 'string' ? estimateTextTokens(text) : countMessageTokens(text, this.config.replayReasoning)
     );
   }
 

@@ -4,9 +4,11 @@ import {
   decodeTextData,
   flattenToolResultContent,
   isTextMimeType,
+  isThinkingPartShape,
   NormalizedMessage,
   NormalizedPart,
   NormalizedRole,
+  normalizeThinkingValue,
 } from '../chat/messageConverter';
 import { estimateTextTokens, TOKEN_CONSTANTS } from '../chat/tokenBudget';
 import { OpenAIMessage } from '../api/types';
@@ -22,7 +24,7 @@ type Logger = (message: string) => void;
 
 export function convertAllMessages(
   messages: readonly vscode.LanguageModelChatMessage[],
-  enableImageInput: boolean,
+  options: { enableImageInput: boolean; replayReasoning: boolean },
   log: Logger
 ): OpenAIMessage[] {
   const result: OpenAIMessage[] = [];
@@ -31,7 +33,7 @@ export function convertAllMessages(
       role: mapRole(msg.role),
       parts: msg.content.map((part) => classifyPart(part, log)),
     };
-    result.push(...convertMessage(normalized, { enableImageInput }, log));
+    result.push(...convertMessage(normalized, options, log));
   }
   return result;
 }
@@ -70,7 +72,25 @@ export function classifyPart(part: unknown, log: Logger): NormalizedPart {
   if (part instanceof vscode.LanguageModelDataPart) {
     return { kind: 'image', mimeType: part.mimeType, data: part.data };
   }
+  const thinking = readThinkingText(part);
+  if (thinking !== undefined) {
+    return { kind: 'thinking', value: thinking };
+  }
   return classifyPartDuckTyped(part, log);
+}
+
+/**
+ * Text of a `LanguageModelThinkingPart`, or `undefined` for any other part.
+ * The class is proposed API, so guard the constructor before `instanceof`
+ * and fall back to its shape. `value` may be `string | string[]`.
+ */
+function readThinkingText(part: unknown): string | undefined {
+  const ctor: unknown = vscode.LanguageModelThinkingPart;
+  const isInstance = typeof ctor === 'function' && part instanceof ctor;
+  if (!isInstance && !isThinkingPartShape(part)) {
+    return undefined;
+  }
+  return normalizeThinkingValue((part as { value?: unknown }).value);
 }
 
 function classifyPartDuckTyped(part: unknown, log: Logger): NormalizedPart {
@@ -109,9 +129,13 @@ function classifyPartDuckTyped(part: unknown, log: Logger): NormalizedPart {
  * Non-text parts contribute too: tool calls / tool results are serialized
  * and counted, and each image contributes a conservative fixed overhead so
  * we don't undercount multimodal conversations (otherwise the output-token
- * budget overshoots the real context window).
+ * budget overshoots the real context window). Thinking parts count only when
+ * `replayReasoning` is on, since only then are they sent to the server.
  */
-export function countMessageTokens(message: vscode.LanguageModelChatMessage): number {
+export function countMessageTokens(
+  message: vscode.LanguageModelChatMessage,
+  replayReasoning = false
+): number {
   let tokens = 0;
   for (const part of message.content) {
     if (part instanceof vscode.LanguageModelTextPart) {
@@ -127,6 +151,8 @@ export function countMessageTokens(message: vscode.LanguageModelChatMessage): nu
       // Images don't map cleanly to tokens — reserve a conservative fixed
       // overhead so multimodal requests aren't massively undercounted.
       tokens += TOKEN_CONSTANTS.IMAGE_INPUT_TOKENS;
+    } else if (replayReasoning) {
+      tokens += estimateTextTokens(readThinkingText(part) ?? '');
     }
   }
   return tokens;

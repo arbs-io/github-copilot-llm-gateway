@@ -173,7 +173,11 @@ export class ChatRequestHandler {
     this.deps.onRequestState({ kind: 'start', modelId: model.id, modelName });
 
     const config = this.deps.getConfig();
-    const openAIMessages = convertAllMessages(messages, config.enableImageInput, log);
+    const openAIMessages = convertAllMessages(
+      messages,
+      { enableImageInput: config.enableImageInput, replayReasoning: config.replayReasoning },
+      log
+    );
     log(`Converted to ${openAIMessages.length} OpenAI messages`);
     this.logMessageStructure(openAIMessages);
     const loopGuard = this.applyToolLoopGuard(openAIMessages, config, options, progress);

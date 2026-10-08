@@ -6,12 +6,15 @@ import {
   encodeImageAsDataUrl,
   flattenToolResultContent,
   isTextMimeType,
+  isThinkingPartShape,
   NormalizedMessage,
   NormalizedPart,
+  normalizeThinkingValue,
 } from '../messageConverter';
 
 const WITH_IMAGES = { enableImageInput: true };
 const WITHOUT_IMAGES = { enableImageInput: false };
+const REPLAY = { enableImageInput: false, replayReasoning: true };
 
 describe('isTextMimeType', () => {
   test('accepts text and JSON types, including parameters and case', () => {
@@ -349,6 +352,160 @@ describe('convertMessage', () => {
   });
 });
 
+describe('normalizeThinkingValue', () => {
+  test('returns a string value unchanged', () => {
+    assert.equal(normalizeThinkingValue('step one'), 'step one');
+  });
+
+  test('concatenates string[] chunks', () => {
+    assert.equal(normalizeThinkingValue(['step ', 'one']), 'step one');
+  });
+
+  test('yields an empty string for anything else', () => {
+    assert.equal(normalizeThinkingValue(undefined), '');
+    assert.equal(normalizeThinkingValue({ value: 'x' }), '');
+  });
+});
+
+describe('isThinkingPartShape', () => {
+  test('matches thinking-part shapes, including the empty done marker', () => {
+    assert.equal(isThinkingPartShape({ value: 'plan', id: 'r1', metadata: undefined }), true);
+    assert.equal(isThinkingPartShape({ value: ['a', 'b'], id: '' }), true);
+    assert.equal(
+      isThinkingPartShape({ value: '', id: '', metadata: { vscode_reasoning_done: true } }),
+      true
+    );
+  });
+
+  test('does not match text parts, tool parts or non-objects', () => {
+    assert.equal(isThinkingPartShape({ value: 'hello' }), false);
+    assert.equal(isThinkingPartShape({ callId: 'c', name: 'f', input: {} }), false);
+    assert.equal(isThinkingPartShape({ value: 42, id: 'x' }), false);
+    assert.equal(isThinkingPartShape('text'), false);
+    assert.equal(isThinkingPartShape(null), false);
+  });
+});
+
+describe('convertMessage reasoning replay', () => {
+  const withThinking: NormalizedMessage = {
+    role: 'assistant',
+    parts: [
+      { kind: 'thinking', value: 'I should search first.' },
+      { kind: 'text', value: 'Searching.' },
+      { kind: 'toolCall', callId: 'c1', name: 'search', input: { q: 'x' } },
+      { kind: 'thinking', value: '' },
+    ],
+  };
+
+  test('drops thinking parts when replay is off, matching pre-replay output exactly', () => {
+    const withoutThinking: NormalizedMessage = {
+      role: 'assistant',
+      parts: withThinking.parts.filter((p) => p.kind !== 'thinking'),
+    };
+    const expected = convertMessage(withoutThinking, WITHOUT_IMAGES);
+    assert.equal(
+      JSON.stringify(convertMessage(withThinking, WITHOUT_IMAGES)),
+      JSON.stringify(expected)
+    );
+    assert.equal(
+      JSON.stringify(convertMessage(withThinking, { enableImageInput: false, replayReasoning: false })),
+      JSON.stringify(expected)
+    );
+  });
+
+  test('attaches reasoning_content to an assistant message with tool calls', () => {
+    const result = convertMessage(withThinking, REPLAY);
+    assert.equal(result.length, 1);
+    assert.equal(result[0].content, 'Searching.');
+    assert.ok(Array.isArray(result[0].tool_calls));
+    assert.equal(result[0].reasoning_content, 'I should search first.');
+  });
+
+  test('attaches reasoning_content to an assistant message with only tool calls', () => {
+    const result = convertMessage(
+      {
+        role: 'assistant',
+        parts: [
+          { kind: 'thinking', value: 'Need the file.' },
+          { kind: 'toolCall', callId: 'c1', name: 'read', input: {} },
+        ],
+      },
+      REPLAY
+    );
+    assert.equal(result.length, 1);
+    assert.equal(result[0].content, null);
+    assert.equal(result[0].reasoning_content, 'Need the file.');
+  });
+
+  test('attaches reasoning_content to a text-only assistant message', () => {
+    const result = convertMessage(
+      {
+        role: 'assistant',
+        parts: [
+          { kind: 'thinking', value: 'Easy one.' },
+          { kind: 'text', value: 'Done.' },
+        ],
+      },
+      REPLAY
+    );
+    assert.deepEqual(result, [
+      { role: 'assistant', content: [{ type: 'text', text: 'Done.' }], reasoning_content: 'Easy one.' },
+    ]);
+  });
+
+  test('joins multiple non-empty thinking parts with newlines', () => {
+    const result = convertMessage(
+      {
+        role: 'assistant',
+        parts: [
+          { kind: 'thinking', value: 'first' },
+          { kind: 'thinking', value: '' },
+          { kind: 'thinking', value: 'second' },
+          { kind: 'text', value: 'ok' },
+        ],
+      },
+      REPLAY
+    );
+    assert.equal(result[0].reasoning_content, 'first\nsecond');
+  });
+
+  test('omits reasoning_content when every thinking part is empty', () => {
+    const result = convertMessage(
+      {
+        role: 'assistant',
+        parts: [
+          { kind: 'thinking', value: '' },
+          { kind: 'text', value: 'ok' },
+        ],
+      },
+      REPLAY
+    );
+    assert.equal('reasoning_content' in result[0], false);
+  });
+
+  test('drops a thinking-only assistant message', () => {
+    const result = convertMessage(
+      { role: 'assistant', parts: [{ kind: 'thinking', value: 'hmm' }] },
+      REPLAY
+    );
+    assert.deepEqual(result, []);
+  });
+
+  test('never attaches reasoning_content to user messages', () => {
+    const result = convertMessage(
+      {
+        role: 'user',
+        parts: [
+          { kind: 'thinking', value: 'hmm' },
+          { kind: 'text', value: 'hi' },
+        ],
+      },
+      REPLAY
+    );
+    assert.equal('reasoning_content' in result[0], false);
+  });
+});
+
 describe('convertMessages', () => {
   test('flattens a list of normalized messages through convertMessage', () => {
     const messages: NormalizedMessage[] = [
@@ -385,12 +542,13 @@ describe('convertMessages', () => {
     'toolResult',
     'toolCall',
     'image',
+    'thinking',
     'unknown',
   ];
 
   test('exhausts the NormalizedPart discriminant (typesafety guard)', () => {
     // If a new kind is added, this assertion will break, nudging maintainers
     // to handle it in convertMessage().
-    assert.equal(usedPartKinds.length, 5);
+    assert.equal(usedPartKinds.length, 6);
   });
 });

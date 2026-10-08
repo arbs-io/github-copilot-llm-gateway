@@ -310,6 +310,19 @@ The **GitHub Copilot LLM Gateway: Set Thinking Effort** command (also in the sta
 
 > The picker control relies on a VS Code model-picker API that is still marked as proposed. VS Code builds that don't support it simply don't show the control; the command keeps working either way.
 
+### Reasoning Replay
+
+In agent mode, Copilot Chat passes the model's thinking from earlier tool-call rounds of the current reply back to the gateway. By default it is dropped. Turn on `github.copilot.llm-gateway.replayReasoning` to send it back to the server as `reasoning_content` on each assistant message.
+
+| Server | Effect |
+| --- | --- |
+| DeepSeek (thinking mode with tools) | **Required**: requests fail with a 400 error without it |
+| llama.cpp, LM Studio | Helps: the chat template keeps the model's reasoning across tool calls |
+| vLLM, Ollama, SGLang | Ignored, so it only adds input tokens |
+| OpenAI, Azure OpenAI | May reject the request because of the extra field |
+
+The reasoning text counts towards each request's input tokens and the context budget. Thinking from earlier replies is never replayed; Copilot Chat doesn't keep it.
+
 ### Session Affinity (Sticky Sessions)
 
 When a load-balancing gateway such as LiteLLM schedules a model across several backend runners, consecutive requests of one conversation can land on different runners. Each hop re-uploads the whole prompt and re-computes its prefill, and any server-side KV cache from earlier turns is lost. Session affinity pins a conversation to the runner that served its first request.
@@ -644,7 +657,7 @@ Everything goes to the **Server URL** you configured, with your API key and cust
 | --- | --- | --- |
 | `GET /v1/models` (falling back to `/models`) | On startup, when the model picker opens, and on **Refresh Models** | Nothing beyond the request itself |
 | Backend detection: `GET /api/version` and `POST /api/show` (Ollama), `GET /model/info` (LiteLLM) | While listing models, at most once per backend per refresh | Model ids only |
-| `POST /v1/chat/completions` | Each chat request with a gateway model | Your prompts, attached context, images and tool calls/results |
+| `POST /v1/chat/completions` | Each chat request with a gateway model | Your prompts, attached context, images and tool calls/results, plus the model's earlier reasoning when **Replay Reasoning** is on |
 | `POST /v1/completions` | Only when **Enable Inline Completion** is on | Code around the cursor, up to the configured prefix/suffix limits |
 | `GET` usage endpoint (default `/v1/usage/current`) | On startup, after chat requests, and every **Usage Refresh Interval** (default 5 minutes) while VS Code is focused; background polling stops after a 404 | Nothing beyond the request itself. Clear **Usage Endpoint** to turn it off. |
 
