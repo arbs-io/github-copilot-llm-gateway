@@ -458,13 +458,20 @@ describe('non-streaming abort reasons (issue #127)', () => {
   }
 
   /** Cancellation token whose listeners fire when `cancel()` is called. */
-  function fakeToken(): { token: import('vscode').CancellationToken; cancel: () => void } {
+  /** Cancellation token whose listeners fire on `cancel()`; counts live subscriptions. */
+  function fakeToken(): {
+    token: import('vscode').CancellationToken;
+    cancel: () => void;
+    liveSubscriptions: () => number;
+  } {
     const listeners: Array<() => void> = [];
+    let live = 0;
     const token = {
       isCancellationRequested: false,
       onCancellationRequested: (listener: () => void) => {
         listeners.push(listener);
-        return { dispose: () => undefined };
+        live++;
+        return { dispose: () => { live--; } };
       },
     };
     return {
@@ -473,6 +480,7 @@ describe('non-streaming abort reasons (issue #127)', () => {
         token.isCancellationRequested = true;
         listeners.forEach((listener) => listener());
       },
+      liveSubscriptions: () => live,
     };
   }
 
@@ -504,9 +512,10 @@ describe('non-streaming abort reasons (issue #127)', () => {
     });
 
     test(`fetchCompletion cancellation rejects with RequestCancelledError (fetch rejects with ${label})`, async () => {
-      const { token, cancel } = fakeToken();
+      const { token, cancel, liveSubscriptions } = fakeToken();
       await withFetch(hangingFetch(rejectWith), async () => {
         const pending = new GatewayClient(config).fetchCompletion(completionRequest, token, 60000);
+        assert.equal(liveSubscriptions(), 1);
         cancel();
         await assert.rejects(pending, (error: unknown) => {
           assert.ok(error instanceof RequestCancelledError);
@@ -514,15 +523,17 @@ describe('non-streaming abort reasons (issue #127)', () => {
           return true;
         });
       });
+      assert.equal(liveSubscriptions(), 0);
     });
 
     test(`usage probe still reports an aborted request as timed out/cancelled (fetch rejects with ${label})`, async () => {
-      const { token, cancel } = fakeToken();
+      const { token, cancel, liveSubscriptions } = fakeToken();
       const result = await withFetch(hangingFetch(rejectWith), async () => {
         const pending = new GatewayClient(config).fetchCurrentUsage('/v1/usage/current', token);
         cancel();
         return pending;
       });
+      assert.equal(liveSubscriptions(), 0);
       assert.deepEqual(result, { kind: 'unreachable', reason: 'timed out after 10000ms or cancelled' });
     });
   }
@@ -542,6 +553,26 @@ describe('non-streaming abort reasons (issue #127)', () => {
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
+  });
+
+  test('a hard-coded budget names no setting in the timeout message', async () => {
+    type FetchWithTimeout = (
+      url: string,
+      options: RequestInit,
+      cancellationToken?: import('vscode').CancellationToken,
+      timeoutMs?: number
+    ) => Promise<Response>;
+    const client = new GatewayClient(config);
+    const fetchWithTimeout = (client as unknown as { fetchWithTimeout: FetchWithTimeout })
+      .fetchWithTimeout.bind(client);
+    await withFetch(hangingFetch(undiciStyle), () => assert.rejects(
+      fetchWithTimeout('http://gateway:8000/api/version', { method: 'GET' }, undefined, 20),
+      (error: unknown) => {
+        assert.ok(error instanceof RequestTimeoutError);
+        assert.equal(error.message, 'The server did not respond within 20 ms');
+        return true;
+      }
+    ));
   });
 
   test('model list timeout names requestTimeout', async () => {

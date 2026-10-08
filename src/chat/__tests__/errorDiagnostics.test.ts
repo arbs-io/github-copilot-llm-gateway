@@ -23,9 +23,36 @@ describe('diagnoseModelFetchError', () => {
     assert.ok(result.includes('Bearer'));
   });
 
-  test('adds a timeout hint for aborts', () => {
+  test('adds a timeout hint for aborts (legacy wording)', () => {
     const result = diagnoseModelFetchError('The operation was aborted');
     assert.ok(result.toLowerCase().includes('timeout'));
+  });
+
+  test('adds a timeout hint for RequestTimeoutError messages', () => {
+    const result = diagnoseModelFetchError(
+      'Failed to connect to inference server at http://x: The server did not respond within 30000 ms (github.copilot.llm-gateway.requestTimeout)'
+    );
+    assert.ok(result.includes('increase the requestTimeout setting'));
+  });
+
+  test('does not read status codes out of larger numbers or the timeout budget', () => {
+    const longTimeout = diagnoseModelFetchError(
+      'The server did not respond within 40100 ms (github.copilot.llm-gateway.requestTimeout)'
+    );
+    assert.ok(!longTimeout.includes('Authentication'));
+    assert.ok(longTimeout.includes('requestTimeout setting'));
+    const statusLikeTimeout = diagnoseModelFetchError(
+      'The server did not respond within 404 ms (github.copilot.llm-gateway.requestTimeout)'
+    );
+    assert.ok(!statusLikeTimeout.includes('/v1'));
+    const port = diagnoseModelFetchError('fetch failed: connect ECONNREFUSED 127.0.0.1:4031');
+    assert.ok(!port.includes('Authentication'));
+    assert.ok(port.includes('listening'));
+  });
+
+  test('still matches a 403 status', () => {
+    const result = diagnoseModelFetchError('Failed to fetch models from http://x/v1/models: 403 Forbidden');
+    assert.ok(result.includes('Authentication'));
   });
 
   test('adds a DNS hint for ENOTFOUND', () => {

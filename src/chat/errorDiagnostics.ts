@@ -11,13 +11,20 @@
  */
 export function diagnoseModelFetchError(message: string): string {
   const lower = message.toLowerCase();
+  // A client-side timeout (RequestTimeoutError) carries the budget in ms, so
+  // it's checked before the status codes to keep a value like 404 ms from
+  // reading as an HTTP status.
+  if (lower.includes('did not respond within')) {
+    return `${message}\nThe request timed out. If your server is slow to start, increase the requestTimeout setting.`;
+  }
   // Check specific HTTP status codes first, since the wrapper text often
   // contains generic substrings like "failed to fetch" that would otherwise
-  // short-circuit the more specific hints.
-  if (lower.includes('404')) {
+  // short-circuit the more specific hints. Word boundaries keep numbers such
+  // as ports or millisecond values (e.g. 40100) from matching.
+  if (/\b404\b/.test(lower)) {
     return `${message}\nIf your Server URL already includes "/v1", remove that suffix — the extension appends it automatically.`;
   }
-  if (lower.includes('401') || lower.includes('403')) {
+  if (/\b40[13]\b/.test(lower)) {
     return `${message}\nAuthentication failed. Paste just the key (no leading "Bearer ") into the API Key setting.`;
   }
   if (lower.includes('abort')) {

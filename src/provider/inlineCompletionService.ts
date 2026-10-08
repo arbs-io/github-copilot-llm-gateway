@@ -161,7 +161,11 @@ export class InlineCompletionService {
   ): void {
     if (error instanceof RequestCancelledError || token.isCancellationRequested) {
       if (config.verboseLogging) {
-        this.deps.log('Inline completion cancelled (superseded by newer request)');
+        // The token can fire while an unrelated error is in flight — keep it visible.
+        const detail = error instanceof RequestCancelledError
+          ? ''
+          : `: ${error instanceof Error ? error.message : String(error)}`;
+        this.deps.log(`Inline completion cancelled (superseded by newer request)${detail}`);
       }
       return;
     }

@@ -175,7 +175,7 @@
         "github.copilot.llm-gateway.verboseLogging": {
           "type": "boolean",
           "default": false,
-          "description": "When enabled, the full chat request body (including messages and tool args) is written to the output channel. Keep disabled unless you are reproducing an issue — captured logs may contain conversation content from the user's current editor.",
+          "description": "When enabled, the full chat request body (including messages and tool args) is written to the output channel, along with each inline completion request (model, prompt size, max_tokens, timeout) and its outcome. Keep disabled unless you are reproducing an issue — captured logs may contain conversation content from the user's current editor.",
           "order": 10
         },
         "github.copilot.llm-gateway.customHeaders": {

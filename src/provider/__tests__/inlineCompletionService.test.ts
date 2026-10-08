@@ -103,6 +103,21 @@ describe('InlineCompletionService cancellation (issue #127)', () => {
     assert.ok(logs.includes('Inline completion cancelled (superseded by newer request)'));
     assert.ok(!logs.some((line) => line.includes('failed')));
   });
+
+  test('verbose cancellation line keeps an unrelated underlying error', async () => {
+    const token = {
+      isCancellationRequested: false,
+      onCancellationRequested: () => ({ dispose: () => undefined }),
+    };
+    const { service, logs } = setup(async () => {
+      token.isCancellationRequested = true;
+      throw new Error('socket hang up');
+    }, fakeConfig({ verboseLogging: true }));
+    await service.provideCompletion('def f(', ')', token as unknown as CancellationToken);
+    assert.ok(
+      logs.includes('Inline completion cancelled (superseded by newer request): socket hang up')
+    );
+  });
 });
 
 describe('InlineCompletionService timeouts (issue #127)', () => {

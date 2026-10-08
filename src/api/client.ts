@@ -756,21 +756,27 @@ export class GatewayClient {
    * like the model list and inline completions. Streaming requests manage
    * their own timers in `streamChatCompletion`.
    *
-   * Rejects with {@link RequestTimeoutError} (naming `timeoutSetting`) when the
-   * budget runs out and {@link RequestCancelledError} when the token fires.
+   * Rejects with {@link RequestTimeoutError} when the budget runs out and
+   * {@link RequestCancelledError} when the token fires. The timeout message
+   * names `timeoutSetting` (or `requestTimeout` when that budget applies) so
+   * the user knows what to raise; hard-coded budgets name no setting.
    */
   private async fetchWithTimeout(
     url: string,
     options: RequestInit,
     cancellationToken?: vscode.CancellationToken,
     timeoutMs?: number,
-    timeoutSetting = 'github.copilot.llm-gateway.requestTimeout'
+    timeoutSetting?: string
   ): Promise<Response> {
     const controller = new AbortController();
     const budgetMs = timeoutMs ?? this.config.requestTimeout;
+    const setting = timeoutMs === undefined
+      ? 'github.copilot.llm-gateway.requestTimeout'
+      : timeoutSetting;
+    const settingNote = setting ? ` (${setting})` : '';
     const timeoutId = setTimeout(
       () => controller.abort(
-        new RequestTimeoutError(`The server did not respond within ${budgetMs} ms (${timeoutSetting})`)
+        new RequestTimeoutError(`The server did not respond within ${budgetMs} ms${settingNote}`)
       ),
       budgetMs
     );
