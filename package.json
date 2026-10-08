@@ -2,7 +2,7 @@
   "name": "github-copilot-llm-gateway",
   "displayName": "GitHub Copilot LLM Gateway",
   "description": "Connect GitHub Copilot to self-hosted models on any OpenAI-compatible server, with fixes for tool calls, reasoning and context limits",
-  "version": "1.10.1",
+  "version": "1.11.0",
   "publisher": "AndrewButson",
   "icon": "assets/copilot-llm-gateway.png",
   "private": true,
