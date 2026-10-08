@@ -611,8 +611,9 @@ export class ChatRequestHandler {
         hasContent = msg.content !== null && msg.content !== undefined;
       }
       const hasToolCalls = Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0;
+      const hasReasoning = typeof msg.reasoning_content === 'string';
       this.deps.log(
-        `  Message ${i + 1}: role=${msg.role}, hasContent=${hasContent}, hasToolCalls=${hasToolCalls}, toolCallId=${toolCallId}`
+        `  Message ${i + 1}: role=${msg.role}, hasContent=${hasContent}, hasToolCalls=${hasToolCalls}, toolCallId=${toolCallId}, hasReasoning=${hasReasoning}`
       );
     }
   }

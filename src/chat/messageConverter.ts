@@ -173,6 +173,8 @@ interface ConvertedParts {
   readonly toolCalls: OpenAIMessage[];
   readonly userContent: UserContentPart[];
   readonly thinking: string[];
+  /** Whether any thinking part was seen, empty ones included. */
+  sawThinking: boolean;
   textContent: string;
 }
 
@@ -280,6 +282,7 @@ export function convertMessage(
     toolCalls: [],
     userContent: [],
     thinking: [],
+    sawThinking: false,
     textContent: '',
   };
 
@@ -298,9 +301,12 @@ export function convertMessage(
         appendDataPart(acc, message.role, part, options, log);
         break;
       case 'thinking':
-        // Empty values include our own `vscode_reasoning_done` marker.
-        if (options.replayReasoning && message.role === 'assistant' && part.value.length > 0) {
-          acc.thinking.push(part.value);
+        if (options.replayReasoning && message.role === 'assistant') {
+          acc.sawThinking = true;
+          // Empty values include our own `vscode_reasoning_done` marker.
+          if (part.value.length > 0) {
+            acc.thinking.push(part.value);
+          }
         }
         break;
       case 'unknown':
@@ -325,9 +331,16 @@ export function convertMessage(
     result.push({ role: message.role, content: textContent });
   }
   // Only assistant messages collect thinking; a thinking-only message has
-  // nothing to attach it to and is still dropped.
-  if (acc.thinking.length > 0 && result[0]?.role === 'assistant') {
-    result[0].reasoning_content = acc.thinking.join('\n');
+  // nothing to attach it to and is still dropped. A tool-call round that had
+  // thinking parts keeps the field even when they were all empty, because
+  // DeepSeek checks for its presence on every assistant message in the turn.
+  const firstMessage = result[0];
+  if (firstMessage?.role === 'assistant') {
+    if (acc.thinking.length > 0) {
+      firstMessage.reasoning_content = acc.thinking.join('\n');
+    } else if (acc.sawThinking && toolCalls.length > 0) {
+      firstMessage.reasoning_content = '';
+    }
   }
   return result;
 }

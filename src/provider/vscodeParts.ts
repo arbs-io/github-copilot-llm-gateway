@@ -136,6 +136,9 @@ export function countMessageTokens(
   message: vscode.LanguageModelChatMessage,
   replayReasoning = false
 ): number {
+  // Mirror the converter: only assistant messages replay their thinking.
+  const countThinking =
+    replayReasoning && message.role === vscode.LanguageModelChatMessageRole.Assistant;
   let tokens = 0;
   for (const part of message.content) {
     if (part instanceof vscode.LanguageModelTextPart) {
@@ -151,7 +154,7 @@ export function countMessageTokens(
       // Images don't map cleanly to tokens — reserve a conservative fixed
       // overhead so multimodal requests aren't massively undercounted.
       tokens += TOKEN_CONSTANTS.IMAGE_INPUT_TOKENS;
-    } else if (replayReasoning) {
+    } else if (countThinking) {
       tokens += estimateTextTokens(readThinkingText(part) ?? '');
     }
   }

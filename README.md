@@ -238,6 +238,7 @@ The **API key** and any **custom HTTP headers** are not settings: they are kept 
 | **Default Max Output Tokens** | `16384`  | Fallback maximum output tokens used when the server does not report `max_output_tokens`. Thinking models spend part of this on reasoning before answering; on servers with a single shared window it is clamped to at most half of that window. |
 | **Model Context Windows**     | `{}`     | Per-model context window override (total tokens), keyed by model id or `*` wildcard. Wins over server-reported values. |
 | **Enable Image Input**        | `true`   | Advertise image-input capability for multimodal models and forward image parts as base64 `image_url`s.       |
+| **Replay Reasoning**          | `false`  | Send the model's earlier thinking back as `reasoning_content` in agent tool-call rounds. Needed for DeepSeek with tools; see [Reasoning Replay](#reasoning-replay). |
 
 #### How the context window is determined
 

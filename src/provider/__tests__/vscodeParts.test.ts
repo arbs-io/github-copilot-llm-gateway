@@ -42,8 +42,14 @@ const originalLoad = moduleWithLoad._load;
 moduleWithLoad._load = function (request, parent, isMain) {
   return request === 'vscode' ? fakeVscode : originalLoad.call(this, request, parent, isMain);
 };
-const parts = require('../vscodeParts') as typeof import('../vscodeParts');
-moduleWithLoad._load = originalLoad;
+// node:test runs each test file in its own process, so the stub can't leak
+// into other files; restoring the loader keeps it scoped to this import.
+let parts: typeof import('../vscodeParts');
+try {
+  parts = require('../vscodeParts') as typeof import('../vscodeParts');
+} finally {
+  moduleWithLoad._load = originalLoad;
+}
 
 const noLog = (): void => {
   /* no-op */
@@ -130,5 +136,13 @@ describe('countMessageTokens', () => {
 
   test('counts thinking parts when replay is on', () => {
     assert.equal(parts.countMessageTokens(msg, true), 11);
+  });
+
+  test('ignores thinking parts on user messages even when replay is on', () => {
+    const userMsg = message(1, [
+      new LanguageModelTextPart('abcd'),
+      new LanguageModelThinkingPart('t'.repeat(40)),
+    ]);
+    assert.equal(parts.countMessageTokens(userMsg, true), 1);
   });
 });

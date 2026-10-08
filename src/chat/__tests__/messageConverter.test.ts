@@ -483,6 +483,28 @@ describe('convertMessage reasoning replay', () => {
     assert.equal('reasoning_content' in result[0], false);
   });
 
+  test('sends empty reasoning_content on a tool-call message whose thinking was all empty', () => {
+    const result = convertMessage(
+      {
+        role: 'assistant',
+        parts: [
+          { kind: 'toolCall', callId: 'c1', name: 'read', input: {} },
+          { kind: 'thinking', value: '' },
+        ],
+      },
+      REPLAY
+    );
+    assert.equal(result[0].reasoning_content, '');
+  });
+
+  test('omits reasoning_content on a tool-call message with no thinking parts', () => {
+    const result = convertMessage(
+      { role: 'assistant', parts: [{ kind: 'toolCall', callId: 'c1', name: 'read', input: {} }] },
+      REPLAY
+    );
+    assert.equal('reasoning_content' in result[0], false);
+  });
+
   test('drops a thinking-only assistant message', () => {
     const result = convertMessage(
       { role: 'assistant', parts: [{ kind: 'thinking', value: 'hmm' }] },
