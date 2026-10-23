@@ -60,14 +60,17 @@ function fakeConfig(overrides: Partial<GatewayConfig> = {}): GatewayConfig {
   };
 }
 
-function modelsResponse(...ids: Array<{ id: string; contextLen?: number }>): OpenAIModelsResponse {
+function modelsResponse(
+  ...ids: Array<{ id: string; name?: string; contextLen?: number }>
+): OpenAIModelsResponse {
   return {
     object: 'list',
-    data: ids.map(({ id, contextLen }) => ({
+    data: ids.map(({ id, name, contextLen }) => ({
       id,
       object: 'model',
       created: 0,
       owned_by: 'test',
+      ...(name !== undefined ? { name } : {}),
       ...(contextLen !== undefined ? { max_model_len: contextLen } : {}),
     })),
   };
@@ -218,6 +221,27 @@ describe('ModelCatalog picker names (issue #99)', () => {
     assert.equal(byId.get('ollama/llama3')?.name, 'llama3');
     assert.equal(byId.get('openrouter/deepseek-chat')?.detail, 'LLM Gateway · openrouter');
     assert.equal(byId.get('ollama/llama3')?.detail, 'LLM Gateway · ollama');
+  });
+
+  test('a server-sent name is shown, while id and version stay id-derived', async () => {
+    const h = makeCatalog({
+      fetchModels: () =>
+        Promise.resolve(
+          modelsResponse(
+            { id: 'moonshotai/kimi-k3.1-pro', name: 'MoonshotAI: Kimi K3.1 Pro' },
+            { id: 'ollama/llama3' }
+          )
+        ),
+    });
+    const { models } = await h.catalog.getOrFetchModels(fakeToken());
+    const byId = new Map(models.map((m) => [m.id, m]));
+    const kimi = byId.get('moonshotai/kimi-k3.1-pro');
+    assert.equal(kimi?.name, 'MoonshotAI: Kimi K3.1 Pro');
+    // Saved chats resolve by id, and selectors match on version: neither may
+    // follow the name, which the server is free to change.
+    assert.equal(kimi?.version, 'kimi-k3.1-pro');
+    assert.equal(kimi?.detail, 'LLM Gateway · moonshotai');
+    assert.equal(byId.get('ollama/llama3')?.name, 'llama3');
   });
 });
 

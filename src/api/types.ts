@@ -7,6 +7,12 @@ export interface OpenAIModel {
   object: string;
   created: number;
   owned_by: string;
+  /**
+   * Display name, where the server sends one (OpenRouter does, e.g.
+   * `MoonshotAI: Kimi K3.1 Pro`). Not part of the OpenAI schema, and never
+   * used to identify a model — see `resolveDisplayNames`.
+   */
+  name?: string;
   /** vLLM, LiteLLM */
   max_model_len?: number;
   /** LiteLLM: maximum prompt/context tokens accepted by the model. */

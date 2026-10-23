@@ -40,15 +40,61 @@ export function modelIdPrefix(id: string): string | undefined {
 }
 
 /**
- * Choose the picker `name` for every model in a list. Names are the friendly
- * (post-slash) form, except where two ids would collapse to the same friendly
- * name — `deepseek/deepseek-chat` and `openrouter/deepseek-chat` behind
- * LiteLLM — in which case those models keep their full id so the chat
- * input's model button, which shows only `name`, still tells them apart
- * (issue #99). Comparison is case-sensitive, matching VS Code's treatment
- * of model ids.
+ * Choose the picker `name` for every model in a list.
+ *
+ * A `name` the server sends for a model is shown as is: the server knows what
+ * the model is called, and `name` is the only label the picker always renders.
+ * The model is still identified by its `id`, so a server can rename a model —
+ * to show which version a stable alias such as `coder-latest` serves now, say
+ * — without breaking chats that saved the model. A `name` equal to the `id`
+ * adds nothing and is ignored, so the friendly form below still applies.
+ *
+ * Without a server name, names are the friendly (post-slash) form, except
+ * where two ids would collapse to the same friendly name —
+ * `deepseek/deepseek-chat` and `openrouter/deepseek-chat` behind LiteLLM — in
+ * which case those models keep their full id so the chat input's model button,
+ * which shows only `name`, still tells them apart (issue #99). For the same
+ * reason a server name is only used while no other model would be shown under
+ * it. Comparison is case-sensitive, matching VS Code's treatment of model ids.
  */
-export function resolveDisplayNames(ids: readonly string[]): Map<string, string> {
+export function resolveDisplayNames(
+  models: readonly Pick<OpenAIModel, 'id' | 'name'>[]
+): Map<string, string> {
+  const names = idDisplayNames(models.map((model) => model.id));
+
+  const serverNames = new Map<string, string>();
+  const serverNameCounts = new Map<string, number>();
+  for (const model of models) {
+    const name = serverDisplayName(model);
+    if (name !== undefined) {
+      serverNames.set(model.id, name);
+      serverNameCounts.set(name, (serverNameCounts.get(name) ?? 0) + 1);
+    }
+  }
+
+  // Checked against every id-derived name, including those of models about to
+  // switch to a server name, so one pass is enough to keep names unique.
+  const idNameOwners = new Map<string, string>();
+  for (const [id, name] of names) {
+    idNameOwners.set(name, id);
+  }
+  for (const [id, name] of serverNames) {
+    const shared = (serverNameCounts.get(name) ?? 0) > 1;
+    const owner = idNameOwners.get(name);
+    if (!shared && (owner === undefined || owner === id)) {
+      names.set(id, name);
+    }
+  }
+  return names;
+}
+
+function serverDisplayName(model: Pick<OpenAIModel, 'id' | 'name'>): string | undefined {
+  // Typed as a string, but it comes straight from the server's JSON.
+  const name = typeof model.name === 'string' ? model.name.trim() : '';
+  return name.length > 0 && name !== model.id ? name : undefined;
+}
+
+function idDisplayNames(ids: readonly string[]): Map<string, string> {
   const idsByFriendlyName = new Map<string, string[]>();
   for (const id of ids) {
     const friendly = friendlyModelName(id);

@@ -131,6 +131,8 @@ curl http://localhost:42069/v1/models
 
 Models are listed by their short name — the Hugging-Face org (`Qwen/Qwen3-8B` → `Qwen3-8B`) or an aggregator's upstream prefix (`openrouter/deepseek-chat` → `deepseek-chat`) is kept in the model's tooltip and in its grey label (`LLM Gateway · openrouter`) where VS Code renders one. When two upstreams serve the same model name, both keep their full id as the name so they stay distinguishable everywhere, including the chat input.
 
+If the server sends its own `name` for a model in `/v1/models` (OpenRouter does: `MoonshotAI: Kimi K3.1 Pro`), that name is shown instead, as long as no other model would be shown under it. The model is still identified by its id, so a server can change a model's name — to show which version a stable alias such as `coder-latest` currently serves, for example — without breaking chats that use it.
+
 ### Step 5: Start Chatting
 
 Your self-hosted models now appear alongside the default Copilot models. Select one and start coding with AI assistance!
