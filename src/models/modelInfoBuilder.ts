@@ -63,8 +63,9 @@ export interface BuildModelInfoInput {
   readonly capabilities: ModelCapabilities;
   /**
    * Picker `name` chosen with the whole model list in view (see
-   * `resolveDisplayNames`), so ids that share a friendly name can keep their
-   * full id. Defaults to the friendly (post-slash) name.
+   * `resolveDisplayNames`): the server's own name for the model where it sends
+   * a unique one, and otherwise the friendly name, or the full id where
+   * friendly names collide. Defaults to the friendly (post-slash) name.
    */
   readonly displayName?: string;
   /**

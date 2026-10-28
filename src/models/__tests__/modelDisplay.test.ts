@@ -42,32 +42,89 @@ describe('modelIdPrefix', () => {
 });
 
 describe('resolveDisplayNames', () => {
+  const withIds = (...ids: string[]) => ids.map((id) => ({ id }));
+
   test('uses friendly names when they are unique', () => {
-    const names = resolveDisplayNames(['Qwen/Qwen3-8B', 'ollama/llama3', 'gpt-4o-mini']);
+    const names = resolveDisplayNames(withIds('Qwen/Qwen3-8B', 'ollama/llama3', 'gpt-4o-mini'));
     assert.equal(names.get('Qwen/Qwen3-8B'), 'Qwen3-8B');
     assert.equal(names.get('ollama/llama3'), 'llama3');
     assert.equal(names.get('gpt-4o-mini'), 'gpt-4o-mini');
   });
 
   test('keeps the full id for models whose friendly names collide (issue #99)', () => {
-    const names = resolveDisplayNames([
+    const names = resolveDisplayNames(withIds(
       'deepseek/deepseek-chat',
       'openrouter/deepseek-chat',
       'ollama/llama3',
-    ]);
+    ));
     assert.equal(names.get('deepseek/deepseek-chat'), 'deepseek/deepseek-chat');
     assert.equal(names.get('openrouter/deepseek-chat'), 'openrouter/deepseek-chat');
     assert.equal(names.get('ollama/llama3'), 'llama3');
   });
 
   test('an unprefixed id colliding with a prefixed one keeps both full', () => {
-    const names = resolveDisplayNames(['deepseek-chat', 'openrouter/deepseek-chat']);
+    const names = resolveDisplayNames(withIds('deepseek-chat', 'openrouter/deepseek-chat'));
     assert.equal(names.get('deepseek-chat'), 'deepseek-chat');
     assert.equal(names.get('openrouter/deepseek-chat'), 'openrouter/deepseek-chat');
   });
 
   test('returns an empty map for an empty list', () => {
     assert.equal(resolveDisplayNames([]).size, 0);
+  });
+
+  test('shows a name the server sends in place of the id-derived name', () => {
+    const names = resolveDisplayNames([
+      { id: 'moonshotai/kimi-k3.1-pro', name: 'MoonshotAI: Kimi K3.1 Pro' },
+      { id: 'ollama/llama3' },
+    ]);
+    assert.equal(names.get('moonshotai/kimi-k3.1-pro'), 'MoonshotAI: Kimi K3.1 Pro');
+    assert.equal(names.get('ollama/llama3'), 'llama3');
+  });
+
+  test('a server name that only repeats the id keeps the friendly name', () => {
+    const names = resolveDisplayNames([{ id: 'Qwen/Qwen3-8B', name: 'Qwen/Qwen3-8B' }]);
+    assert.equal(names.get('Qwen/Qwen3-8B'), 'Qwen3-8B');
+  });
+
+  test('ignores blank server names and trims the rest', () => {
+    const names = resolveDisplayNames([
+      { id: 'a/blank', name: '   ' },
+      { id: 'padded', name: '  Padded Name  ' },
+    ]);
+    assert.equal(names.get('a/blank'), 'blank');
+    assert.equal(names.get('padded'), 'Padded Name');
+  });
+
+  test('ignores a name that is not a string', () => {
+    // Malformed server JSON: the type says string, the wire may not.
+    const names = resolveDisplayNames([{ id: 'x/model', name: 42 as unknown as string }]);
+    assert.equal(names.get('x/model'), 'model');
+  });
+
+  test('models sharing a server name fall back to their id-derived names', () => {
+    const names = resolveDisplayNames([
+      { id: 'mistral-large-latest', name: 'Mistral Large' },
+      { id: 'mistral-large-2411', name: 'Mistral Large' },
+    ]);
+    assert.equal(names.get('mistral-large-latest'), 'mistral-large-latest');
+    assert.equal(names.get('mistral-large-2411'), 'mistral-large-2411');
+  });
+
+  test('a server name another model is already shown under is not used', () => {
+    const names = resolveDisplayNames([
+      { id: 'vendor/llama3' },
+      { id: 'other-model', name: 'llama3' },
+    ]);
+    assert.equal(names.get('vendor/llama3'), 'llama3');
+    assert.equal(names.get('other-model'), 'other-model');
+  });
+
+  test('a model renamed to a new version keeps its id', () => {
+    const before = resolveDisplayNames([{ id: 'coder-latest', name: 'Coder 2.4' }]);
+    const after = resolveDisplayNames([{ id: 'coder-latest', name: 'Coder 2.5' }]);
+    assert.deepEqual([...before.keys()], ['coder-latest']);
+    assert.deepEqual([...after.keys()], ['coder-latest']);
+    assert.equal(after.get('coder-latest'), 'Coder 2.5');
   });
 });
 

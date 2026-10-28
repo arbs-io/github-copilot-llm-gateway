@@ -216,8 +216,9 @@ export class ModelCatalog {
     const nextSeparateOutputWindowModelIds = new Set<string>();
 
     // Picker names need the whole list: ids that share a friendly name keep
-    // their full id so they stay distinguishable (issue #99).
-    const displayNames = resolveDisplayNames(uniqueModels.map((m) => m.id));
+    // their full id so they stay distinguishable (issue #99), and a name the
+    // server sends is only used while it is unique.
+    const displayNames = resolveDisplayNames(uniqueModels);
 
     const config = this.deps.getConfig();
     const models = await Promise.all(
