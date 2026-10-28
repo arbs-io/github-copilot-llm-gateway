@@ -195,9 +195,38 @@ async function assertChatStreamResponseOk(response: Response): Promise<void> {
   if (response.ok && response.body) { return; }
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Chat completion failed: ${response.status} ${response.statusText} - ${errorText}`);
+    throw new ChatHttpError(
+      `Chat completion failed: ${response.status} ${response.statusText} - ${errorText}`,
+      response.status,
+      errorText,
+      parseRetryAfter(response.headers)
+    );
   }
   throw new Error('Response body is null');
+}
+
+/**
+ * Read how long the server asks us to wait before retrying, in milliseconds.
+ * Prefers the non-standard `retry-after-ms` (OpenAI, Azure OpenAI) and falls
+ * back to `Retry-After`, which is either delta-seconds or an HTTP date.
+ * Returns `undefined` when neither header is present or parseable.
+ */
+export function parseRetryAfter(headers: Headers, now: number = Date.now()): number | undefined {
+  const ms = Number.parseFloat(headers.get('retry-after-ms') ?? '');
+  if (Number.isFinite(ms) && ms >= 0) {
+    return ms;
+  }
+  const value = headers.get('retry-after')?.trim();
+  if (!value) {
+    return undefined;
+  }
+  if (/^\d+(\.\d+)?$/.test(value)) {
+    return Number.parseFloat(value) * 1000;
+  }
+  // An HTTP date starts with the day name; anything else (e.g. "-3", which
+  // Date.parse reads as a year) is malformed.
+  const date = /^[a-z]/i.test(value) ? Date.parse(value) : Number.NaN;
+  return Number.isNaN(date) ? undefined : Math.max(0, date - now);
 }
 
 /**
@@ -232,6 +261,23 @@ export class CompletionHttpError extends Error {
   ) {
     super(message);
     this.name = 'CompletionHttpError';
+  }
+}
+
+/**
+ * HTTP-level failure from `/v1/chat/completions`. Carries the status and the
+ * server's `Retry-After` hint so the chat handler can back off and retry
+ * rate-limit responses (issue #138) without string-matching the message.
+ */
+export class ChatHttpError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number,
+    public readonly body: string,
+    public readonly retryAfterMs?: number
+  ) {
+    super(message);
+    this.name = 'ChatHttpError';
   }
 }
 
@@ -377,6 +423,10 @@ export class GatewayClient {
         yield { content: '', reasoning_content: '', tool_calls: [], finished_tool_calls: remaining };
       }
     } catch (error) {
+      // Already descriptive, and the handler needs the type to retry it.
+      if (error instanceof ChatHttpError) {
+        throw error;
+      }
       if (error instanceof Error) {
         throw new Error(`Chat completion request failed: ${describeFetchError(error)}`);
       }

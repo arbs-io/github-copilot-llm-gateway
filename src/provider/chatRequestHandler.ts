@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
-import { GatewayClient } from '../api/client';
+import { ChatHttpError, GatewayClient } from '../api/client';
+import { rateLimitRetryDelay, waitForRetry } from '../api/rateLimitRetry';
 import { OpenAIChatCompletionRequest, OpenAIMessage } from '../api/types';
 import { buildChatRequest, OpenAIToolDefinition, ToolChoice } from '../api/requestBuilder';
 import { GatewayConfig } from '../config/gatewayConfig';
@@ -363,24 +364,7 @@ export class ChatRequestHandler {
     };
 
     try {
-      try {
-        await attempt();
-      } catch (error) {
-        // Context-overflow errors carry the server's real context size
-        // (issue #55: llama-server router mode reports nothing up-front, so
-        // the first request can overshoot). Learn it and, if nothing has been
-        // streamed to the chat view yet, transparently retry once with the
-        // corrected budget.
-        if (
-          !catalog.learnContextSizeFromError(model, error) ||
-          partsReported ||
-          token.isCancellationRequested
-        ) {
-          throw error;
-        }
-        log('Retrying chat request with corrected context size...');
-        await attempt();
-      }
+      await this.runWithRetries(attempt, model, config, token, () => partsReported);
       this.deps.onCompleted(model.id, modelName, capturedUsage);
       this.deps.onRequestState({
         kind: 'complete',
@@ -396,6 +380,63 @@ export class ChatRequestHandler {
         errorMessage: error instanceof Error ? error.message : String(error),
       });
       handleChatError(error, log, this.deps.showOutput);
+    }
+  }
+
+  /**
+   * Run `attempt`, transparently re-issuing it while nothing has been
+   * streamed to the chat view yet (a retry after output would duplicate it):
+   *   - once after a context-overflow error that carries the server's real
+   *     context size (issue #55: llama-server router mode reports nothing
+   *     up-front, so the first request can overshoot), with the corrected
+   *     budget;
+   *   - up to `rateLimitRetries` times after a 429 / 503, waiting for the
+   *     server's `Retry-After` or backing off exponentially (issue #138).
+   * Returns quietly if the user cancels during a backoff wait.
+   */
+  private async runWithRetries(
+    attempt: () => Promise<void>,
+    model: vscode.LanguageModelChatInformation,
+    config: GatewayConfig,
+    token: vscode.CancellationToken,
+    hasReportedParts: () => boolean
+  ): Promise<void> {
+    const { log, catalog } = this.deps;
+    let contextRetried = false;
+    let rateLimitRetries = 0;
+    for (;;) {
+      try {
+        await attempt();
+        return;
+      } catch (error) {
+        // Learn first, even when we can't retry, so the next request budgets correctly.
+        const learnedContext = !contextRetried && catalog.learnContextSizeFromError(model, error);
+        if (hasReportedParts() || token.isCancellationRequested) {
+          throw error;
+        }
+        if (learnedContext) {
+          contextRetried = true;
+          log('Retrying chat request with corrected context size...');
+          continue;
+        }
+        const delayMs =
+          rateLimitRetries < config.rateLimitRetries
+            ? rateLimitRetryDelay(error, rateLimitRetries + 1)
+            : undefined;
+        if (delayMs === undefined) {
+          throw error;
+        }
+        rateLimitRetries++;
+        const status = error instanceof ChatHttpError ? error.status : 'error';
+        log(
+          `Server returned ${status}; retrying in ${(delayMs / 1000).toFixed(1)}s ` +
+            `(retry ${rateLimitRetries} of ${config.rateLimitRetries})...`
+        );
+        if (!(await waitForRetry(delayMs, token))) {
+          log('Chat request cancelled while waiting to retry.');
+          return;
+        }
+      }
     }
   }
 

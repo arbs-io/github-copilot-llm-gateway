@@ -10,6 +10,12 @@ export interface GatewayConfig {
   serverUrl: string;
   apiKey?: string;
   requestTimeout: number;
+  /**
+   * How many times to retry a chat request the server rejected with 429 or
+   * 503 before anything was streamed, backing off between attempts
+   * (issue #138). 0 disables retrying.
+   */
+  rateLimitRetries: number;
   defaultMaxTokens: number;
   defaultMaxOutputTokens: number;
   enableImageInput: boolean;

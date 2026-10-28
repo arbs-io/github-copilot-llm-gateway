@@ -1,5 +1,6 @@
 import { GatewayConfig } from '../config/gatewayConfig';
 import { TOKEN_CONSTANTS } from '../chat/tokenBudget';
+import { normalizeRateLimitRetries } from '../api/rateLimitRetry';
 
 export const DEFAULT_REQUEST_TIMEOUT_MS = 60000;
 /** Maximum value for setTimeout (signed 32-bit integer). */
@@ -36,6 +37,8 @@ export function validateGatewayConfig(raw: GatewayConfig): {
     issues.push({ kind: 'requestTimeoutClamped', value: cfg.requestTimeout });
     cfg.requestTimeout = MAX_REQUEST_TIMEOUT_MS;
   }
+
+  cfg.rateLimitRetries = normalizeRateLimitRetries(cfg.rateLimitRetries);
 
   try {
     new URL(cfg.serverUrl);
