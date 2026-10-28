@@ -2,7 +2,7 @@
   "name": "github-copilot-llm-gateway",
   "displayName": "GitHub Copilot LLM Gateway",
   "description": "Connect GitHub Copilot to self-hosted models on any OpenAI-compatible server, with fixes for tool calls, reasoning and context limits",
-  "version": "1.11.0",
+  "version": "1.12.0",
   "publisher": "AndrewButson",
   "icon": "assets/copilot-llm-gateway.png",
   "private": true,
@@ -19,7 +19,7 @@
     "url": "https://github.com/sponsors/arbs-io"
   },
   "engines": {
-    "vscode": "^1.138.0"
+    "vscode": "^1.140.0"
   },
   "scripts": {
     "vscode:prepublish": "npm run esbuild-base -- --minify",
@@ -213,7 +213,11 @@
         },
         "github.copilot.llm-gateway.thinkingEffortPicker": {
           "type": "string",
-          "enum": ["auto", "all", "off"],
+          "enum": [
+            "auto",
+            "all",
+            "off"
+          ],
           "enumDescriptions": [
             "Models the server reports as reasoning models (Ollama `thinking` capability, LiteLLM `supports_reasoning`), plus any model with a thinking effort already set in `perModelOptions`.",
             "Every gateway model. Use this for servers that don't report reasoning support, such as vLLM or llama.cpp.",
@@ -365,14 +369,14 @@
     }
   },
   "devDependencies": {
-    "@types/node": "^26.6.4",
-    "@types/vscode": "^1.138.0",
+    "@types/node": "^26.6.5",
+    "@types/vscode": "^1.140.0",
     "@typescript/native": "npm:typescript@^7.0.2",
-    "@typescript-eslint/eslint-plugin": "^8.71.1",
-    "@typescript-eslint/parser": "^8.71.1",
+    "@typescript-eslint/eslint-plugin": "^8.72.1",
+    "@typescript-eslint/parser": "^8.72.1",
     "@vscode/vsce": "^4.0.0",
     "esbuild": "^0.28.2",
-    "eslint": "^10.12.0",
+    "eslint": "^10.13.0",
     "typescript": "npm:@typescript/typescript6@^6.0.2"
   },
   "allowScripts": {

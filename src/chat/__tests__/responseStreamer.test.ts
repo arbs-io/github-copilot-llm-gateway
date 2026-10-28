@@ -423,6 +423,55 @@ describe('streamResponse', () => {
     assert.equal(events.length, 0);
   });
 
+  test('explains a reply that stopped inside reasoning_content instead of reporting it empty', async () => {
+    // Issue #136: llama-server routes Qwen3's closing summary into
+    // reasoning_content and ends with finish_reason=stop and no content.
+    const { reporter, events } = makeReporter();
+    const stats = await streamResponse({
+      chunks: iter([
+        { reasoning_content: 'I refactored promiseParallel to Promise.all.' },
+        { finish_reason: 'stop' },
+      ]),
+      reporter,
+      isCancelled: () => false,
+      resolveToolCallArgs: identityArgs,
+    });
+    assert.equal(stats.endedInThinking, true);
+    assert.equal(stats.outputTruncated, false);
+    assert.equal(isEmptyStreamResult(stats), false);
+    const kinds = events.map((e) => e.kind);
+    assert.deepEqual(kinds, ['thinking', 'thinkingDone', 'text']);
+    assert.ok(events[2].value?.includes('stopped while still thinking'), events[2].value ?? 'no text');
+  });
+
+  test('explains a reply that stopped after an inline <think> block', async () => {
+    const { reporter, events } = makeReporter();
+    const stats = await streamResponse({
+      chunks: iter([{ content: '<think>All done.</think>', finish_reason: 'stop' }]),
+      reporter,
+      isCancelled: () => false,
+      resolveToolCallArgs: identityArgs,
+    });
+    assert.equal(stats.endedInThinking, true);
+    assert.equal(isEmptyStreamResult(stats), false);
+    assert.ok(events[events.length - 1]?.value?.includes('stopped while still thinking'));
+  });
+
+  test('no thinking note when the model also called a tool', async () => {
+    const { reporter, events } = makeReporter();
+    const stats = await streamResponse({
+      chunks: iter([
+        { reasoning_content: 'Read the file first.' },
+        { finished_tool_calls: [{ id: 'c1', name: 'read_file', arguments: '{}' }], finish_reason: 'tool_calls' },
+      ]),
+      reporter,
+      isCancelled: () => false,
+      resolveToolCallArgs: identityArgs,
+    });
+    assert.notEqual(stats.endedInThinking, true);
+    assert.equal(events.filter((e) => e.kind === 'text').length, 0);
+  });
+
   test('does not emit fallback when force-closed but text parts exist', async () => {
     const { reporter, events } = makeReporter();
     const stats = await streamResponse({
@@ -568,6 +617,20 @@ describe('isEmptyStreamResult', () => {
         thinkingForceClosed: false,
       }),
       true
+    );
+  });
+
+  test('false when the reply ended in thinking', () => {
+    assert.equal(
+      isEmptyStreamResult({
+        totalContentLength: 0,
+        totalTextParts: 0,
+        totalToolCalls: 0,
+        hadThinking: true,
+        thinkingForceClosed: false,
+        endedInThinking: true,
+      }),
+      false
     );
   });
 
