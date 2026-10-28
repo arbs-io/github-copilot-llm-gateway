@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { GatewayConfig } from '../config/gatewayConfig';
 import { TOKEN_CONSTANTS } from '../chat/tokenBudget';
+import { DEFAULT_RATE_LIMIT_RETRIES } from '../api/rateLimitRetry';
 import { DEFAULT_THINKING_EFFORT_PARAMETER, parseThinkingEffortPickerMode } from '../config/thinkingEffort';
 import { DEFAULT_USAGE_ENDPOINT, DEFAULT_USAGE_THRESHOLDS } from '../status/dailyUsage';
 import { DEFAULT_USAGE_REFRESH_INTERVAL_SECONDS } from './usageService';
@@ -53,6 +54,7 @@ export class ConfigService {
       serverUrl: config.get<string>('serverUrl', FALLBACK_SERVER_URL),
       apiKey: this.deps.getApiKey(),
       requestTimeout: config.get<number>('requestTimeout', DEFAULT_REQUEST_TIMEOUT_MS),
+      rateLimitRetries: config.get<number>('rateLimitRetries', DEFAULT_RATE_LIMIT_RETRIES),
       defaultMaxTokens: config.get<number>('defaultMaxTokens', TOKEN_CONSTANTS.DEFAULT_CONTEXT_TOKENS),
       defaultMaxOutputTokens: config.get<number>(
         'defaultMaxOutputTokens',

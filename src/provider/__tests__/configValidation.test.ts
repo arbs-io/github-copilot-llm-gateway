@@ -14,6 +14,7 @@ function baseConfig(overrides: Partial<GatewayConfig> = {}): GatewayConfig {
     serverUrl: 'http://localhost:8000',
     apiKey: '',
     requestTimeout: 60000,
+    rateLimitRetries: 3,
     defaultMaxTokens: 128000,
     defaultMaxOutputTokens: 4096,
     enableImageInput: true,
@@ -121,6 +122,15 @@ describe('validateGatewayConfig', () => {
       issues.map((i) => i.kind).sort(),
       ['invalidRequestTimeout', 'invalidServerUrl', 'outputTokensAdjusted']
     );
+  });
+
+  test('clamps rateLimitRetries to a whole number in range without reporting an issue', () => {
+    const over = validateGatewayConfig(baseConfig({ rateLimitRetries: 50 }));
+    assert.equal(over.config.rateLimitRetries, 10);
+    assert.deepEqual(over.issues, []);
+    assert.equal(validateGatewayConfig(baseConfig({ rateLimitRetries: -2 })).config.rateLimitRetries, 0);
+    const stray = baseConfig({ rateLimitRetries: '5' as unknown as number });
+    assert.equal(validateGatewayConfig(stray).config.rateLimitRetries, 3);
   });
 
   test('keeps replayReasoning off by default and when not a real boolean', () => {

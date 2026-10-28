@@ -1,10 +1,12 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  ChatHttpError,
   CompletionHttpError,
   GatewayClient,
   normalizeBaseUrl,
   normalizeApiKey,
+  parseRetryAfter,
   buildHeaders,
   extractUsage,
   RequestCancelledError,
@@ -17,6 +19,7 @@ import {
 const streamTestConfig = {
   serverUrl: 'http://localhost:11434',
   requestTimeout: 5000,
+  rateLimitRetries: 3,
   defaultMaxTokens: 4096,
   defaultMaxOutputTokens: 4096,
   enableImageInput: false,
@@ -384,6 +387,74 @@ describe('streamChatCompletion reasoning field handling (issue #59)', () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+});
+
+describe('parseRetryAfter', () => {
+  const now = Date.parse('2026-10-28T12:00:00Z');
+
+  test('reads delta-seconds', () => {
+    assert.equal(parseRetryAfter(new Headers({ 'Retry-After': '5' }), now), 5000);
+    assert.equal(parseRetryAfter(new Headers({ 'Retry-After': '1.5' }), now), 1500);
+  });
+
+  test('reads an HTTP date relative to now', () => {
+    const headers = new Headers({ 'Retry-After': 'Wed, 28 Oct 2026 12:00:10 GMT' });
+    assert.equal(parseRetryAfter(headers, now), 10000);
+  });
+
+  test('treats a date in the past as no wait', () => {
+    const headers = new Headers({ 'Retry-After': 'Wed, 28 Oct 2026 11:00:00 GMT' });
+    assert.equal(parseRetryAfter(headers, now), 0);
+  });
+
+  test('prefers retry-after-ms', () => {
+    const headers = new Headers({ 'retry-after-ms': '250', 'Retry-After': '5' });
+    assert.equal(parseRetryAfter(headers, now), 250);
+  });
+
+  test('returns undefined when absent or unparseable', () => {
+    assert.equal(parseRetryAfter(new Headers(), now), undefined);
+    assert.equal(parseRetryAfter(new Headers({ 'Retry-After': 'soon' }), now), undefined);
+    assert.equal(parseRetryAfter(new Headers({ 'Retry-After': '-3' }), now), undefined);
+  });
+});
+
+describe('streamChatCompletion HTTP errors (issue #138)', () => {
+  async function streamError(response: Response): Promise<unknown> {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => response;
+    try {
+      const client = new GatewayClient(streamTestConfig);
+      for await (const _chunk of client.streamChatCompletion({ model: 'm', messages: [] }, streamTestToken)) {
+        // unreachable
+      }
+    } catch (error) {
+      return error;
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    assert.fail('expected the stream to throw');
+  }
+
+  test('throws ChatHttpError with status, body and Retry-After', async () => {
+    const body = '{"error":{"message":"Rate limit exceeded","type":"rate_limit_error"}}';
+    const error = await streamError(
+      new Response(body, { status: 429, statusText: 'Too Many Requests', headers: { 'Retry-After': '3' } })
+    );
+    assert.ok(error instanceof ChatHttpError);
+    assert.equal(error.status, 429);
+    assert.equal(error.body, body);
+    assert.equal(error.retryAfterMs, 3000);
+    // Not re-wrapped, so the prefix no longer repeats.
+    assert.equal(error.message, `Chat completion failed: 429 Too Many Requests - ${body}`);
+  });
+
+  test('leaves retryAfterMs undefined without the header', async () => {
+    const error = await streamError(new Response('busy', { status: 503, statusText: 'Service Unavailable' }));
+    assert.ok(error instanceof ChatHttpError);
+    assert.equal(error.status, 503);
+    assert.equal(error.retryAfterMs, undefined);
   });
 });
 

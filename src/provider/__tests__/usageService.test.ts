@@ -11,6 +11,7 @@ function fakeConfig(overrides: Partial<GatewayConfig> = {}): GatewayConfig {
     serverUrl: 'http://gateway:8000',
     apiKey: 'key-a',
     requestTimeout: 60000,
+    rateLimitRetries: 3,
     defaultMaxTokens: 128000,
     defaultMaxOutputTokens: 4096,
     enableImageInput: true,

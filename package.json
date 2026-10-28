@@ -134,6 +134,14 @@
           "description": "Request timeout in milliseconds",
           "order": 3
         },
+        "github.copilot.llm-gateway.rateLimitRetries": {
+          "type": "number",
+          "default": 3,
+          "minimum": 0,
+          "maximum": 10,
+          "markdownDescription": "How many times to retry a chat request when the server answers `429 Too Many Requests` or `503 Service Unavailable` before any reply has been streamed. Waits for the server's `Retry-After` when it sends one (up to 60 seconds), otherwise backs off exponentially: 2, 4, 8, 16… seconds, capped at 60. `0` turns retrying off.",
+          "order": 3
+        },
         "github.copilot.llm-gateway.defaultMaxTokens": {
           "type": "number",
           "default": 262144,

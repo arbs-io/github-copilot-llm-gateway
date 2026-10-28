@@ -223,10 +223,13 @@ Configure the extension through VS Code Settings (`Ctrl+,` / `Cmd+,`) → search
 
 ### Connection Settings
 
-| Setting             | Default                 | Description                                         |
-| ------------------- | ----------------------- | --------------------------------------------------- |
-| **Server URL**      | `http://localhost:8000` | Base URL of your OpenAI-compatible inference server |
-| **Request Timeout** | `60000`                 | Request timeout in milliseconds                     |
+| Setting                | Default                 | Description                                                                 |
+| ---------------------- | ----------------------- | --------------------------------------------------------------------------- |
+| **Server URL**         | `http://localhost:8000` | Base URL of your OpenAI-compatible inference server                         |
+| **Request Timeout**    | `60000`                 | Request timeout in milliseconds                                             |
+| **Rate Limit Retries** | `3`                     | Retries after a `429` or `503` response before the reply starts. `0` turns it off. |
+
+**Rate limits:** when the server (or a proxy such as LiteLLM) answers `429 Too Many Requests` or `503 Service Unavailable`, the gateway waits and sends the request again instead of failing the chat turn. If the response carries a `Retry-After` (or `retry-after-ms`) header, it waits exactly that long; otherwise it backs off exponentially (about 2, 4, 8, 16… seconds, capped at 60, with a little random spread so parallel requests don't retry together). A `Retry-After` longer than 60 seconds is not waited out: the error is shown so you can decide. Retries only happen before any reply has been streamed, each one is logged in the output channel, and cancelling the request stops the wait.
 
 The **API key** and any **custom HTTP headers** are not settings: they are kept in VS Code's secret storage and managed with the **Configure Server** and **Edit Custom Headers** commands (see [Step 3](#step-3-configure-the-extension)). The deprecated `apiKey` and `customHeaders` settings are migrated to secret storage automatically.
 
