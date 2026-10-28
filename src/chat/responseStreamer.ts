@@ -56,6 +56,12 @@ export interface StreamStats {
    * `isEmptyStreamResult` treats it as handled, like `thinkingForceClosed`.
    */
   outputTruncated?: boolean;
+  /**
+   * True when the model stopped on its own after thinking but never wrote a
+   * reply or called a tool (issue #136: Qwen3 via llama-server sometimes puts
+   * its closing summary inside the think block). Handled with its own note.
+   */
+  endedInThinking?: boolean;
   /** True when the loop guard cut the stream because the output became a repeating cycle. */
   repetitionStopped?: boolean;
   /** Tool calls withheld by `withholdToolCall` (the loop guard's blocked repeat). */
@@ -99,6 +105,11 @@ const REPETITION_STOP_NOTE =
 const BLOCKED_TOOL_CALL_NOTE =
   '*(Loop guard: the model made the blocked tool call again instead of changing approach, so this reply ends here. ' +
   'Send a follow-up with a hint on how to proceed, or adjust `github.copilot.llm-gateway.loopGuardToolBlockAfter`.)*';
+
+const ENDED_IN_THINKING_NOTE =
+  '*(The model stopped while still thinking and didn\'t write a reply. Its last thoughts are in the thinking block above. ' +
+  'This comes from the model rather than the gateway; heavily quantized models and a temperature of 0 make it more likely. ' +
+  'Send a follow-up to get an answer, or set the model\'s recommended sampling in `github.copilot.llm-gateway.perModelOptions`.)*';
 
 const THOUSANDS_FORMAT = new Intl.NumberFormat('en-US', { useGrouping: true });
 
@@ -250,6 +261,15 @@ function reportStreamEnd(stats: StreamStats, params: StreamResponseParams): void
   stats.outputTruncated = stats.finishReason === 'length';
   if (stats.thinkingForceClosed || stats.outputTruncated) {
     reporter.reportText(buildOutputBudgetFallback(stats.hadThinking, params.maxOutputTokens));
+    return;
+  }
+
+  // Thinking the model ended on purpose, with nothing after it, is a finished
+  // turn rather than a failed one, so it gets a note instead of the
+  // empty-response error. No finish_reason could be a dropped stream; leave that alone.
+  if (stats.hadThinking && stats.finishReason === 'stop') {
+    stats.endedInThinking = true;
+    reporter.reportText(ENDED_IN_THINKING_NOTE);
   }
 }
 
@@ -302,8 +322,8 @@ export async function streamResponse(params: StreamResponseParams): Promise<Stre
 /**
  * Determine whether a completed stream should be treated as empty (and thus
  * needs an error fallback message). Thinking content is not a visible response
- * for VS Code's purposes. Force-closed thinking, an exhausted output budget
- * and a loop-guard stop are excluded because streamResponse already emits its
+ * for VS Code's purposes. Force-closed thinking, an exhausted output budget,
+ * a reply that ended in thinking and a loop-guard stop are excluded because streamResponse already emits its
  * dedicated fallback text for them.
  */
 export function isEmptyStreamResult(stats: StreamStats): boolean {
@@ -312,6 +332,7 @@ export function isEmptyStreamResult(stats: StreamStats): boolean {
     stats.totalToolCalls === 0 &&
     !stats.thinkingForceClosed &&
     !stats.outputTruncated &&
+    !stats.endedInThinking &&
     !stats.repetitionStopped &&
     !stats.droppedToolCalls
   );

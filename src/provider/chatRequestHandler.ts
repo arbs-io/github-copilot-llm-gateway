@@ -591,6 +591,9 @@ export class ChatRequestHandler {
         `WARNING: max_tokens (${maxOutputTokens}) exhausted${stats.hadThinking ? ' during thinking' : ''} with no visible output. Raise defaultMaxOutputTokens or lower the model's thinking effort.`
       );
     }
+    if (stats.endedInThinking) {
+      log('WARNING: Model stopped inside its thinking block without a reply or tool call; showed a note instead of the empty-response error.');
+    }
     if (stats.repetitionStopped) {
       log('WARNING: Loop guard stopped a response that kept repeating itself and closed the request.');
     }
