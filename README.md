@@ -69,7 +69,7 @@ The extension connects to **one** server. To reach several providers at once —
 
 ### Prerequisites
 
-- **VS Code** 1.138.0 or later
+- **VS Code** 1.140.0 or later
 - **Inference server** running with an OpenAI-compatible API
 
 A GitHub account and Copilot plan are **not** required. Since VS Code 1.122, models from language-model provider extensions like this one work in chat without a GitHub sign-in, including offline. Signing in is optional, and only adds GitHub-hosted features such as Copilot's own models and inline suggestions.
