@@ -252,6 +252,25 @@ const ACCEPTED_LIST_INTRO =
 /** A bare effort value: a short word, optionally with `-` / `_`. */
 const EFFORT_VALUE = /^[a-z][a-z0-9_-]{0,31}$/i;
 
+/** Quotes and brackets servers wrap list values in: `'low'`, `[minimal`, `high]`. */
+const VALUE_WRAPPERS = new Set([' ', '\t', "'", '"', '`', '[', ']', '(', ')']);
+
+/** How far past the parameter name the "must be …" phrase may start. */
+const MAX_INTRO_DISTANCE = 120;
+/** Text searched for that phrase: the distance plus room for the phrase itself. */
+const MAX_INTRO_WINDOW = MAX_INTRO_DISTANCE + 40;
+/** Longest stretch of server text read as the list of values. */
+const MAX_LIST_LENGTH = 300;
+
+/** Trim wrapper characters from both ends with a linear scan (no backtracking). */
+function stripValueWrappers(raw: string): string {
+  let start = 0;
+  let end = raw.length;
+  while (start < end && VALUE_WRAPPERS.has(raw[start])) { start++; }
+  while (end > start && VALUE_WRAPPERS.has(raw[end - 1])) { end--; }
+  return raw.slice(start, end);
+}
+
 function escapeRegExp(text: string): string {
   return text.replaceAll(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`);
 }
@@ -277,15 +296,17 @@ export function parseAcceptedEffortValues(
   const mention = new RegExp(`${escapeRegExp(parameter)}|reasoning[_ ]effort`, 'i').exec(text);
   if (!mention) { return undefined; }
 
-  const rest = text.slice(mention.index + mention[0].length);
-  const intro = ACCEPTED_LIST_INTRO.exec(rest);
-  // The list must follow the mention closely, not somewhere later in the body.
-  if (!intro || intro.index > 120) { return undefined; }
+  // Only look just past the mention: the list must follow it closely, and
+  // bounding the input keeps the regex work small on large server bodies.
+  const afterMention = mention.index + mention[0].length;
+  const intro = ACCEPTED_LIST_INTRO.exec(text.slice(afterMention, afterMention + MAX_INTRO_WINDOW));
+  if (!intro || intro.index > MAX_INTRO_DISTANCE) { return undefined; }
 
-  const list = rest.slice(intro.index + intro[0].length).split(/[.;\n]|"(?=\s*[,}])| in \w/)[0];
+  const listStart = afterMention + intro.index + intro[0].length;
+  const list = text.slice(listStart, listStart + MAX_LIST_LENGTH).split(/[.;\n]|"(?=\s*[,}])| in \w/)[0];
   const values: string[] = [];
   for (const raw of list.split(/,|\bor\b|\band\b/)) {
-    const value = raw.trim().replaceAll(/^[\s'"`[(]+|[\s'"`\])]+$/g, '');
+    const value = stripValueWrappers(raw.trim());
     if (EFFORT_VALUE.test(value) && !values.includes(value)) {
       values.push(value);
     }

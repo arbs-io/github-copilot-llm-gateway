@@ -244,6 +244,18 @@ describe('parseAcceptedEffortValues (issue #146)', () => {
     );
   });
 
+  test('handles pathological input in linear time', () => {
+    const quotes = `'"\``.repeat(200_000);
+    const started = Date.now();
+    assert.deepEqual(parseAcceptedEffortValues(`reasoning_effort must be low, ${quotes}x${quotes}`), ['low']);
+    assert.equal(parseAcceptedEffortValues(`reasoning_effort ${'must be '.repeat(100_000)}`), undefined);
+    assert.ok(Date.now() - started < 1000, 'parser should not backtrack on long runs');
+  });
+
+  test('strips mixed quotes and brackets around values', () => {
+    assert.deepEqual(parseAcceptedEffortValues("reasoning_effort must be one of ['low', `high`, (max)]"), ['low', 'high', 'max']);
+  });
+
   test('returns undefined when only a numeric range is accepted', () => {
     assert.equal(parseAcceptedEffortValues('reasoning_effort must be an integer within [1, 100]'), undefined);
   });
