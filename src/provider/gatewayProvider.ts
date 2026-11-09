@@ -186,6 +186,7 @@ export class GatewayProvider
       onCompleted: (modelId, modelName, usage) =>
         this.recordCompletedRequest(modelId, modelName, usage),
       showOutput: () => this.outputChannel.show(),
+      onModelInfoChanged: () => this._onDidChangeLanguageModelChatInformation.fire(),
     });
     this.inlineCompletions = new InlineCompletionService({
       client: this.client,

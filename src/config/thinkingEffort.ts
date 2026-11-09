@@ -156,16 +156,33 @@ export interface ModelConfigurationSchema {
  * default" when nothing is set. A custom value the presets don't cover —
  * `minimal`, or a numeric llama.cpp budget — is kept as an extra option
  * rather than silently replaced.
+ *
+ * When the server has told us which values it accepts for this model
+ * (`acceptedValues`, learned from its rejection — issue #146), those replace
+ * the generic Low / Medium / High presets.
  */
-export function buildThinkingEffortSchema(currentEffort: string | undefined): ModelConfigurationSchema {
+export function buildThinkingEffortSchema(
+  currentEffort: string | undefined,
+  acceptedValues?: readonly string[]
+): ModelConfigurationSchema {
   const values: string[] = [SERVER_DEFAULT_EFFORT];
   const labels: string[] = ['Server Default'];
   const descriptions: string[] = ["Don't send a thinking effort; use the server's default"];
-  for (const preset of THINKING_EFFORT_PRESETS) {
-    if (preset.value === undefined) { continue; }
-    values.push(preset.value);
-    labels.push(preset.label);
-    descriptions.push(preset.detail);
+  if (acceptedValues && acceptedValues.length > 0) {
+    for (const value of acceptedValues) {
+      if (value === SERVER_DEFAULT_EFFORT || values.includes(value)) { continue; }
+      const preset = THINKING_EFFORT_PRESETS.find((p) => p.value === value);
+      values.push(value);
+      labels.push(preset?.label ?? EXTRA_EFFORT_LABELS[value] ?? value);
+      descriptions.push(preset?.detail ?? 'Accepted by the server for this model');
+    }
+  } else {
+    for (const preset of THINKING_EFFORT_PRESETS) {
+      if (preset.value === undefined) { continue; }
+      values.push(preset.value);
+      labels.push(preset.label);
+      descriptions.push(preset.detail);
+    }
   }
   if (currentEffort !== undefined && !values.includes(currentEffort)) {
     values.push(currentEffort);
@@ -215,4 +232,63 @@ export function applyModelConfigurationEffort(
   const existing = next[parameter];
   next[parameter] = typeof existing === 'number' && String(existing) === value ? existing : value;
   return next;
+}
+
+/**
+ * Picker labels for effort values outside the Low / Medium / High presets
+ * that servers commonly accept. Anything else is shown as sent.
+ */
+const EXTRA_EFFORT_LABELS: Readonly<Record<string, string>> = {
+  none: 'None',
+  minimal: 'Minimal',
+  xhigh: 'Extra High',
+  max: 'Max',
+};
+
+/** Phrases that introduce a server's list of accepted values. */
+const ACCEPTED_LIST_INTRO =
+  /\b(?:must be(?: one of)?|should be(?: one of)?|expected(?: one of)?|supported values are|allowed values are|valid values are|one of)\s*:?\s*/i;
+
+/** A bare effort value: a short word, optionally with `-` / `_`. */
+const EFFORT_VALUE = /^[a-z][a-z0-9_-]{0,31}$/i;
+
+function escapeRegExp(text: string): string {
+  return text.replaceAll(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`);
+}
+
+/**
+ * Pull the list of accepted thinking-effort values out of a server's
+ * rejection of the one we sent (issue #146), e.g.
+ *
+ *   `reasoning_effort must be low, high, xhigh, max, or an integer within [1, 100]`
+ *   `"loc":["body","reasoning_effort"],"msg":"Input should be 'low', 'medium' or 'high'"`
+ *   `Supported values are: 'low' and 'high'.`
+ *
+ * Only word-like values are kept — "an integer within [1, 100]" describes a
+ * range the picker can't offer. Returns `undefined` when the message isn't a
+ * thinking-effort rejection, so unrelated 400s are left alone.
+ */
+export function parseAcceptedEffortValues(
+  message: string,
+  parameter: string = DEFAULT_THINKING_EFFORT_PARAMETER
+): string[] | undefined {
+  // Servers often nest the upstream error as escaped JSON; drop the escapes.
+  const text = message.replaceAll('\\', '');
+  const mention = new RegExp(`${escapeRegExp(parameter)}|reasoning[_ ]effort`, 'i').exec(text);
+  if (!mention) { return undefined; }
+
+  const rest = text.slice(mention.index + mention[0].length);
+  const intro = ACCEPTED_LIST_INTRO.exec(rest);
+  // The list must follow the mention closely, not somewhere later in the body.
+  if (!intro || intro.index > 120) { return undefined; }
+
+  const list = rest.slice(intro.index + intro[0].length).split(/[.;\n]|"(?=\s*[,}])| in \w/)[0];
+  const values: string[] = [];
+  for (const raw of list.split(/,|\bor\b|\band\b/)) {
+    const value = raw.trim().replaceAll(/^[\s'"`[(]+|[\s'"`\])]+$/g, '');
+    if (EFFORT_VALUE.test(value) && !values.includes(value)) {
+      values.push(value);
+    }
+  }
+  return values.length > 0 ? values : undefined;
 }

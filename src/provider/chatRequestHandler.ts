@@ -40,6 +40,7 @@ import { TokenUsage } from '../status/sessionStats';
 import { ModelCatalog } from './modelCatalog';
 import { convertAllMessages } from './vscodeParts';
 import { handleChatError } from './notifications';
+import { ThinkingBlockIds } from '../chat/thinkingBlockId';
 
 const DEFAULT_TEMPERATURE = 0.7;
 const DEBUG_REQUEST_MAX_LOG_LENGTH = 2000;
@@ -131,6 +132,8 @@ interface ChatRequestHandlerDeps {
   onCompleted: (modelId: string, modelName: string, usage: TokenUsage | undefined) => void;
   /** Opens the extension's output channel (used by error prompts). */
   showOutput: () => void;
+  /** Ask VS Code to re-read the model list (e.g. after learning a model's accepted thinking efforts). */
+  onModelInfoChanged: () => void;
 }
 
 /**
@@ -379,7 +382,7 @@ export class ChatRequestHandler {
         modelName,
         errorMessage: error instanceof Error ? error.message : String(error),
       });
-      handleChatError(error, log, this.deps.showOutput);
+      handleChatError(error, log, this.deps.showOutput, config.thinkingEffortParameter);
     }
   }
 
@@ -411,6 +414,16 @@ export class ChatRequestHandler {
       } catch (error) {
         // Learn first, even when we can't retry, so the next request budgets correctly.
         const learnedContext = !contextRetried && catalog.learnContextSizeFromError(model, error);
+        // Not retried: silently swapping the user's chosen effort for another
+        // would change the reply. The picker is narrowed and the error says
+        // which values to pick instead (issue #146).
+        if (
+          error instanceof ChatHttpError &&
+          error.status === 400 &&
+          catalog.learnThinkingEffortsFromError(model.id, error, config.thinkingEffortParameter)
+        ) {
+          this.deps.onModelInfoChanged();
+        }
         if (hasReportedParts() || token.isCancellationRequested) {
           throw error;
         }
@@ -583,11 +596,17 @@ export class ChatRequestHandler {
     onRoundUsage?: (round: RoundUsage) => void,
     onToolCallEmitted?: (id: string) => void
   ): StreamReporter {
+    // VS Code only merges thinking parts that share an id; without one each
+    // streamed reasoning delta rendered as its own block (issue #144).
+    const thinkingIds = new ThinkingBlockIds();
     return {
       reportText: (text) => progress.report(new vscode.LanguageModelTextPart(text)),
-      reportThinking: (text) => progress.report(new vscode.LanguageModelThinkingPart(text)),
+      reportThinking: (text) =>
+        progress.report(new vscode.LanguageModelThinkingPart(text, thinkingIds.current())),
       reportThinkingDone: () =>
-        progress.report(new vscode.LanguageModelThinkingPart('', '', { vscode_reasoning_done: true })),
+        progress.report(
+          new vscode.LanguageModelThinkingPart('', thinkingIds.end() ?? '', { vscode_reasoning_done: true })
+        ),
       reportToolCall: (id, name, args) => {
         onToolCallEmitted?.(id);
         progress.report(new vscode.LanguageModelToolCallPart(id, name, args));

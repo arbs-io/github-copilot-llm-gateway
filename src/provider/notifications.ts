@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { parseContextOverflowError } from '../chat/contextWindow';
+import { DEFAULT_THINKING_EFFORT_PARAMETER, parseAcceptedEffortValues } from '../config/thinkingEffort';
 
 type Logger = (message: string) => void;
 
@@ -54,10 +55,16 @@ function promptToolCallingError(log: Logger, showOutput: () => void): void {
 /**
  * Log a failed chat request and surface the most actionable UI for it:
  * context-overflow errors point at `modelContextWindows`, tool-parser
- * errors offer to disable tool calling, everything else gets the raw
- * message. Always rethrows so VS Code marks the chat turn as failed.
+ * errors offer to disable tool calling, a rejected thinking effort names the
+ * values the server accepts, everything else gets the raw message. Always
+ * throws so VS Code marks the chat turn as failed.
  */
-export function handleChatError(error: unknown, log: Logger, showOutput: () => void): never {
+export function handleChatError(
+  error: unknown,
+  log: Logger,
+  showOutput: () => void,
+  effortParameter: string = DEFAULT_THINKING_EFFORT_PARAMETER
+): never {
   const errorMessage = error instanceof Error ? error.message : String(error);
   const errorStack = error instanceof Error ? error.stack : '';
 
@@ -76,6 +83,18 @@ export function handleChatError(error: unknown, log: Logger, showOutput: () => v
     /tool[_ -]?call.*parse/i.test(errorMessage);
 
   const overflowContext = parseContextOverflowError(errorMessage);
+  const acceptedEfforts = parseAcceptedEffortValues(errorMessage, effortParameter);
+  if (acceptedEfforts !== undefined) {
+    // Issue #146: the catalog has already narrowed the model picker to these
+    // values. Lead with the fix — the raw server body follows for reference —
+    // in both the notification and the chat view's failure reason.
+    const friendly =
+      `The server rejected the thinking effort (${effortParameter}) for this model. ` +
+      `It accepts: ${acceptedEfforts.join(', ')}. Choose one of these in the model picker's ` +
+      `Thinking Effort menu (or with the Set Thinking Effort command) and resend.`;
+    vscode.window.showErrorMessage(`GitHub Copilot LLM Gateway: ${friendly}`);
+    throw new Error(`${friendly}\n\n${errorMessage}`);
+  }
   if (overflowContext !== undefined) {
     // Reaching here means the learn-and-retry path couldn't recover
     // (output already streamed, or we were already budgeting within the

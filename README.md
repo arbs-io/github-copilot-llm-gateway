@@ -69,7 +69,7 @@ The extension connects to **one** server. To reach several providers at once —
 
 ### Prerequisites
 
-- **VS Code** 1.138.0 or later
+- **VS Code**, a recent stable release. The exact minimum is the `engines.vscode` field in [`package.json`](package.json); VS Code won't install the extension on an older build, and changes to it are called out in the [release notes](https://github.com/arbs-io/github-copilot-llm-gateway/releases).
 - **Inference server** running with an OpenAI-compatible API
 
 A GitHub account and Copilot plan are **not** required. Since VS Code 1.122, models from language-model provider extensions like this one work in chat without a GitHub sign-in, including offline. Signing in is optional, and only adds GitHub-hosted features such as Copilot's own models and inline suggestions.
@@ -314,6 +314,8 @@ Which models show the control is set by `github.copilot.llm-gateway.thinkingEffo
 The **GitHub Copilot LLM Gateway: Set Thinking Effort** command (also in the status-bar menu) works with every VS Code version and every model: pick a model, then **Off / Low / Medium / High** or a custom value, and the choice is written to `perModelOptions` for that model id. The picker starts from that value, so the two stay in step; once you choose a level in the picker, the picker's choice takes precedence for that model.
 
 `reasoning_effort` is understood by vLLM, LiteLLM, and most OpenAI-compatible servers. For backends that name the parameter differently, set `github.copilot.llm-gateway.thinkingEffortParameter` (e.g. `reasoning_budget` for llama.cpp); both the picker and the command use it, and the command's **Custom…** option accepts any value. Anything more exotic — llama.cpp's `chat_template_kwargs: { "enable_thinking": false }` for Qwen3, or Ollama's `think: false` — can still be set directly in `perModelOptions`.
+
+Not every model accepts every level — DeepSeek V4.1 on vLLM, for example, takes `low`, `high`, `xhigh` or `max` but rejects `medium`. When the server rejects the level it was sent and lists the values it accepts, the gateway names them in the error and narrows that model's Thinking Effort menu to exactly those values (labelled, e.g., **Extra High** and **Max**) until the settings change or VS Code restarts. Pick one of them and resend; the gateway never swaps your choice for another level on its own.
 
 > The picker control relies on a VS Code model-picker API that is still marked as proposed. VS Code builds that don't support it simply don't show the control; the command keeps working either way.
 
