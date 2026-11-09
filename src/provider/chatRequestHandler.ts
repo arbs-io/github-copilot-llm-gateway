@@ -583,11 +583,27 @@ export class ChatRequestHandler {
     onRoundUsage?: (round: RoundUsage) => void,
     onToolCallEmitted?: (id: string) => void
   ): StreamReporter {
+    // VS Code merges consecutive thinking parts only when their `id` matches
+    // (see `_appendReasoningOutput` in workbench). Reporting each reasoning
+    // delta without an id makes every delta its own "Thought for Ns" block, so
+    // streamed reasoning shows up as hundreds of fragments. Keep one id for the
+    // whole reasoning phase and reset it when the phase ends, so multi-phase
+    // turns (reasoning before and after a tool call) still produce separate
+    // blocks.
+    let thinkingId: string | undefined;
+    let thinkingSeq = 0;
     return {
       reportText: (text) => progress.report(new vscode.LanguageModelTextPart(text)),
-      reportThinking: (text) => progress.report(new vscode.LanguageModelThinkingPart(text)),
-      reportThinkingDone: () =>
-        progress.report(new vscode.LanguageModelThinkingPart('', '', { vscode_reasoning_done: true })),
+      reportThinking: (text) =>
+        progress.report(
+          new vscode.LanguageModelThinkingPart(text, (thinkingId ??= `thinking-${++thinkingSeq}`))
+        ),
+      reportThinkingDone: () => {
+        thinkingId = undefined;
+        progress.report(
+          new vscode.LanguageModelThinkingPart('', '', { vscode_reasoning_done: true })
+        );
+      },
       reportToolCall: (id, name, args) => {
         onToolCallEmitted?.(id);
         progress.report(new vscode.LanguageModelToolCallPart(id, name, args));
