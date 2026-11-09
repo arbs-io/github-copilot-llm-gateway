@@ -13,6 +13,7 @@ import {
   resolveThinkingEffort,
   shouldOfferThinkingEffortPicker,
 } from '../config/thinkingEffort';
+import { errorMessage } from '../util/errorMessage';
 
 /**
  * The Thinking Effort picker schema for one model, or `undefined` when the
@@ -168,7 +169,7 @@ export class ModelCatalog {
    * listing rebuilds the picker from the learned values.
    */
   public learnThinkingEffortsFromError(modelId: string, error: unknown, parameter: string): boolean {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     const accepted = parseAcceptedEffortValues(message, parameter);
     if (!accepted) {
       return false;
@@ -202,7 +203,7 @@ export class ModelCatalog {
       try {
         return { models: await this.fetchInFlight };
       } catch (error) {
-        return { models: [], error: error instanceof Error ? error.message : String(error) };
+        return { models: [], error: errorMessage(error) };
       }
     }
 
@@ -220,7 +221,7 @@ export class ModelCatalog {
       }
       return { models: result };
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = errorMessage(error);
       this.lastConnectionError = message;
       this.deps.onStatusChanged();
       return { models: [], error: message };
@@ -240,8 +241,7 @@ export class ModelCatalog {
     try {
       response = await this.deps.client.fetchModels(token);
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      log(`ERROR: Failed to fetch models: ${errorMessage}`);
+      log(`ERROR: Failed to fetch models: ${errorMessage(error)}`);
       throw error;
     }
 
@@ -427,7 +427,7 @@ export class ModelCatalog {
     model: LanguageModelChatInformation,
     error: unknown
   ): boolean {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     const serverContext = parseContextOverflowError(message);
     if (serverContext === undefined) {
       return false;

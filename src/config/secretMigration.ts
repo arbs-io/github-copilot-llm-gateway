@@ -1,3 +1,4 @@
+import { errorMessage } from '../util/errorMessage';
 /**
  * Helpers for moving the legacy `apiKey` / `customHeaders` settings out of
  * VS Code's plain-text user/workspace configuration and into the per-extension
@@ -66,7 +67,7 @@ export function parseCustomHeadersJson(
   try {
     parsed = JSON.parse(raw);
   } catch (error) {
-    log(`Failed to parse customHeaders secret JSON: ${error instanceof Error ? error.message : String(error)}`);
+    log(`Failed to parse customHeaders secret JSON: ${errorMessage(error)}`);
     return {};
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {

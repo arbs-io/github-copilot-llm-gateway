@@ -1,6 +1,7 @@
 import type { CancellationToken } from 'vscode';
 import type { JsonProbeResult } from '../api/client';
 import { DiscoveredModelInfo, ModelDiscovery } from './types';
+import { errorMessage } from '../util/errorMessage';
 
 /**
  * LiteLLM-specific model discovery via the proxy's native `GET /model/info`
@@ -213,7 +214,7 @@ export class LiteLLMDiscovery implements ModelDiscovery {
         .fetchLiteLLMModelInfo(token)
         .catch((error: unknown): JsonProbeResult => ({
           kind: 'unreachable',
-          reason: error instanceof Error ? error.message : String(error),
+          reason: errorMessage(error),
         }))
         .then((probe) => {
           const parsed = probe.kind === 'ok' ? parseLiteLLMModelInfoResponse(probe.body) : undefined;

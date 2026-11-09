@@ -37,6 +37,7 @@ import { UsageService } from './usageService';
 import { promptOpenSettings } from './notifications';
 import { countMessageTokens } from './vscodeParts';
 import { resolveReplayReasoning } from '../config/replayReasoning';
+import { errorMessage } from '../util/errorMessage';
 
 export type { RequestStateEvent } from './chatRequestHandler';
 
@@ -239,7 +240,7 @@ export class GatewayProvider
         // we surface them in the output channel.
         void this.secretsManager.refreshCache().catch((err: unknown) => {
           this.outputChannel.appendLine(
-            `Failed to refresh secret cache after change: ${err instanceof Error ? err.message : String(err)}`
+            `Failed to refresh secret cache after change: ${errorMessage(err)}`
           );
         });
       })
