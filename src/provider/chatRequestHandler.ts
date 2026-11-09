@@ -41,6 +41,7 @@ import { ModelCatalog } from './modelCatalog';
 import { convertAllMessages } from './vscodeParts';
 import { handleChatError } from './notifications';
 import { ThinkingBlockIds } from '../chat/thinkingBlockId';
+import { errorMessage } from '../util/errorMessage';
 
 const DEFAULT_TEMPERATURE = 0.7;
 const DEBUG_REQUEST_MAX_LOG_LENGTH = 2000;
@@ -380,7 +381,7 @@ export class ChatRequestHandler {
         kind: 'error',
         modelId: model.id,
         modelName,
-        errorMessage: error instanceof Error ? error.message : String(error),
+        errorMessage: errorMessage(error),
       });
       handleChatError(error, log, this.deps.showOutput, config.thinkingEffortParameter);
     }
@@ -404,7 +405,7 @@ export class ChatRequestHandler {
     token: vscode.CancellationToken,
     hasReportedParts: () => boolean
   ): Promise<void> {
-    const { log, catalog } = this.deps;
+    const { log } = this.deps;
     let contextRetried = false;
     let rateLimitRetries = 0;
     for (;;) {
@@ -412,45 +413,97 @@ export class ChatRequestHandler {
         await attempt();
         return;
       } catch (error) {
-        // Learn first, even when we can't retry, so the next request budgets correctly.
-        const learnedContext = !contextRetried && catalog.learnContextSizeFromError(model, error);
-        // Not retried: silently swapping the user's chosen effort for another
-        // would change the reply. The picker is narrowed and the error says
-        // which values to pick instead (issue #146).
-        if (
-          error instanceof ChatHttpError &&
-          error.status === 400 &&
-          catalog.learnThinkingEffortsFromError(model.id, error, config.thinkingEffortParameter)
-        ) {
-          this.deps.onModelInfoChanged();
-        }
-        if (hasReportedParts() || token.isCancellationRequested) {
+        const retry = this.planRetry(error, {
+          model, config, token, hasReportedParts, contextRetried, rateLimitRetries,
+        });
+        if (retry === undefined) {
           throw error;
         }
-        if (learnedContext) {
+        if (retry.kind === 'context') {
           contextRetried = true;
-          log('Retrying chat request with corrected context size...');
           continue;
         }
-        const delayMs =
-          rateLimitRetries < config.rateLimitRetries
-            ? rateLimitRetryDelay(error, rateLimitRetries + 1)
-            : undefined;
-        if (delayMs === undefined) {
-          throw error;
-        }
         rateLimitRetries++;
-        const status = error instanceof ChatHttpError ? error.status : 'error';
-        log(
-          `Server returned ${status}; retrying in ${(delayMs / 1000).toFixed(1)}s ` +
-            `(retry ${rateLimitRetries} of ${config.rateLimitRetries})...`
-        );
-        if (!(await waitForRetry(delayMs, token))) {
+        if (!(await waitForRetry(retry.delayMs, token))) {
           log('Chat request cancelled while waiting to retry.');
           return;
         }
       }
     }
+  }
+
+  /**
+   * Decide whether a failed attempt is retried, and how. Learns from the
+   * error first, even when it can't be retried, so the next request budgets
+   * correctly. Nothing is retried once output has been streamed (a retry
+   * would duplicate it) or the user has cancelled.
+   */
+  private planRetry(
+    error: unknown,
+    state: {
+      model: vscode.LanguageModelChatInformation;
+      config: GatewayConfig;
+      token: vscode.CancellationToken;
+      hasReportedParts: () => boolean;
+      contextRetried: boolean;
+      rateLimitRetries: number;
+    }
+  ): { kind: 'context' } | { kind: 'rateLimit'; delayMs: number } | undefined {
+    const learnedContext = this.learnFromFailure(state.model, state.config, error, state.contextRetried);
+    if (state.hasReportedParts() || state.token.isCancellationRequested) {
+      return undefined;
+    }
+    if (learnedContext) {
+      this.deps.log('Retrying chat request with corrected context size...');
+      return { kind: 'context' };
+    }
+    const delayMs = this.rateLimitDelay(error, state.config, state.rateLimitRetries);
+    return delayMs === undefined ? undefined : { kind: 'rateLimit', delayMs };
+  }
+
+  /**
+   * Record what a failed request teaches about the model. Returns true when
+   * it revealed a smaller context window (issue #55), which is worth one
+   * retry with the corrected budget. A rejected thinking effort (issue #146)
+   * narrows the model picker instead and is never retried: silently swapping
+   * the user's chosen effort for another would change the reply.
+   */
+  private learnFromFailure(
+    model: vscode.LanguageModelChatInformation,
+    config: GatewayConfig,
+    error: unknown,
+    contextRetried: boolean
+  ): boolean {
+    const { catalog } = this.deps;
+    const learnedContext = !contextRetried && catalog.learnContextSizeFromError(model, error);
+    if (
+      error instanceof ChatHttpError &&
+      error.status === 400 &&
+      catalog.learnThinkingEffortsFromError(model.id, error, config.thinkingEffortParameter)
+    ) {
+      this.deps.onModelInfoChanged();
+    }
+    return learnedContext;
+  }
+
+  /**
+   * Backoff before the next retry of a rate-limited (429 / 503) request
+   * (issue #138), logging the wait, or `undefined` when the error isn't
+   * retryable or `rateLimitRetries` is used up.
+   */
+  private rateLimitDelay(error: unknown, config: GatewayConfig, retriesSoFar: number): number | undefined {
+    if (retriesSoFar >= config.rateLimitRetries) {
+      return undefined;
+    }
+    const delayMs = rateLimitRetryDelay(error, retriesSoFar + 1);
+    if (delayMs !== undefined) {
+      const status = error instanceof ChatHttpError ? error.status : 'error';
+      this.deps.log(
+        `Server returned ${status}; retrying in ${(delayMs / 1000).toFixed(1)}s ` +
+          `(retry ${retriesSoFar + 1} of ${config.rateLimitRetries})...`
+      );
+    }
+    return delayMs;
   }
 
   // ---------- tool config + stream adapters ----------

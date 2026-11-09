@@ -16,6 +16,7 @@ import {
   isSuffixUnsupportedError,
   shouldRequestCompletion,
 } from '../completions/inlineCompletion';
+import { errorMessage } from '../util/errorMessage';
 
 interface InlineCompletionServiceDeps {
   client: GatewayClient;
@@ -159,12 +160,11 @@ export class InlineCompletionService {
     token: CancellationToken,
     config: GatewayConfig
   ): void {
+    const message = errorMessage(error);
     if (error instanceof RequestCancelledError || token.isCancellationRequested) {
       if (config.verboseLogging) {
         // The token can fire while an unrelated error is in flight — keep it visible.
-        const detail = error instanceof RequestCancelledError
-          ? ''
-          : `: ${error instanceof Error ? error.message : String(error)}`;
+        const detail = error instanceof RequestCancelledError ? '' : `: ${message}`;
         this.deps.log(`Inline completion cancelled (superseded by newer request)${detail}`);
       }
       return;
@@ -173,9 +173,7 @@ export class InlineCompletionService {
       this.reportTimeout(model, config);
       return;
     }
-    this.deps.log(
-      `Inline completion failed: ${error instanceof Error ? error.message : String(error)}`
-    );
+    this.deps.log(`Inline completion failed: ${message}`);
   }
 
   private reportTimeout(model: string, config: GatewayConfig): void {
