@@ -51,6 +51,11 @@
   "activationEvents": [
     "onStartupFinished"
   ],
+  "capabilities": {
+    "agentsWindow": {
+      "supported": true
+    }
+  },
   "main": "./out/extension.js",
   "contributes": {
     "languageModelChatProviders": [
