@@ -8,6 +8,7 @@ import {
   applyModelConfigurationEffort,
   applyThinkingEffort,
   buildThinkingEffortSchema,
+  parseAcceptedEffortValues,
   parseThinkingEffortPickerMode,
   resolveThinkingEffort,
   shouldOfferThinkingEffortPicker,
@@ -199,5 +200,85 @@ describe('applyModelConfigurationEffort', () => {
     const input = { reasoning_effort: 'low' };
     applyModelConfigurationEffort(input, { reasoningEffort: SERVER_DEFAULT_EFFORT });
     assert.deepEqual(input, { reasoning_effort: 'low' });
+  });
+});
+
+describe('parseAcceptedEffortValues (issue #146)', () => {
+  test('reads the list from a vLLM/DeepSeek rejection nested in a LiteLLM error', () => {
+    const message =
+      'Chat completion failed: 400 Bad Request - {"error":{"message":"litellm.BadRequestError: Hosted_vllmException - ' +
+      '{\\"error\\":{\\"message\\":\\"DeepSeek V4.1 reasoning_effort must be low, high, xhigh, max, or an integer within [1, 100] ' +
+      'in chat_template_kwargs\\",\\"type\\":\\"BadRequestError\\",\\"param\\":null,\\"code\\":400}}"}}';
+    assert.deepEqual(parseAcceptedEffortValues(message), ['low', 'high', 'xhigh', 'max']);
+  });
+
+  test('reads a pydantic-style "Input should be" message', () => {
+    const message =
+      '400 Bad Request - {"detail":[{"loc":["body","reasoning_effort"],"msg":"Input should be \'low\', \'medium\' or \'high\'","type":"literal_error"}]}';
+    assert.deepEqual(parseAcceptedEffortValues(message), ['low', 'medium', 'high']);
+  });
+
+  test('reads an OpenAI-style "Supported values are" message', () => {
+    const message =
+      "Unsupported value: 'reasoning_effort' does not support 'medium' with this model. Supported values are: 'low' and 'high'.";
+    assert.deepEqual(parseAcceptedEffortValues(message), ['low', 'high']);
+  });
+
+  test('honours a custom parameter name', () => {
+    assert.deepEqual(
+      parseAcceptedEffortValues('thinking_level must be one of [minimal, low, high]', 'thinking_level'),
+      ['minimal', 'low', 'high']
+    );
+  });
+
+  test('ignores errors that are not about the thinking effort', () => {
+    assert.equal(parseAcceptedEffortValues('400 Bad Request - temperature must be between 0 and 2'), undefined);
+    assert.equal(parseAcceptedEffortValues('400 Bad Request - context length exceeded'), undefined);
+  });
+
+  test('ignores a list that is nowhere near the effort mention', () => {
+    const filler = 'x'.repeat(200);
+    assert.equal(
+      parseAcceptedEffortValues(`reasoning_effort was medium ${filler} role must be user, assistant or system`),
+      undefined
+    );
+  });
+
+  test('handles pathological input in linear time', () => {
+    const quotes = `'"\``.repeat(200_000);
+    const started = Date.now();
+    assert.deepEqual(parseAcceptedEffortValues(`reasoning_effort must be low, ${quotes}x${quotes}`), ['low']);
+    assert.equal(parseAcceptedEffortValues(`reasoning_effort ${'must be '.repeat(100_000)}`), undefined);
+    assert.ok(Date.now() - started < 1000, 'parser should not backtrack on long runs');
+  });
+
+  test('strips mixed quotes and brackets around values', () => {
+    assert.deepEqual(parseAcceptedEffortValues("reasoning_effort must be one of ['low', `high`, (max)]"), ['low', 'high', 'max']);
+  });
+
+  test('returns undefined when only a numeric range is accepted', () => {
+    assert.equal(parseAcceptedEffortValues('reasoning_effort must be an integer within [1, 100]'), undefined);
+  });
+});
+
+describe('buildThinkingEffortSchema with accepted values (issue #146)', () => {
+  test('offers only the server-accepted values, with friendly labels', () => {
+    const property = buildThinkingEffortSchema(undefined, ['low', 'high', 'xhigh', 'max']).properties[
+      MODEL_CONFIG_EFFORT_KEY
+    ];
+    assert.deepEqual(property.enum, [SERVER_DEFAULT_EFFORT, 'low', 'high', 'xhigh', 'max']);
+    assert.deepEqual(property.enumItemLabels, ['Server Default', 'Low', 'High', 'Extra High', 'Max']);
+    assert.equal(property.enum.includes('medium'), false);
+  });
+
+  test('keeps a configured custom value selectable', () => {
+    const property = buildThinkingEffortSchema('42', ['low', 'high']).properties[MODEL_CONFIG_EFFORT_KEY];
+    assert.deepEqual(property.enum, [SERVER_DEFAULT_EFFORT, 'low', 'high', '42']);
+    assert.equal(property.default, '42');
+  });
+
+  test('an empty list falls back to the standard presets', () => {
+    const property = buildThinkingEffortSchema(undefined, []).properties[MODEL_CONFIG_EFFORT_KEY];
+    assert.deepEqual(property.enum, [SERVER_DEFAULT_EFFORT, 'low', 'medium', 'high']);
   });
 });

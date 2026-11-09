@@ -1,5 +1,7 @@
 import * as vscode from 'vscode';
 import { parseContextOverflowError } from '../chat/contextWindow';
+import { DEFAULT_THINKING_EFFORT_PARAMETER, parseAcceptedEffortValues } from '../config/thinkingEffort';
+import { errorMessage } from '../util/errorMessage';
 
 type Logger = (message: string) => void;
 
@@ -20,7 +22,7 @@ export function promptOpenSettings(message: string, log: Logger): void {
     },
     (err: unknown) => {
       log(
-        `Failed to show settings prompt: ${err instanceof Error ? err.message : String(err)}`
+        `Failed to show settings prompt: ${errorMessage(err)}`
       );
     }
   );
@@ -45,7 +47,7 @@ function promptToolCallingError(log: Logger, showOutput: () => void): void {
       },
       (err: unknown) => {
         log(
-          `Failed to show tool calling error prompt: ${err instanceof Error ? err.message : String(err)}`
+          `Failed to show tool calling error prompt: ${errorMessage(err)}`
         );
       }
     );
@@ -54,14 +56,20 @@ function promptToolCallingError(log: Logger, showOutput: () => void): void {
 /**
  * Log a failed chat request and surface the most actionable UI for it:
  * context-overflow errors point at `modelContextWindows`, tool-parser
- * errors offer to disable tool calling, everything else gets the raw
- * message. Always rethrows so VS Code marks the chat turn as failed.
+ * errors offer to disable tool calling, a rejected thinking effort names the
+ * values the server accepts, everything else gets the raw message. Always
+ * throws so VS Code marks the chat turn as failed.
  */
-export function handleChatError(error: unknown, log: Logger, showOutput: () => void): never {
-  const errorMessage = error instanceof Error ? error.message : String(error);
+export function handleChatError(
+  error: unknown,
+  log: Logger,
+  showOutput: () => void,
+  effortParameter: string = DEFAULT_THINKING_EFFORT_PARAMETER
+): never {
+  const message = errorMessage(error);
   const errorStack = error instanceof Error ? error.stack : '';
 
-  log(`ERROR: Chat request failed: ${errorMessage}`);
+  log(`ERROR: Chat request failed: ${message}`);
   if (errorStack) {
     log(`Stack trace: ${errorStack}`);
   }
@@ -72,10 +80,22 @@ export function handleChatError(error: unknown, log: Logger, showOutput: () => v
   // unrelated errors and was triggering the "may not support tool calling"
   // prompt incorrectly.
   const isToolError =
-    errorMessage.includes('HarmonyError') ||
-    /tool[_ -]?call.*parse/i.test(errorMessage);
+    message.includes('HarmonyError') ||
+    /tool[_ -]?call.*parse/i.test(message);
 
-  const overflowContext = parseContextOverflowError(errorMessage);
+  const overflowContext = parseContextOverflowError(message);
+  const acceptedEfforts = parseAcceptedEffortValues(message, effortParameter);
+  if (acceptedEfforts !== undefined) {
+    // Issue #146: the catalog has already narrowed the model picker to these
+    // values. Lead with the fix — the raw server body follows for reference —
+    // in both the notification and the chat view's failure reason.
+    const friendly =
+      `The server rejected the thinking effort (${effortParameter}) for this model. ` +
+      `It accepts: ${acceptedEfforts.join(', ')}. Choose one of these in the model picker's ` +
+      `Thinking Effort menu (or with the Set Thinking Effort command) and resend.`;
+    vscode.window.showErrorMessage(`GitHub Copilot LLM Gateway: ${friendly}`);
+    throw new Error(`${friendly}\n\n${message}`);
+  }
   if (overflowContext !== undefined) {
     // Reaching here means the learn-and-retry path couldn't recover
     // (output already streamed, or we were already budgeting within the
@@ -95,7 +115,7 @@ export function handleChatError(error: unknown, log: Logger, showOutput: () => v
     promptToolCallingError(log, showOutput);
   } else {
     vscode.window.showErrorMessage(
-      `GitHub Copilot LLM Gateway: Chat request failed. ${errorMessage}`
+      `GitHub Copilot LLM Gateway: Chat request failed. ${message}`
     );
   }
 

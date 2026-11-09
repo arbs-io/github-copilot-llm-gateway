@@ -3,6 +3,7 @@ import { GatewayProvider } from './provider/gatewayProvider';
 import { GatewayInlineCompletionProvider } from './completions/inlineCompletionProvider';
 import { StatusBarManager } from './status/statusBarManager';
 import { registerCommands } from './commands';
+import { errorMessage } from './util/errorMessage';
 
 const STATUS_BAR_PROBE_DELAY_MS = 1500;
 
@@ -93,7 +94,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         statusManager.setNoModels();
       }
     } catch (error) {
-      statusManager.setError(error instanceof Error ? error.message : String(error));
+      statusManager.setError(errorMessage(error));
     } finally {
       cts.dispose();
       await usageRefresh;

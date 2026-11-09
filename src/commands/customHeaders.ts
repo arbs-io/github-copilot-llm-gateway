@@ -12,29 +12,29 @@ interface HeaderQuickPickItem extends vscode.QuickPickItem {
  * doesn't leak credentials, and supports add / edit / delete / clear-all.
  */
 export async function editCustomHeadersFlow(provider: GatewayProvider): Promise<void> {
-  while (true) {
-    const headers = provider.getCustomHeadersSnapshot();
-    const headerNames = Object.keys(headers).sort((a, b) => a.localeCompare(b));
-    const items = buildHeaderQuickPickItems(headerNames);
+  // One menu round per call: run the chosen action, then show the menu again
+  // until the user picks Done or dismisses it. Each step waits on the user,
+  // so this is inherently sequential.
+  const headers = provider.getCustomHeadersSnapshot();
+  const headerNames = Object.keys(headers).sort((a, b) => a.localeCompare(b));
+  const pick = await vscode.window.showQuickPick(buildHeaderQuickPickItems(headerNames), {
+    title: `LLM Gateway — Custom Headers (${headerNames.length})`,
+    placeHolder:
+      headerNames.length === 0
+        ? 'No custom headers yet. Add one or close.'
+        : 'Select a header to edit, or add a new one',
+    ignoreFocusOut: true,
+  });
+  if (!pick || pick.action === 'done') { return; }
 
-    const pick = await vscode.window.showQuickPick(items, {
-      title: `LLM Gateway — Custom Headers (${headerNames.length})`,
-      placeHolder:
-        headerNames.length === 0
-          ? 'No custom headers yet. Add one or close.'
-          : 'Select a header to edit, or add a new one',
-      ignoreFocusOut: true,
-    });
-    if (!pick || pick.action === 'done') { return; }
-
-    if (pick.action === 'add') {
-      await addHeader(provider, headers);
-    } else if (pick.action === 'clear') {
-      await confirmAndClearHeaders(provider, headerNames.length);
-    } else if (pick.action === 'edit' && pick.headerName) {
-      await editOrDeleteHeader(provider, headers, pick.headerName);
-    }
+  if (pick.action === 'add') {
+    await addHeader(provider, headers);
+  } else if (pick.action === 'clear') {
+    await confirmAndClearHeaders(provider, headerNames.length);
+  } else if (pick.action === 'edit' && pick.headerName) {
+    await editOrDeleteHeader(provider, headers, pick.headerName);
   }
+  return editCustomHeadersFlow(provider);
 }
 
 /**

@@ -9,9 +9,11 @@ import { buildModelInfo } from '../models/modelInfoBuilder';
 import {
   ModelConfigurationSchema,
   buildThinkingEffortSchema,
+  parseAcceptedEffortValues,
   resolveThinkingEffort,
   shouldOfferThinkingEffortPicker,
 } from '../config/thinkingEffort';
+import { errorMessage } from '../util/errorMessage';
 
 /**
  * The Thinking Effort picker schema for one model, or `undefined` when the
@@ -22,11 +24,17 @@ import {
 function thinkingEffortSchemaFor(
   modelId: string,
   discovered: DiscoveredModelInfo | undefined,
-  config: GatewayConfig
+  config: GatewayConfig,
+  acceptedEfforts: readonly string[] | undefined
 ): ModelConfigurationSchema | undefined {
   const current = resolveThinkingEffort(modelId, config.perModelOptions, config.thinkingEffortParameter);
-  return shouldOfferThinkingEffortPicker(config.thinkingEffortPicker, discovered?.reasoningSupported, current)
-    ? buildThinkingEffortSchema(current)
+  // A server that rejected an effort value has shown it reasons, so offer the
+  // picker with the values it listed even when discovery didn't say so.
+  const offer =
+    acceptedEfforts !== undefined ||
+    shouldOfferThinkingEffortPicker(config.thinkingEffortPicker, discovered?.reasoningSupported, current);
+  return offer && config.thinkingEffortPicker !== 'off'
+    ? buildThinkingEffortSchema(current, acceptedEfforts)
     : undefined;
 }
 
@@ -92,6 +100,13 @@ export class ModelCatalog {
    * them in `perModelOptions` client-side.
    */
   private readonly discoveredByModelId: Map<string, DiscoveredModelInfo> = new Map();
+  /**
+   * Thinking-effort values the server said it accepts for a model, learned
+   * from its rejection of the one we sent (issue #146). Replaces the generic
+   * presets in that model's picker. Like learned context sizes, kept across
+   * model-list refreshes and cleared on config reload.
+   */
+  private readonly learnedEffortsByModelId: Map<string, string[]> = new Map();
   private lastSuccessfulFetchAt?: number;
   private lastConnectionError?: string;
 
@@ -133,9 +148,43 @@ export class ModelCatalog {
     this.fetchLast = undefined;
   }
 
-  /** Called on config reload — a different server's learned sizes no longer apply. */
+  /**
+   * Called on config reload — a different server's learned context sizes and
+   * accepted thinking-effort values no longer apply.
+   */
   public clearLearnedContexts(): void {
     this.learnedContextByModelId.clear();
+    this.learnedEffortsByModelId.clear();
+  }
+
+  /** Thinking-effort values learned for `modelId`, if the server listed any. */
+  public getAcceptedThinkingEfforts(modelId: string): readonly string[] | undefined {
+    return this.learnedEffortsByModelId.get(modelId);
+  }
+
+  /**
+   * Record the thinking-effort values the server listed when it rejected the
+   * one we sent (issue #146). Returns true when that changed what the model
+   * picker should offer; the cached model list is dropped so the next
+   * listing rebuilds the picker from the learned values.
+   */
+  public learnThinkingEffortsFromError(modelId: string, error: unknown, parameter: string): boolean {
+    const message = errorMessage(error);
+    const accepted = parseAcceptedEffortValues(message, parameter);
+    if (!accepted) {
+      return false;
+    }
+    const previous = this.learnedEffortsByModelId.get(modelId);
+    if (previous?.join('\n') === accepted.join('\n')) {
+      return false;
+    }
+    this.learnedEffortsByModelId.set(modelId, accepted);
+    this.fetchLast = undefined;
+    this.deps.log(
+      `Server rejected the ${parameter} sent for ${modelId}; it accepts: ${accepted.join(', ')}. ` +
+        'The Thinking Effort picker now offers only these values.'
+    );
+    return true;
   }
 
   /**
@@ -154,7 +203,7 @@ export class ModelCatalog {
       try {
         return { models: await this.fetchInFlight };
       } catch (error) {
-        return { models: [], error: error instanceof Error ? error.message : String(error) };
+        return { models: [], error: errorMessage(error) };
       }
     }
 
@@ -172,7 +221,7 @@ export class ModelCatalog {
       }
       return { models: result };
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = errorMessage(error);
       this.lastConnectionError = message;
       this.deps.onStatusChanged();
       return { models: [], error: message };
@@ -192,8 +241,7 @@ export class ModelCatalog {
     try {
       response = await this.deps.client.fetchModels(token);
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      log(`ERROR: Failed to fetch models: ${errorMessage}`);
+      log(`ERROR: Failed to fetch models: ${errorMessage(error)}`);
       throw error;
     }
 
@@ -256,7 +304,12 @@ export class ModelCatalog {
           discoveredContext: discovered?.contextLength,
           discoveredMaxOutput: discovered?.maxOutputTokens,
           discoveredOutputWindowIsSeparate: discovered?.separateOutputWindow,
-          configurationSchema: thinkingEffortSchemaFor(model.id, discovered, config),
+          configurationSchema: thinkingEffortSchemaFor(
+            model.id,
+            discovered,
+            config,
+            this.learnedEffortsByModelId.get(model.id)
+          ),
         });
         nextContextByModelId.set(model.id, totalContext);
         if (outputWindowIsSeparate) {
@@ -374,7 +427,7 @@ export class ModelCatalog {
     model: LanguageModelChatInformation,
     error: unknown
   ): boolean {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorMessage(error);
     const serverContext = parseContextOverflowError(message);
     if (serverContext === undefined) {
       return false;

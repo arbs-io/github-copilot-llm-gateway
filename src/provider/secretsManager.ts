@@ -7,6 +7,7 @@ import {
   migrateLegacySecrets,
   parseCustomHeadersJson,
 } from '../config/secretMigration';
+import { errorMessage } from '../util/errorMessage';
 
 export interface SecretCache {
   apiKey: string;
@@ -64,7 +65,7 @@ export class SecretsManager {
       }
     } catch (error) {
       this.deps.log(
-        `Failed to migrate legacy secrets: ${error instanceof Error ? error.message : String(error)}`
+        `Failed to migrate legacy secrets: ${errorMessage(error)}`
       );
     }
     await this.refreshCache();
@@ -140,7 +141,7 @@ export class SecretsManager {
       }
     } catch (error) {
       this.deps.log(
-        `Failed to re-migrate legacy secret setting: ${error instanceof Error ? error.message : String(error)}`
+        `Failed to re-migrate legacy secret setting: ${errorMessage(error)}`
       );
     }
   }

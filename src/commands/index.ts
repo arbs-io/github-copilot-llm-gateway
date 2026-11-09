@@ -5,6 +5,7 @@ import { configureServerFlow } from './configureServer';
 import { editCustomHeadersFlow } from './customHeaders';
 import { setThinkingEffortFlow } from './thinkingEffort';
 import { showStatusMenu } from './statusMenu';
+import { errorMessage } from '../util/errorMessage';
 
 /**
  * Register every user-facing command the extension contributes. Kept out of
@@ -50,9 +51,9 @@ export function registerCommands(
             );
           }
         } catch (error) {
-          statusManager.setError(error instanceof Error ? error.message : String(error));
+          statusManager.setError(errorMessage(error));
           vscode.window.showErrorMessage(
-            `GitHub Copilot LLM Gateway: Connection test failed. ${error instanceof Error ? error.message : String(error)}`
+            `GitHub Copilot LLM Gateway: Connection test failed. ${errorMessage(error)}`
           );
         } finally {
           cts.dispose();

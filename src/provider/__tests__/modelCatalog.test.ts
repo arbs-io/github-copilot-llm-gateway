@@ -516,3 +516,59 @@ describe('ModelCatalog Thinking Effort picker', () => {
     assert.equal(defaults.tuned, '512');
   });
 });
+
+describe('ModelCatalog thinking-effort learning (issue #146)', () => {
+  const rejection = new Error(
+    'Chat completion failed: 400 Bad Request - reasoning_effort must be low, high, xhigh, max, or an integer within [1, 100]'
+  );
+
+  function enumFor(models: LanguageModelChatInformation[], id: string): unknown {
+    const m = models.find((x) => x.id === id) as
+      | { configurationSchema?: { properties: Record<string, { enum: unknown }> } }
+      | undefined;
+    return m?.configurationSchema?.properties.reasoningEffort.enum;
+  }
+
+  test('a rejection narrows that model\'s picker and invalidates the cached list', async () => {
+    const h = makeCatalog({ fetchModels: () => Promise.resolve(modelsResponse({ id: 'ds' }, { id: 'other' })) });
+    let { models } = await h.catalog.getOrFetchModels(fakeToken());
+    assert.equal(enumFor(models, 'ds'), undefined, 'no picker before anything is known');
+
+    assert.equal(h.catalog.learnThinkingEffortsFromError('ds', rejection, 'reasoning_effort'), true);
+    assert.deepEqual(h.catalog.getAcceptedThinkingEfforts('ds'), ['low', 'high', 'xhigh', 'max']);
+
+    ({ models } = await h.catalog.getOrFetchModels(fakeToken()));
+    assert.equal(h.fetchCalls, 2, 'cached list was dropped');
+    assert.deepEqual(enumFor(models, 'ds'), ['default', 'low', 'high', 'xhigh', 'max']);
+    assert.equal(enumFor(models, 'other'), undefined);
+  });
+
+  test('the same rejection again reports no change', () => {
+    const h = makeCatalog({ fetchModels: () => Promise.resolve(modelsResponse({ id: 'ds' })) });
+    assert.equal(h.catalog.learnThinkingEffortsFromError('ds', rejection, 'reasoning_effort'), true);
+    assert.equal(h.catalog.learnThinkingEffortsFromError('ds', rejection, 'reasoning_effort'), false);
+  });
+
+  test('unrelated errors teach nothing', () => {
+    const h = makeCatalog({ fetchModels: () => Promise.resolve(modelsResponse({ id: 'ds' })) });
+    assert.equal(h.catalog.learnThinkingEffortsFromError('ds', new Error('500 Internal Server Error'), 'reasoning_effort'), false);
+    assert.equal(h.catalog.getAcceptedThinkingEfforts('ds'), undefined);
+  });
+
+  test('picker mode "off" still hides the picker', async () => {
+    const h = makeCatalog({
+      fetchModels: () => Promise.resolve(modelsResponse({ id: 'ds' })),
+      config: fakeConfig({ thinkingEffortPicker: 'off' }),
+    });
+    h.catalog.learnThinkingEffortsFromError('ds', rejection, 'reasoning_effort');
+    const { models } = await h.catalog.getOrFetchModels(fakeToken());
+    assert.equal(enumFor(models, 'ds'), undefined);
+  });
+
+  test('config reload forgets learned values', () => {
+    const h = makeCatalog({ fetchModels: () => Promise.resolve(modelsResponse({ id: 'ds' })) });
+    h.catalog.learnThinkingEffortsFromError('ds', rejection, 'reasoning_effort');
+    h.catalog.clearLearnedContexts();
+    assert.equal(h.catalog.getAcceptedThinkingEfforts('ds'), undefined);
+  });
+});
